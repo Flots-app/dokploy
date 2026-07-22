@@ -13,6 +13,7 @@ import { github } from "./github";
 import { gitlab } from "./gitlab";
 import { mounts } from "./mount";
 import { patch } from "./patch";
+import { registry } from "./registry";
 import { schedules } from "./schedule";
 import { server } from "./server";
 import { applicationStatus, triggerType } from "./shared";
@@ -113,6 +114,15 @@ export const compose = pgTable("compose", {
 	serverId: text("serverId").references(() => server.serverId, {
 		onDelete: "cascade",
 	}),
+	buildServerId: text("buildServerId").references(() => server.serverId, {
+		onDelete: "set null",
+	}),
+	buildRegistryId: text("buildRegistryId").references(
+		() => registry.registryId,
+		{
+			onDelete: "set null",
+		},
+	),
 });
 
 export const composeRelations = relations(compose, ({ one, many }) => ({
@@ -146,6 +156,17 @@ export const composeRelations = relations(compose, ({ one, many }) => ({
 	server: one(server, {
 		fields: [compose.serverId],
 		references: [server.serverId],
+		relationName: "composeServer",
+	}),
+	buildServer: one(server, {
+		fields: [compose.buildServerId],
+		references: [server.serverId],
+		relationName: "composeBuildServer",
+	}),
+	buildRegistry: one(registry, {
+		fields: [compose.buildRegistryId],
+		references: [registry.registryId],
+		relationName: "composeBuildRegistry",
 	}),
 	backups: many(backups),
 	schedules: many(schedules),
@@ -228,7 +249,22 @@ export const apiUpdateCompose = createSchema
 		composeFile: z.string().optional(),
 		command: z.string().optional(),
 	})
-	.omit({ serverId: true });
+	.omit({ serverId: true, buildServerId: true, buildRegistryId: true });
+
+export const apiUpdateComposeBuildServer = z
+	.object({
+		composeId: z.string().min(1),
+		buildServerId: z.string().min(1).nullable(),
+		buildRegistryId: z.string().min(1).nullable(),
+	})
+	.refine(
+		(data) => Boolean(data.buildServerId) === Boolean(data.buildRegistryId),
+		{
+			message:
+				"Build Server and Build Registry must be selected or disabled together",
+			path: ["buildServerId"],
+		},
+	);
 
 export const apiSaveEnvironmentVariablesCompose = createSchema
 	.pick({

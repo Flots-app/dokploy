@@ -174,11 +174,12 @@ export default async function handler(
 					type: "deploy",
 					applicationType: "compose",
 					descriptionLog: `Hash: ${deploymentHash}`,
-					server: !!composeApp.serverId,
+					server: !!(composeApp.buildServerId || composeApp.serverId),
+					serverId:
+						composeApp.buildServerId || composeApp.serverId || undefined,
 				};
 
-				if (IS_CLOUD && composeApp.serverId) {
-					jobData.serverId = composeApp.serverId;
+				if (IS_CLOUD && (composeApp.buildServerId || composeApp.serverId)) {
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});
@@ -294,7 +295,9 @@ export default async function handler(
 					type: "deploy",
 					applicationType: "compose",
 					descriptionLog: `Hash: ${deploymentHash}`,
-					server: !!composeApp.serverId,
+					server: !!(composeApp.buildServerId || composeApp.serverId),
+					serverId:
+						composeApp.buildServerId || composeApp.serverId || undefined,
 				};
 
 				const shouldDeployPaths = shouldDeploy(
@@ -305,8 +308,7 @@ export default async function handler(
 				if (!shouldDeployPaths) {
 					continue;
 				}
-				if (IS_CLOUD && composeApp.serverId) {
-					jobData.serverId = composeApp.serverId;
+				if (IS_CLOUD && (composeApp.buildServerId || composeApp.serverId)) {
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});

@@ -1,0 +1,34 @@
+services:
+  backend-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/backend:${DOKPLOY_DEPLOYMENT_ID}
+    build:
+      context: ./backend
+      args:
+        DOKPLOY_DEPLOYMENT_ID: ${DOKPLOY_DEPLOYMENT_ID}
+        SLOW_BUILD_SECONDS: ${SLOW_BUILD_SECONDS:-0}
+    ports:
+      - "18080:80"
+
+  scheduler-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/backend:${DOKPLOY_DEPLOYMENT_ID}
+    command: ["sh", "-c", "while true; do sleep 3600; done"]
+
+  frontend-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/frontend:${DOKPLOY_DEPLOYMENT_ID}
+    build:
+      context: ./frontend
+      args:
+        DOKPLOY_DEPLOYMENT_ID: ${DOKPLOY_DEPLOYMENT_ID}
+        SLOW_BUILD_SECONDS: ${SLOW_BUILD_SECONDS:-0}
+    ports:
+      - "18081:80"
+
+  back-office-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/back-office:${DOKPLOY_DEPLOYMENT_ID}
+    build:
+      context: ./back-office
+      args:
+        DOKPLOY_DEPLOYMENT_ID: ${DOKPLOY_DEPLOYMENT_ID}
+        SLOW_BUILD_SECONDS: ${SLOW_BUILD_SECONDS:-0}
+    ports:
+      - "18082:80"

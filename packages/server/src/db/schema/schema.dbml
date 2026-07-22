@@ -372,6 +372,8 @@ table compose {
   bitbucketId text
   giteaId text
   serverId text
+  buildServerId text
+  buildRegistryId text
 }
 
 table custom {
@@ -1053,6 +1055,10 @@ ref: compose.bitbucketId - bitbucket.bitbucketId
 ref: compose.giteaId - gitea.giteaId
 
 ref: compose.serverId > server.serverId
+
+ref: compose.buildServerId > server.serverId
+
+ref: compose.buildRegistryId > registry.registryId
 
 ref: deployment.applicationId > application.applicationId
 

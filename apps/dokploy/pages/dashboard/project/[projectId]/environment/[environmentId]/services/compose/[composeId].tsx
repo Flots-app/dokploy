@@ -22,6 +22,7 @@ import { ShowSchedules } from "@/components/dashboard/application/schedules/show
 import { ShowVolumeBackups } from "@/components/dashboard/application/volume-backups/show-volume-backups";
 import { AddCommandCompose } from "@/components/dashboard/compose/advanced/add-command";
 import { IsolatedDeploymentTab } from "@/components/dashboard/compose/advanced/add-isolation";
+import { ShowComposeBuildServer } from "@/components/dashboard/compose/advanced/show-build-server";
 import { ShowComposeContainers } from "@/components/dashboard/compose/containers/show-compose-containers";
 import { DeleteService } from "@/components/dashboard/compose/delete-service";
 import { ShowGeneralCompose } from "@/components/dashboard/compose/general/show";
@@ -424,6 +425,7 @@ const Service = (
 									{permissions?.service.create && (
 										<TabsContent value="advanced">
 											<div className="flex flex-col gap-4 pt-2.5">
+												<ShowComposeBuildServer composeId={composeId} />
 												<AddCommandCompose composeId={composeId} />
 												<ShowVolumes id={composeId} type="compose" />
 												<ShowImport composeId={composeId} />

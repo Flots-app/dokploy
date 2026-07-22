@@ -196,7 +196,7 @@ export const patchRouter = createTRPCRouter({
 				serverId = app.serverId;
 			} else {
 				const compose = await findComposeById(input.id);
-				serverId = compose.serverId;
+				serverId = compose.buildServerId || compose.serverId;
 			}
 			return await readPatchRepoDirectory(input.repoPath, serverId);
 		}),
@@ -219,7 +219,7 @@ export const patchRouter = createTRPCRouter({
 				serverId = app.serverId;
 			} else {
 				const compose = await findComposeById(input.id);
-				serverId = compose.serverId;
+				serverId = compose.buildServerId || compose.serverId;
 			}
 			const existingPatch = await findPatchByFilePath(
 				input.filePath,

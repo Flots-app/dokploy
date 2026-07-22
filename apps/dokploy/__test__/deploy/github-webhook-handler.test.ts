@@ -266,6 +266,30 @@ describe("GitHub app webhook auto-deploy", () => {
 		expect(res.json).toHaveBeenCalledWith({ message: "Deployed 1 apps" });
 	});
 
+	it("partitions Compose push jobs on the configured Build Server", async () => {
+		mocks.applicationsFindMany.mockResolvedValue([]);
+		mocks.composeFindMany.mockResolvedValue([
+			{
+				composeId: "compose-id",
+				serverId: "runtime-server",
+				buildServerId: "build-server",
+				watchPaths: null,
+			},
+		]);
+		const res = createResponse();
+
+		await handler(createPushRequest("main"), res);
+
+		expect(mocks.queueAdd).toHaveBeenCalledWith(
+			"deployments",
+			expect.objectContaining({
+				applicationType: "compose",
+				serverId: "build-server",
+			}),
+			expect.anything(),
+		);
+	});
+
 	it("matches tag events using repository owner login fallback", async () => {
 		mocks.applicationsFindMany.mockImplementation(({ where }) => {
 			const matches =
@@ -309,6 +333,30 @@ describe("GitHub app webhook auto-deploy", () => {
 		expect(res.json).toHaveBeenCalledWith({
 			message: "Deployed 1 apps based on tag v1.0.0",
 		});
+	});
+
+	it("partitions Compose tag jobs on the configured Build Server", async () => {
+		mocks.applicationsFindMany.mockResolvedValue([]);
+		mocks.composeFindMany.mockResolvedValue([
+			{
+				composeId: "compose-id",
+				serverId: "runtime-server",
+				buildServerId: "build-server",
+			},
+		]);
+		const res = createResponse();
+
+		await handler(createTagRequest("v2.0.0"), res);
+
+		expect(mocks.queueAdd).toHaveBeenCalledWith(
+			"deployments",
+			expect.objectContaining({
+				applicationType: "compose",
+				serverId: "build-server",
+				titleLog: "Tag created: v2.0.0",
+			}),
+			expect.anything(),
+		);
 	});
 
 	it("does not deploy when the pushed branch does not match", async () => {
