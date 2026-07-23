@@ -6,8 +6,8 @@ This lab creates two isolated Ubuntu VMs with [Lima](https://lima-vm.io/):
 - `dokploy-runtime`: a runtime-only server reachable on SSH port `22222`;
 - an authenticated registry on the runtime VM, reachable from both VMs as
   `lima-dokploy-runtime.internal:5000`;
-- a read-only Git fixture containing the Flots-style Compose contract, reachable
-  from the build VM as
+- a read-only smart HTTP Git fixture containing the Flots-style Compose contract,
+  including support for Dokploy's shallow clone, reachable from the build VM as
   `http://lima-dokploy-runtime.internal:8080/flots-compose.git`.
 
 The VMs use Lima's `user-v2` network. They can communicate with one another, while
@@ -39,7 +39,7 @@ needed in Dokploy. Registry credentials can be changed in the ignored `.env` fil
 
 `make smoke` executes the same remote phases as the Dokploy feature:
 
-1. clone and resolve the Git Compose project on the build VM;
+1. shallow-clone and resolve the Git Compose project on the build VM;
 2. build and push exactly three deployment-tagged images;
 3. remove every `build` field and transfer the runtime manifest through base64;
 4. pull on the runtime VM before running `up --no-build --pull never`;

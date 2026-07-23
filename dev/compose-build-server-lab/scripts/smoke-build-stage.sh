@@ -12,7 +12,7 @@ source /tmp/dokploy-lab-smoke.env
 trap 'rm -f /tmp/dokploy-lab-smoke.env' EXIT
 
 rm -rf "${workdir}"
-git clone --branch main "${git_url}" "${workdir}"
+git clone --branch main --depth 1 "${git_url}" "${workdir}"
 cd "${workdir}"
 printf 'DOKPLOY_DEPLOYMENT_ID=%s\nSLOW_BUILD_SECONDS=%s\n' \
 	"${deployment_id}" "${slow_build_seconds}" >.env
@@ -36,4 +36,3 @@ HOME="${HOME}" docker compose --env-file .env -f compose.yml build --push
 
 jq '(.services[] |= del(.build))' resolved.compose.json >runtime.compose.json
 jq -e '[.services[] | has("build")] | any | not' runtime.compose.json >/dev/null
-

@@ -14,24 +14,51 @@ git -C "${source_directory}" config user.email 'dokploy-lab@localhost'
 git -C "${source_directory}" add .
 git -C "${source_directory}" commit -m 'Add Compose build-server smoke fixture'
 git clone --bare "${source_directory}" "${bare_repository}"
-git --git-dir="${bare_repository}" update-server-info
 chmod -R a+rX "${bare_repository}"
 
 docker rm -f dokploy-lab-git >/dev/null 2>&1 || true
-docker run -d \
-	--name dokploy-lab-git \
-	--restart unless-stopped \
-	-p 8080:80 \
-	-v "${git_root}:/usr/share/nginx/html:ro" \
-	nginx:1.29-alpine
+
+if ! command -v fcgiwrap >/dev/null 2>&1; then
+	export DEBIAN_FRONTEND=noninteractive
+	apt-get update
+	apt-get install -y --no-install-recommends fcgiwrap nginx
+fi
+
+chown -R www-data:www-data "${git_root}"
+
+cat >/etc/nginx/sites-available/dokploy-lab-git <<'NGINX'
+server {
+	listen 8080;
+	server_name _;
+
+	location ~ ^/(.+\.git)(/.*)$ {
+		include fastcgi_params;
+		fastcgi_param SCRIPT_FILENAME /usr/lib/git-core/git-http-backend;
+		fastcgi_param GIT_PROJECT_ROOT /srv/dokploy-lab/git;
+		fastcgi_param GIT_HTTP_EXPORT_ALL "";
+		fastcgi_param PATH_INFO /$1$2;
+		fastcgi_pass unix:/run/fcgiwrap.socket;
+	}
+}
+NGINX
+
+ln -sfn /etc/nginx/sites-available/dokploy-lab-git \
+	/etc/nginx/sites-enabled/dokploy-lab-git
+systemctl enable --now fcgiwrap nginx
+nginx -t
+systemctl restart fcgiwrap nginx
+
+probe_directory="$(mktemp -d)"
+trap 'rm -rf "${probe_directory}"' EXIT
 
 for _ in $(seq 1 30); do
-	if curl -fsS http://127.0.0.1:8080/flots-compose.git/HEAD >/dev/null; then
+	if git clone --quiet --branch main --depth 1 \
+		http://127.0.0.1:8080/flots-compose.git "${probe_directory}/repository"; then
 		exit 0
 	fi
+	rm -rf "${probe_directory}/repository"
 	sleep 1
 done
 
-echo 'Git fixture service failed to become ready' >&2
+echo 'Smart HTTP Git fixture failed to accept a shallow clone' >&2
 exit 1
-
