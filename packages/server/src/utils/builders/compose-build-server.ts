@@ -927,7 +927,13 @@ export const createComposeReleaseTraefikRouterConfig = ({
 		}
 	}
 
-	return { http: { routers, services, middlewares } };
+	return {
+		http: {
+			routers,
+			...(Object.keys(services).length > 0 ? { services } : {}),
+			...(Object.keys(middlewares).length > 0 ? { middlewares } : {}),
+		},
+	};
 };
 
 export const getRuntimeComposePaths = (
@@ -1039,7 +1045,7 @@ export const getRemoveTraefikConfigCommand = (path: string) =>
 	`rm -f ${quote([path])} ${quote([`${path}.tmp`])}`;
 
 const traefikContainerCommand =
-	'traefik_id="$(docker ps -q --filter name=dokploy-traefik --filter status=running | head -n 1)"; [ -n "$traefik_id" ] || { echo "Dokploy Traefik is not running on the runtime server" >&2; exit 1; }';
+	'traefik_id="$(docker ps -q --filter name=dokploy-traefik --filter status=running | head -n 1)"; [ -n "$traefik_id" ] || { echo "Dokploy Traefik is not running on the runtime server" >&2; exit 1; };';
 
 export const getTraefikRoutersSnapshotCommand = () =>
 	`set -e; ${traefikContainerCommand} docker exec "$traefik_id" wget -qO- http://127.0.0.1:8080/api/http/routers`;

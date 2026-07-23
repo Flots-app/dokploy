@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { generateDeploymentId } from "@dokploy/server/db/schema/deployment";
 import {
 	assertComposeBuildServerDeploymentReady,
 	assertComposeBuildServerSelection,
@@ -16,11 +18,13 @@ import {
 	getComposeRegistryLoginCommand,
 	getComposeReleaseProjectName,
 	getComposeReleaseServiceAlias,
+	getObserveTraefikServicesCommand,
 	getRestoreLegacyTraefikRoutersCommand,
 	getRuntimeDeployCommand,
 	getRuntimePullCommands,
 	getTraefikRoutersSnapshotCommand,
 	getWaitTraefikRoutersCommand,
+	getWaitTraefikServicesCommand,
 	getWriteActivationJournalCommand,
 	validateComposeBuildServerSpecification,
 } from "@dokploy/server/utils/builders/compose-build-server";
@@ -151,6 +155,15 @@ const apiCompose = (
 });
 
 describe("Compose Build Server validation", () => {
+	it("generates deployment IDs that are valid immutable Docker tags", () => {
+		const ids = Array.from({ length: 100 }, generateDeploymentId);
+		expect(new Set(ids).size).toBe(ids.length);
+		for (const id of ids) {
+			expect(id).toMatch(/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/);
+			expect(id).toHaveLength(21);
+		}
+	});
+
 	const validSelection = {
 		organizationId: "org-1",
 		accessibleServerIds: new Set(["build-1"]),
@@ -575,6 +588,13 @@ describe("Compose Build Server commands", () => {
 				fallback: "previous-1",
 			},
 		});
+		const promotedRouter = createComposeReleaseTraefikRouterConfig({
+			appName: compose.appName,
+			domains,
+			candidate,
+		});
+		expect(promotedRouter.http?.services).toBeUndefined();
+		expect(promotedRouter.http?.middlewares).toBeUndefined();
 		expect(
 			router.http?.routers?.[`${compose.appName}-1-websecure`]?.priority,
 		).toBe(1_000_000);
@@ -710,5 +730,27 @@ describe("Compose Build Server commands", () => {
 		);
 		expect(noFallbackRollback).toContain("rm -f");
 		expect(noFallbackRollback).not.toContain("/api/http/routers");
+	});
+
+	it("generates syntactically valid Bash for every Traefik command", () => {
+		const commands = [
+			getTraefikRoutersSnapshotCommand(),
+			getWaitTraefikServicesCommand(["candidate-service"], 120),
+			getWaitTraefikRoutersCommand({ "candidate-router": "candidate-service" }),
+			getObserveTraefikServicesCommand(["candidate-service"], 30),
+			getRestoreLegacyTraefikRoutersCommand("/runtime/router.yml", {
+				"legacy-router": {
+					routerTarget: "legacy-service@docker",
+					fallbackService: "legacy-service@docker",
+				},
+			}),
+		];
+
+		for (const command of commands) {
+			const result = spawnSync("bash", ["-n", "-c", command], {
+				encoding: "utf8",
+			});
+			expect(result.status, result.stderr).toBe(0);
+		}
 	});
 });

@@ -68,18 +68,26 @@ export const ShowComposeBuildServer = ({
 	const { data: registries } = api.registry.all.useQuery();
 	const { mutateAsync, isPending } =
 		api.compose.updateBuildServer.useMutation();
+	const persistedBuildServerId =
+		data?.buildServerId || data?.buildServer?.serverId || "none";
+	const persistedBuildRegistryId =
+		data?.buildRegistryId || data?.buildRegistry?.registryId || "none";
+	const selectionsReady =
+		data !== undefined &&
+		buildServers !== undefined &&
+		registries !== undefined;
 	const form = useForm<Schema>({
 		resolver: zodResolver(schema),
 		defaultValues: { buildServerId: "none", buildRegistryId: "none" },
 	});
 
 	useEffect(() => {
-		if (!data) return;
+		if (!selectionsReady) return;
 		form.reset({
-			buildServerId: data.buildServerId || "none",
-			buildRegistryId: data.buildRegistryId || "none",
+			buildServerId: persistedBuildServerId,
+			buildRegistryId: persistedBuildRegistryId,
 		});
-	}, [data, form]);
+	}, [form, persistedBuildRegistryId, persistedBuildServerId, selectionsReady]);
 
 	const eligible =
 		data?.sourceType !== "raw" &&

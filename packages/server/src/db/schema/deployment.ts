@@ -24,11 +24,13 @@ export const deploymentStatus = pgEnum("deploymentStatus", [
 	"cancelled",
 ]);
 
+export const generateDeploymentId = () => `d${nanoid(20)}`;
+
 export const deployments = pgTable("deployment", {
 	deploymentId: text("deploymentId")
 		.notNull()
 		.primaryKey()
-		.$defaultFn(() => nanoid()),
+		.$defaultFn(generateDeploymentId),
 	title: text("title").notNull(),
 	description: text("description"),
 	status: deploymentStatus("status").default("running"),
