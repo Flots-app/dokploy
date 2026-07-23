@@ -87,6 +87,13 @@ export const ShowComposeBuildServer = ({
 		!data?.command?.trim() &&
 		!data?.isolatedDeployment &&
 		!data?.randomize;
+	const selectedBuildServerId = form.watch("buildServerId");
+	const selectedBuildRegistryId = form.watch("buildRegistryId");
+	const enablingBuildServer =
+		Boolean(selectedBuildServerId && selectedBuildServerId !== "none") &&
+		Boolean(selectedBuildRegistryId && selectedBuildRegistryId !== "none");
+	const hasDomains = Boolean(data?.domains?.length);
+	const domainsMissing = enablingBuildServer && !hasDomains;
 
 	const onSubmit = async (values: Schema) => {
 		const buildServerId =
@@ -149,6 +156,16 @@ export const ShowComposeBuildServer = ({
 							Settings
 						</Link>{" "}
 						before enabling this feature.
+					</AlertBlock>
+				) : null}
+				{!hasDomains ? (
+					<AlertBlock type="warning">
+						At least one Dokploy Domain is required before enabling or deploying
+						a zero-downtime Compose Build Server.{" "}
+						<Link href="?tab=domains" className="underline">
+							Add a Domain
+						</Link>{" "}
+						and map it to a healthy HTTP service first.
 					</AlertBlock>
 				) : null}
 
@@ -241,7 +258,11 @@ export const ShowComposeBuildServer = ({
 							)}
 						/>
 						<div className="flex justify-end">
-							<Button type="submit" isLoading={isPending}>
+							<Button
+								type="submit"
+								isLoading={isPending}
+								disabled={domainsMissing}
+							>
 								Save
 							</Button>
 						</div>

@@ -35,6 +35,9 @@ export const ComposeActions = ({ composeId }: Props) => {
 		api.compose.start.useMutation();
 	const { mutateAsync: stop, isPending: isStopping } =
 		api.compose.stop.useMutation();
+	const buildServerDomainsMissing = Boolean(
+		data?.buildServerId && data.buildRegistryId && !data.domains?.length,
+	);
 	return (
 		<div className="flex flex-row gap-4 w-full flex-wrap ">
 			<TooltipProvider delayDuration={0} disableHoverableContent={false}>
@@ -62,6 +65,7 @@ export const ComposeActions = ({ composeId }: Props) => {
 						<Button
 							variant="default"
 							isLoading={data?.composeStatus === "running"}
+							disabled={buildServerDomainsMissing}
 							className="flex items-center gap-1.5 group focus-visible:ring-2 focus-visible:ring-offset-2"
 						>
 							<Tooltip>
@@ -74,7 +78,9 @@ export const ComposeActions = ({ composeId }: Props) => {
 								<TooltipPrimitive.Portal>
 									<TooltipContent sideOffset={5} className="z-60">
 										<p>
-											Downloads the source code and performs a complete build
+											{buildServerDomainsMissing
+												? "Add at least one Dokploy Domain before deploying with a Build Server"
+												: "Downloads the source code and performs a complete build"}
 										</p>
 									</TooltipContent>
 								</TooltipPrimitive.Portal>
@@ -103,6 +109,7 @@ export const ComposeActions = ({ composeId }: Props) => {
 						<Button
 							variant="secondary"
 							isLoading={data?.composeStatus === "running"}
+							disabled={buildServerDomainsMissing}
 							className="flex items-center gap-1.5 group focus-visible:ring-2 focus-visible:ring-offset-2"
 						>
 							<Tooltip>
@@ -115,7 +122,9 @@ export const ComposeActions = ({ composeId }: Props) => {
 								<TooltipPrimitive.Portal>
 									<TooltipContent sideOffset={5} className="z-60">
 										<p>
-											Rebuilds the compose without downloading the source code
+											{buildServerDomainsMissing
+												? "Add at least one Dokploy Domain before rebuilding with a Build Server"
+												: "Rebuilds the compose without downloading the source code"}
 										</p>
 									</TooltipContent>
 								</TooltipPrimitive.Portal>

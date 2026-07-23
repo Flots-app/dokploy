@@ -29,6 +29,7 @@ make start
 make status
 make smoke
 make smoke-clean
+make manual-ready
 make stop
 make destroy
 ```
@@ -63,11 +64,13 @@ needed in Dokploy. Registry credentials can be changed in the ignored `.env` fil
 The successful smoke release is deliberately left running for inspection. Run
 `make smoke-clean` before deploying the fixture from Dokploy itself so its
 Traefik routes do not overlap with the Dokploy-managed Compose project.
+`make manual-ready` performs that cleanup, reapplies the VM provisioning and
+prints the connection values needed by the Dokploy UI.
 
 ## Connect the local Dokploy development server
 
-Start Dokploy normally on the host, then configure the following resources in the
-same organization.
+Run `make manual-ready`, start Dokploy normally on the host, then configure the
+following resources in the same organization.
 
 1. Add an SSH key using the private key from `.state/id_ed25519`.
 2. Add the build server:
@@ -94,6 +97,29 @@ same organization.
    - `admin.flots.test` → `back-office-staging`.
 7. In the Compose **Advanced** tab, select the build VM and local registry, then
    deploy.
+
+Build Server mode cannot be enabled or deployed until at least one Dokploy
+Domain exists. The Compose `x-dokploy.zero-downtime.healthchecks` entries define
+readiness paths; they do not create Dokploy Domain database records.
+
+### Legacy fallback cases
+
+The first blue/green activation inspects Traefik and records fallback information
+per enabled Docker-provider router:
+
+- a legacy project without Dokploy routers is kept running until promotion, but
+  the deployment logs that the new routes have no legacy HTTP fallback;
+- a partially routed legacy project contributes fallback only for the routers
+  that Traefik reports as enabled;
+- a legacy project deployed with every current Dokploy Domain contributes a
+  complete fallback map.
+
+To exercise the complete migration path, add all three Domains, deploy once with
+Build Server mode disabled, then enable the Build Server and deploy again. To
+exercise partial fallback, deploy the legacy project with one or two Domains,
+add the remaining Domain without redeploying legacy, then enable Build Server
+mode. In every case, run `make manual-ready` first so the standalone smoke
+routers cannot overlap the Dokploy-managed hosts.
 
 The runtime VM exposes Traefik on its port 80. From the host, verify a route with:
 

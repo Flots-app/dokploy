@@ -1,5 +1,6 @@
 import {
 	addDomainToCompose,
+	assertComposeBuildServerDeploymentReady,
 	assertComposeBuildServerSelection,
 	clearOldDeployments,
 	cloneCompose,
@@ -84,6 +85,23 @@ import { cancelDeployment, deploy } from "@/server/utils/deploy";
 import { generatePassword } from "@/templates/utils";
 import { createTRPCRouter, protectedProcedure } from "../trpc";
 import { audit } from "../utils/audit";
+
+const assertBuildServerDeploymentReady = (
+	compose: Parameters<typeof assertComposeBuildServerDeploymentReady>[0],
+) => {
+	try {
+		assertComposeBuildServerDeploymentReady(compose);
+	} catch (error) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message:
+				error instanceof Error
+					? error.message
+					: "Compose Build Server configuration is not ready",
+			cause: error,
+		});
+	}
+};
 
 export const composeRouter = createTRPCRouter({
 	create: protectedProcedure
@@ -226,6 +244,11 @@ export const composeRouter = createTRPCRouter({
 			}
 
 			if (input.buildServerId && input.buildRegistryId) {
+				assertBuildServerDeploymentReady({
+					...compose,
+					buildServerId: input.buildServerId,
+					buildRegistryId: input.buildRegistryId,
+				});
 				await checkPermission(ctx, {
 					server: ["read"],
 					registry: ["read"],
@@ -516,6 +539,7 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
+			assertBuildServerDeploymentReady(compose);
 
 			const jobData: DeploymentJob = {
 				composeId: input.composeId,
@@ -566,6 +590,7 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
+			assertBuildServerDeploymentReady(compose);
 			const jobData: DeploymentJob = {
 				composeId: input.composeId,
 				titleLog: input.title || "Rebuild deployment",

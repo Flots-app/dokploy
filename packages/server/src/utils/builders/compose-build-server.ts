@@ -76,11 +76,24 @@ export interface ComposeRuntimeReleaseState {
 	activatedAt: string;
 }
 
+export interface ComposeLegacyRouterFallback {
+	routerTarget: string;
+	fallbackService: string;
+}
+
+export type ComposeLegacyRouterFallbacks = Record<
+	string,
+	ComposeLegacyRouterFallback
+>;
+
 export interface ComposeActivationJournal {
 	version: 1;
 	phase: "prepared" | "routed" | "promoted";
 	candidate: ComposeRuntimeReleaseState;
 	previous: ComposeRuntimeReleaseState | null;
+	legacyProject?: boolean;
+	legacyFallbacks?: ComposeLegacyRouterFallbacks;
+	/** Compatibility with activation journals written before router-level fallback detection. */
 	legacyFallback?: boolean;
 }
 
@@ -113,6 +126,22 @@ export const getComposeReleaseServiceAlias = (
 	deploymentId: string,
 	serviceName: string,
 ) => `dokploy-zdt-${hash(`${appName}:${deploymentId}:${serviceName}`, 32)}`;
+
+export const getComposeDomainRouterNames = (
+	appName: string,
+	domains: Array<
+		Pick<
+			ComposeBuildServerDomain,
+			"uniqueConfigKey" | "customEntrypoint" | "https"
+		>
+	>,
+) =>
+	domains.flatMap((domain) => [
+		`${appName}-${domain.uniqueConfigKey}-${domain.customEntrypoint || "web"}`,
+		...(!domain.customEntrypoint && domain.https
+			? [`${appName}-${domain.uniqueConfigKey}-websecure`]
+			: []),
+	]);
 
 const getDomainKey = (
 	domain: Pick<ComposeBuildServerDomain, "uniqueConfigKey">,
@@ -206,6 +235,29 @@ export const assertComposeBuildServerSupported = (
 	if (compose.randomize) {
 		throw new Error(
 			"Zero-downtime Compose Build Servers do not support randomized Compose resources",
+		);
+	}
+};
+
+export const assertComposeBuildServerDeploymentReady = (
+	compose: ComposeBuildServerSettings & {
+		buildServerId?: string | null;
+		buildRegistryId?: string | null;
+		domains?: unknown[] | null;
+	},
+) => {
+	const hasBuildServer = Boolean(compose.buildServerId);
+	const hasBuildRegistry = Boolean(compose.buildRegistryId);
+	if (hasBuildServer !== hasBuildRegistry) {
+		throw new Error(
+			"Build Server and Build Registry must be configured together",
+		);
+	}
+	if (!hasBuildServer) return;
+	assertComposeBuildServerSupported(compose);
+	if (!compose.domains?.length) {
+		throw new Error(
+			"Zero-downtime Compose Build Servers require at least one Dokploy Domain",
 		);
 	}
 };
@@ -830,13 +882,13 @@ export const createComposeReleaseTraefikRouterConfig = ({
 	domains,
 	candidate,
 	previous,
-	legacyFallback,
+	legacyFallbacks,
 }: {
 	appName: string;
 	domains: ComposeBuildServerDomain[];
 	candidate: ComposeRuntimeReleaseState;
 	previous?: ComposeRuntimeReleaseState | null;
-	legacyFallback?: boolean;
+	legacyFallbacks?: ComposeLegacyRouterFallbacks;
 }): FileConfig => {
 	const routers: NonNullable<NonNullable<FileConfig["http"]>["routers"]> = {};
 	const services: NonNullable<NonNullable<FileConfig["http"]>["services"]> = {};
@@ -855,7 +907,7 @@ export const createComposeReleaseTraefikRouterConfig = ({
 			let targetService = candidateService;
 			const fallbackService =
 				previous?.domainServices[key] ||
-				(legacyFallback ? `${routerName}@docker` : null);
+				legacyFallbacks?.[routerName]?.fallbackService;
 			if (fallbackService) {
 				targetService = `${routerName}-zdt-cutover`;
 				services[targetService] = {
@@ -989,6 +1041,48 @@ export const getRemoveTraefikConfigCommand = (path: string) =>
 const traefikContainerCommand =
 	'traefik_id="$(docker ps -q --filter name=dokploy-traefik --filter status=running | head -n 1)"; [ -n "$traefik_id" ] || { echo "Dokploy Traefik is not running on the runtime server" >&2; exit 1; }';
 
+export const getTraefikRoutersSnapshotCommand = () =>
+	`set -e; ${traefikContainerCommand} docker exec "$traefik_id" wget -qO- http://127.0.0.1:8080/api/http/routers`;
+
+export const detectComposeLegacyRouterFallbacks = (
+	appName: string,
+	domains: Array<
+		Pick<
+			ComposeBuildServerDomain,
+			"uniqueConfigKey" | "customEntrypoint" | "https"
+		>
+	>,
+	routers: unknown,
+): ComposeLegacyRouterFallbacks => {
+	if (!Array.isArray(routers)) {
+		throw new Error("Traefik returned an invalid HTTP router snapshot");
+	}
+
+	const expectedRouterNames = getComposeDomainRouterNames(appName, domains);
+	const fallbacks: ComposeLegacyRouterFallbacks = {};
+	for (const routerName of expectedRouterNames) {
+		const router = routers.find((entry) => {
+			if (!entry || typeof entry !== "object") return false;
+			const value = entry as Record<string, unknown>;
+			return (
+				value.name === `${routerName}@docker` &&
+				value.provider === "docker" &&
+				value.status === "enabled"
+			);
+		}) as Record<string, unknown> | undefined;
+		const routerTarget =
+			typeof router?.service === "string" ? router.service.trim() : "";
+		if (!routerTarget) continue;
+		fallbacks[routerName] = {
+			routerTarget,
+			fallbackService: routerTarget.includes("@")
+				? routerTarget
+				: `${routerTarget}@docker`,
+		};
+	}
+	return fallbacks;
+};
+
 const traefikApiCommand = (
 	resource: "services" | "routers",
 	name: string,
@@ -1026,6 +1120,26 @@ export const getWaitTraefikRoutersCommand = (
 		)
 		.join(" && ");
 	return `set -e; ${traefikContainerCommand} deadline=$(( $(date +%s) + ${timeoutSeconds} )); while true; do if ${checks || "true"}; then break; fi; if [ "$(date +%s)" -ge "$deadline" ]; then echo "Traefik did not activate the zero-downtime routers within ${timeoutSeconds}s" >&2; exit 1; fi; sleep 1; done`;
+};
+
+export const getRestoreLegacyTraefikRoutersCommand = (
+	fileRouterPath: string,
+	fallbacks: ComposeLegacyRouterFallbacks,
+	timeoutSeconds = 30,
+) => {
+	const removeFileRouter = getRemoveTraefikConfigCommand(fileRouterPath);
+	const routerTargets = Object.fromEntries(
+		Object.entries(fallbacks).map(([routerName, fallback]) => [
+			routerName,
+			fallback.routerTarget,
+		]),
+	);
+	if (Object.keys(routerTargets).length === 0) return removeFileRouter;
+	return `${removeFileRouter} && ${getWaitTraefikRoutersCommand(
+		routerTargets,
+		timeoutSeconds,
+		"docker",
+	)}`;
 };
 
 export const getObserveTraefikServicesCommand = (

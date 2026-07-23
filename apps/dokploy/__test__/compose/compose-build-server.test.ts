@@ -1,20 +1,27 @@
 import {
+	assertComposeBuildServerDeploymentReady,
 	assertComposeBuildServerSelection,
 	assertComposeBuildServerSupported,
+	type ComposeActivationJournal,
 	type ComposeBuildServerDomain,
 	type ComposeRuntimeReleaseState,
 	createComposeReleaseTraefikRouterConfig,
 	createComposeReleaseTraefikServiceConfig,
 	createRuntimeComposeManifest,
+	detectComposeLegacyRouterFallbacks,
 	getAcquireComposeActivationLockCommand,
 	getComposeBuildPushCommand,
 	getComposeConfigCommand,
+	getComposeDomainRouterNames,
 	getComposeRegistryLoginCommand,
 	getComposeReleaseProjectName,
 	getComposeReleaseServiceAlias,
+	getRestoreLegacyTraefikRoutersCommand,
 	getRuntimeDeployCommand,
 	getRuntimePullCommands,
+	getTraefikRoutersSnapshotCommand,
 	getWaitTraefikRoutersCommand,
+	getWriteActivationJournalCommand,
 	validateComposeBuildServerSpecification,
 } from "@dokploy/server/utils/builders/compose-build-server";
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
@@ -395,6 +402,25 @@ describe("Compose Build Server validation", () => {
 	])("rejects unsupported V1 configuration", (settings, message) => {
 		expect(() => assertComposeBuildServerSupported(settings)).toThrow(message);
 	});
+
+	it("rejects an enabled Build Server before deployment when Domains are missing", () => {
+		expect(() =>
+			assertComposeBuildServerDeploymentReady({
+				...compose,
+				buildServerId: "build-1",
+				buildRegistryId: "registry-1",
+				domains: [],
+			}),
+		).toThrow("at least one Dokploy Domain");
+		expect(() =>
+			assertComposeBuildServerDeploymentReady({
+				...compose,
+				buildServerId: null,
+				buildRegistryId: null,
+				domains: [],
+			}),
+		).not.toThrow();
+	});
 });
 
 describe("Compose Build Server commands", () => {
@@ -564,5 +590,125 @@ describe("Compose Build Server commands", () => {
 		);
 		expect(recoverableLock).toContain("journal_deployment");
 		expect(recoverableLock).toContain("deployment-id");
+	});
+
+	it("detects zero, partial and complete legacy router fallbacks", () => {
+		const routerNames = getComposeDomainRouterNames(compose.appName, domains);
+		const routerSnapshot = routerNames.map((routerName) => ({
+			name: `${routerName}@docker`,
+			provider: "docker",
+			status: "enabled",
+			service: `${routerName}-service`,
+		}));
+
+		expect(
+			detectComposeLegacyRouterFallbacks(compose.appName, domains, []),
+		).toEqual({});
+
+		const partial = detectComposeLegacyRouterFallbacks(
+			compose.appName,
+			domains,
+			[
+				routerSnapshot[0],
+				{
+					...routerSnapshot[1],
+					status: "disabled",
+				},
+				{
+					...routerSnapshot[2],
+					provider: "file",
+				},
+			],
+		);
+		expect(partial).toEqual({
+			[routerNames[0]!]: {
+				routerTarget: `${routerNames[0]}-service`,
+				fallbackService: `${routerNames[0]}-service@docker`,
+			},
+		});
+
+		const complete = detectComposeLegacyRouterFallbacks(
+			compose.appName,
+			domains,
+			routerSnapshot,
+		);
+		expect(Object.keys(complete)).toEqual(routerNames);
+		expect(getTraefikRoutersSnapshotCommand()).toContain("/api/http/routers");
+	});
+
+	it("creates failover only for legacy routers proven to exist", () => {
+		const candidate: ComposeRuntimeReleaseState = {
+			version: 1,
+			composeId: "compose-1",
+			deploymentId,
+			projectName: getComposeReleaseProjectName(compose.appName, deploymentId),
+			manifestPath: "/runtime.json",
+			serviceConfigPath: "/service.yml",
+			routerConfigPath: "/router.yml",
+			domainServices: {
+				"1": "candidate-backend",
+				"2": "candidate-frontend",
+				"3": "candidate-admin",
+			},
+			activatedAt: new Date(0).toISOString(),
+		};
+		const legacyFallbacks = {
+			[`${compose.appName}-1-web`]: {
+				routerTarget: `${compose.appName}-1-web`,
+				fallbackService: `${compose.appName}-1-web@docker`,
+			},
+		};
+		const router = createComposeReleaseTraefikRouterConfig({
+			appName: compose.appName,
+			domains,
+			candidate,
+			legacyFallbacks,
+		});
+		expect(
+			router.http?.services?.[`${compose.appName}-1-web-zdt-cutover`],
+		).toEqual({
+			failover: {
+				service: "candidate-backend",
+				fallback: `${compose.appName}-1-web@docker`,
+			},
+		});
+		expect(
+			router.http?.services?.[`${compose.appName}-1-websecure-zdt-cutover`],
+		).toBeUndefined();
+		expect(
+			router.http?.routers?.[`${compose.appName}-1-websecure`]?.service,
+		).toBe("candidate-backend");
+
+		const journal: ComposeActivationJournal = {
+			version: 1,
+			phase: "routed",
+			candidate,
+			previous: null,
+			legacyProject: true,
+			legacyFallbacks,
+		};
+		const journalCommand = getWriteActivationJournalCommand(
+			"/runtime/activation.json",
+			journal,
+		);
+		const encodedJournal = journalCommand
+			.match(/echo ([^ ]+) \| base64/)?.[1]
+			?.replaceAll("\\=", "=");
+		expect(
+			JSON.parse(Buffer.from(encodedJournal || "", "base64").toString()),
+		).toEqual(journal);
+
+		const rollback = getRestoreLegacyTraefikRoutersCommand(
+			"/runtime/router.yml",
+			legacyFallbacks,
+		);
+		expect(rollback).toContain(`routers/${compose.appName}-1-web\\@docker`);
+		expect(rollback).toContain(`"service":"${compose.appName}-1-web"`);
+		const noFallbackRollback = getRestoreLegacyTraefikRoutersCommand(
+			"/runtime/router.yml",
+			{},
+		);
+		expect(noFallbackRollback).toContain("rm -f");
+		expect(noFallbackRollback).not.toContain("/api/http/routers");
 	});
 });

@@ -14,17 +14,20 @@ import {
 	getCreateEnvFileCommand,
 } from "@dokploy/server/utils/builders/compose";
 import {
-	assertComposeBuildServerSupported,
+	assertComposeBuildServerDeploymentReady,
 	type ComposeActivationJournal,
 	type ComposeBuildServerDomain,
+	type ComposeLegacyRouterFallbacks,
 	type ComposeRuntimeReleaseState,
 	createComposeReleaseTraefikRouterConfig,
 	createComposeReleaseTraefikServiceConfig,
 	createRuntimeComposeManifest,
+	detectComposeLegacyRouterFallbacks,
 	getAcquireComposeActivationLockCommand,
 	getActivateRuntimeManifestCommand,
 	getComposeBuildPushCommand,
 	getComposeConfigCommand,
+	getComposeDomainRouterNames,
 	getComposeRegistryLoginCommand,
 	getComposeReleaseProjectName,
 	getInstallTraefikConfigCommand,
@@ -33,10 +36,12 @@ import {
 	getRemoveRuntimeReleaseCommand,
 	getRemoveTemporaryManifestCommand,
 	getRemoveTraefikConfigCommand,
+	getRestoreLegacyTraefikRoutersCommand,
 	getRuntimeComposePaths,
 	getRuntimeDeployCommand,
 	getRuntimePullCommands,
 	getRuntimeReleaseDownCommand,
+	getTraefikRoutersSnapshotCommand,
 	getTransferRuntimeManifestCommand,
 	getWaitTraefikRoutersCommand,
 	getWaitTraefikServicesCommand,
@@ -130,21 +135,6 @@ const installRuntimeFileAtomically = (source: string, destination: string) =>
 		`${destination}.tmp`,
 	])} && mv -f ${quote([`${destination}.tmp`])} ${quote([destination])}`;
 
-const composeRouterNames = (
-	appName: string,
-	domains: Array<{
-		uniqueConfigKey: number;
-		customEntrypoint: string | null;
-		https: boolean;
-	}>,
-) =>
-	domains.flatMap((domain) => [
-		`${appName}-${domain.uniqueConfigKey}-${domain.customEntrypoint || "web"}`,
-		...(!domain.customEntrypoint && domain.https
-			? [`${appName}-${domain.uniqueConfigKey}-websecure`]
-			: []),
-	]);
-
 const traefikRouterTargets = (config: {
 	http?: { routers?: Record<string, { service: string }> };
 }) =>
@@ -154,6 +144,32 @@ const traefikRouterTargets = (config: {
 			router.service,
 		]),
 	);
+
+const detectLegacyTraefikRouterFallbacks = async (
+	compose: Pick<Compose, "appName" | "serverId"> & {
+		domains: ComposeBuildServerDomain[];
+	},
+) => {
+	const result = await executeOnServer(
+		compose.serverId,
+		getTraefikRoutersSnapshotCommand(),
+	);
+	let routers: unknown;
+	try {
+		routers = JSON.parse(result.stdout);
+	} catch (error) {
+		throw new Error(
+			`Traefik returned an invalid HTTP router snapshot: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+	return detectComposeLegacyRouterFallbacks(
+		compose.appName,
+		compose.domains,
+		routers,
+	);
+};
 
 const cleanupLegacyComposeProjectCommand = (
 	appName: string,
@@ -195,6 +211,13 @@ const recoverInterruptedComposeActivation = async (
 	if (!journal) {
 		return;
 	}
+	const legacyProject =
+		journal.legacyProject ?? journal.legacyFallback ?? false;
+	const legacyFallbacks =
+		journal.legacyFallbacks ??
+		(journal.legacyFallback
+			? await detectLegacyTraefikRouterFallbacks(compose)
+			: {});
 	const active = await readRuntimeJson<ComposeRuntimeReleaseState>(
 		compose.serverId,
 		runtimePaths.activeState,
@@ -216,7 +239,7 @@ const recoverInterruptedComposeActivation = async (
 					),
 				);
 			}
-		} else if (journal.legacyFallback) {
+		} else if (legacyProject) {
 			try {
 				await executeOnServer(
 					compose.serverId,
@@ -249,18 +272,11 @@ const recoverInterruptedComposeActivation = async (
 		)} && ${getWaitTraefikRoutersCommand(
 			traefikRouterTargets(previousRouterConfig),
 		)}`;
-	} else if (journal.legacyFallback) {
-		const legacyRouterTargets = Object.fromEntries(
-			composeRouterNames(compose.appName, compose.domains).map((name) => [
-				name,
-				name,
-			]),
+	} else {
+		restoreRouter = getRestoreLegacyTraefikRoutersCommand(
+			runtimePaths.traefikRouter,
+			legacyFallbacks,
 		);
-		restoreRouter = `${restoreRouter} && ${getWaitTraefikRoutersCommand(
-			legacyRouterTargets,
-			30,
-			"docker",
-		)}`;
 	}
 	await executeOnServer(compose.serverId, restoreRouter);
 	await cleanupRuntimeRelease(
@@ -391,7 +407,7 @@ const loginComposeRegistryWithLog = async (
 
 const removeActiveRuntimeManifest = async (
 	compose: Pick<Compose, "appName" | "serverId"> & {
-		domains: Parameters<typeof composeRouterNames>[1];
+		domains: ComposeBuildServerDomain[];
 	},
 ) => {
 	const runtimePaths = getRuntimeComposePaths(compose, "legacy");
@@ -401,10 +417,9 @@ const removeActiveRuntimeManifest = async (
 	);
 	if (active) {
 		const legacyRouterTargets = Object.fromEntries(
-			composeRouterNames(compose.appName, compose.domains).map((name) => [
-				name,
-				name,
-			]),
+			getComposeDomainRouterNames(compose.appName, compose.domains).map(
+				(name) => [name, name],
+			),
 		);
 		await executeOnServer(
 			compose.serverId,
@@ -612,7 +627,7 @@ const deployComposeWithBuildServer = async (
 			"Build Server and Build Registry must be configured together",
 		);
 	}
-	assertComposeBuildServerSupported(compose);
+	assertComposeBuildServerDeploymentReady(compose);
 
 	const buildServerId = compose.buildServerId;
 	const runtimeServerId = compose.serverId;
@@ -635,7 +650,8 @@ const deployComposeWithBuildServer = async (
 	let lockAcquired = false;
 	let routeSwitched = false;
 	let promoted = false;
-	let legacyFallback = false;
+	let legacyProject = false;
+	let legacyFallbacks: ComposeLegacyRouterFallbacks = {};
 	let candidateCleanupComplete = false;
 	let interruptedRecoveryComplete = false;
 	let runtimeMutationAttempted = false;
@@ -878,7 +894,22 @@ const deployComposeWithBuildServer = async (
 			])} | head -n 1`,
 		);
 		if (!previousState) {
-			legacyFallback = Boolean(legacy.stdout.trim());
+			legacyProject = Boolean(legacy.stdout.trim());
+			if (legacyProject) {
+				legacyFallbacks = await detectLegacyTraefikRouterFallbacks(compose);
+				const expectedLegacyRouters = getComposeDomainRouterNames(
+					compose.appName,
+					compose.domains,
+				);
+				const detectedLegacyRouters = Object.keys(legacyFallbacks);
+				if (detectedLegacyRouters.length < expectedLegacyRouters.length) {
+					await appendDeploymentLog(
+						buildServerId,
+						deployment.logPath,
+						`\nWarning: legacy Compose project detected, but only ${detectedLegacyRouters.length}/${expectedLegacyRouters.length} Dokploy Docker router(s) are enabled. Missing routers will activate without a legacy fallback; verified fallbacks: ${detectedLegacyRouters.join(", ") || "none"}.\n`,
+					);
+				}
+			}
 		} else if (legacy.stdout.trim()) {
 			try {
 				await runRuntimeStage(
@@ -914,14 +945,15 @@ const deployComposeWithBuildServer = async (
 			domains: compose.domains,
 			candidate: candidateState,
 			previous: previousState,
-			legacyFallback,
+			legacyFallbacks,
 		});
 		const preparedJournal: ComposeActivationJournal = {
 			version: 1,
 			phase: "prepared",
 			candidate: candidateState,
 			previous: previousState,
-			legacyFallback,
+			legacyProject,
+			legacyFallbacks,
 		};
 		await runRuntimeStage(
 			runtimeServerId,
@@ -1059,7 +1091,7 @@ const deployComposeWithBuildServer = async (
 						validation.zeroDowntime.drainSeconds,
 					)} && ${getRemoveRuntimeReleaseCommand(previousState)}`,
 				);
-			} else if (legacyFallback) {
+			} else if (legacyProject) {
 				await runRuntimeStage(
 					runtimeServerId,
 					buildServerId,
@@ -1125,18 +1157,11 @@ const deployComposeWithBuildServer = async (
 					)} && ${getWaitTraefikRoutersCommand(
 						traefikRouterTargets(previousRouterConfig),
 					)}`;
-				} else if (legacyFallback) {
-					const legacyRouterTargets = Object.fromEntries(
-						composeRouterNames(compose.appName, compose.domains).map((name) => [
-							name,
-							name,
-						]),
+				} else {
+					restoreRouter = getRestoreLegacyTraefikRoutersCommand(
+						runtimePaths.traefikRouter,
+						legacyFallbacks,
 					);
-					restoreRouter = `${restoreRouter} && ${getWaitTraefikRoutersCommand(
-						legacyRouterTargets,
-						30,
-						"docker",
-					)}`;
 				}
 				await runRuntimeStage(
 					runtimeServerId,
@@ -1257,11 +1282,7 @@ export const deployCompose = async ({
 	});
 
 	try {
-		if (Boolean(compose.buildServerId) !== Boolean(compose.buildRegistryId)) {
-			throw new Error(
-				"Build Server and Build Registry must be configured together",
-			);
-		}
+		assertComposeBuildServerDeploymentReady(compose);
 		if (compose.buildServerId && compose.buildRegistryId) {
 			await deployComposeWithBuildServer(compose, deployment, {
 				cloneRepository: true,
@@ -1398,11 +1419,7 @@ export const rebuildCompose = async ({
 	});
 
 	try {
-		if (Boolean(compose.buildServerId) !== Boolean(compose.buildRegistryId)) {
-			throw new Error(
-				"Build Server and Build Registry must be configured together",
-			);
-		}
+		assertComposeBuildServerDeploymentReady(compose);
 		if (compose.buildServerId && compose.buildRegistryId) {
 			await deployComposeWithBuildServer(compose, deployment, {
 				cloneRepository: false,
