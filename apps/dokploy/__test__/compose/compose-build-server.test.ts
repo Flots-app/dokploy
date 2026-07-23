@@ -1,12 +1,20 @@
 import {
 	assertComposeBuildServerSelection,
 	assertComposeBuildServerSupported,
+	type ComposeBuildServerDomain,
+	type ComposeRuntimeReleaseState,
+	createComposeReleaseTraefikRouterConfig,
+	createComposeReleaseTraefikServiceConfig,
 	createRuntimeComposeManifest,
+	getAcquireComposeActivationLockCommand,
 	getComposeBuildPushCommand,
 	getComposeConfigCommand,
 	getComposeRegistryLoginCommand,
+	getComposeReleaseProjectName,
+	getComposeReleaseServiceAlias,
 	getRuntimeDeployCommand,
 	getRuntimePullCommands,
+	getWaitTraefikRoutersCommand,
 	validateComposeBuildServerSpecification,
 } from "@dokploy/server/utils/builders/compose-build-server";
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
@@ -27,25 +35,112 @@ const compose = {
 	isolatedDeployment: false,
 };
 
+const domains: ComposeBuildServerDomain[] = [
+	{
+		host: "api.example.com",
+		https: true,
+		port: 80,
+		customEntrypoint: null,
+		path: "/",
+		serviceName: "backend-staging",
+		uniqueConfigKey: 1,
+		certificateType: "letsencrypt",
+		customCertResolver: null,
+		internalPath: "/",
+		stripPath: false,
+		middlewares: [],
+	},
+	{
+		host: "app.example.com",
+		https: true,
+		port: 80,
+		customEntrypoint: null,
+		path: "/",
+		serviceName: "frontend-staging",
+		uniqueConfigKey: 2,
+		certificateType: "letsencrypt",
+		customCertResolver: null,
+		internalPath: "/",
+		stripPath: false,
+		middlewares: [],
+	},
+	{
+		host: "admin.example.com",
+		https: true,
+		port: 80,
+		customEntrypoint: null,
+		path: "/",
+		serviceName: "back-office-staging",
+		uniqueConfigKey: 3,
+		certificateType: "letsencrypt",
+		customCertResolver: null,
+		internalPath: "/",
+		stripPath: false,
+		middlewares: [],
+	},
+];
+
+const zeroDowntimeExtension = (
+	healthchecks: Record<string, { path: string }> = {
+		"backend-staging": { path: "/health" },
+		"frontend-staging": { path: "/" },
+		"back-office-staging": { path: "/" },
+	},
+) => ({
+	"x-dokploy": {
+		"zero-downtime": {
+			"overlap-safe": true,
+			healthchecks,
+			"shared-volumes": [],
+			"readiness-timeout-seconds": 120,
+			"stabilization-seconds": 30,
+			"drain-seconds": 30,
+		},
+	},
+});
+
+type ComposeService = NonNullable<ComposeSpecification["services"]>[string];
+
+const routedService = (service: ComposeService) => ({
+	...service,
+	healthcheck: { test: ["CMD", "true"] },
+	stop_grace_period: "30s",
+});
+
 const flotsCompose = (): ComposeSpecification => ({
+	...zeroDowntimeExtension(),
 	services: {
-		"backend-staging": {
+		"backend-staging": routedService({
 			build: { context: ".", dockerfile: "backend/Dockerfile" },
 			image: `registry.example.com/flots/backend:${deploymentId}`,
-		},
+		}),
 		"scheduler-staging": {
 			image: `registry.example.com/flots/backend:${deploymentId}`,
 			command: ["php", "artisan", "schedule:work"],
 		},
-		"frontend-staging": {
+		"frontend-staging": routedService({
 			build: { context: "frontend" },
 			image: `registry.example.com/flots/frontend:${deploymentId}`,
-		},
-		"back-office-staging": {
+		}),
+		"back-office-staging": routedService({
 			build: { context: "back-office" },
 			image: `registry.example.com/flots/back-office:${deploymentId}`,
-		},
+		}),
 	},
+});
+
+const apiDomain = (): ComposeBuildServerDomain => ({
+	...domains[0]!,
+	serviceName: "api",
+});
+
+const apiCompose = (
+	service: ComposeService,
+	extra: Partial<ComposeSpecification> = {},
+): ComposeSpecification => ({
+	...zeroDowntimeExtension({ api: { path: "/health" } }),
+	...extra,
+	services: { api: routedService(service) },
 });
 
 describe("Compose Build Server validation", () => {
@@ -104,6 +199,8 @@ describe("Compose Build Server validation", () => {
 			flotsCompose(),
 			registry,
 			deploymentId,
+			[],
+			domains,
 		);
 		expect(result.builtServices).toEqual([
 			"backend-staging",
@@ -116,9 +213,11 @@ describe("Compose Build Server validation", () => {
 	it("requires at least one buildable service", () => {
 		expect(() =>
 			validateComposeBuildServerSpecification(
-				{ services: { scheduler: { image: "busybox" } } },
+				apiCompose({ image: "busybox" }),
 				registry,
 				deploymentId,
+				[],
+				[apiDomain()],
 			),
 		).toThrow("at least one service with build:");
 	});
@@ -134,9 +233,11 @@ describe("Compose Build Server validation", () => {
 	])("rejects %s", (_name, image, message) => {
 		expect(() =>
 			validateComposeBuildServerSpecification(
-				{ services: { api: { build: ".", image } } },
+				apiCompose({ build: ".", image }),
 				registry,
 				deploymentId,
+				[],
+				[apiDomain()],
 			),
 		).toThrow(message);
 	});
@@ -146,13 +247,16 @@ describe("Compose Build Server validation", () => {
 		expect(() =>
 			validateComposeBuildServerSpecification(
 				{
+					...apiCompose({ build: "./api", image }),
 					services: {
-						api: { build: "./api", image },
+						api: routedService({ build: "./api", image }),
 						worker: { build: "./worker", image },
 					},
 				},
 				registry,
 				deploymentId,
+				[],
+				[apiDomain()],
 			),
 		).toThrow("target the same image");
 	});
@@ -160,41 +264,37 @@ describe("Compose Build Server validation", () => {
 	it.each([
 		[
 			"bind mount",
-			{
-				services: {
-					api: {
-						build: ".",
-						image: `registry.example.com/flots/api:${deploymentId}`,
-						volumes: [{ type: "bind", source: "/tmp/data", target: "/data" }],
-					},
-				},
-			},
+			apiCompose({
+				build: ".",
+				image: `registry.example.com/flots/api:${deploymentId}`,
+				volumes: [{ type: "bind", source: "/tmp/data", target: "/data" }],
+			}),
 			"bind mount",
 		],
 		[
 			"configs.file",
-			{
-				services: {
-					api: {
-						build: ".",
-						image: `registry.example.com/flots/api:${deploymentId}`,
-					},
+			apiCompose(
+				{
+					build: ".",
+					image: `registry.example.com/flots/api:${deploymentId}`,
 				},
-				configs: { local: { file: "/tmp/config" } },
-			},
+				{
+					configs: { local: { file: "/tmp/config" } },
+				},
+			),
 			"configs.file",
 		],
 		[
 			"secrets.file",
-			{
-				services: {
-					api: {
-						build: ".",
-						image: `registry.example.com/flots/api:${deploymentId}`,
-					},
+			apiCompose(
+				{
+					build: ".",
+					image: `registry.example.com/flots/api:${deploymentId}`,
 				},
-				secrets: { local: { file: "/tmp/secret" } },
-			},
+				{
+					secrets: { local: { file: "/tmp/secret" } },
+				},
+			),
 			"secrets.file",
 		],
 	] as const)("rejects a runtime %s", (_name, specification, message) => {
@@ -203,6 +303,8 @@ describe("Compose Build Server validation", () => {
 				specification as ComposeSpecification,
 				registry,
 				deploymentId,
+				[],
+				[apiDomain()],
 			),
 		).toThrow(message);
 	});
@@ -214,8 +316,76 @@ describe("Compose Build Server validation", () => {
 				registry,
 				deploymentId,
 				[{ type: "file", filePath: "/etc/flots/app.env" }],
+				domains,
 			),
 		).toThrow("Dokploy file mount");
+	});
+
+	it.each([
+		["host ports", { ports: ["8080:80"] }, "publishes host ports"],
+		["container_name", { container_name: "api" }, "container_name"],
+		["network_mode", { network_mode: "host" }, "network_mode"],
+		["Traefik labels", { labels: ["traefik.enable=true"] }, "Traefik labels"],
+	])("rejects zero-downtime %s", (_name, override, message) => {
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				apiCompose({
+					build: ".",
+					image: `registry.example.com/flots/api:${deploymentId}`,
+					...override,
+				}),
+				registry,
+				deploymentId,
+				[],
+				[apiDomain()],
+			),
+		).toThrow(message);
+	});
+
+	it("requires the explicit overlap-safe and healthcheck contract", () => {
+		const specification = flotsCompose();
+		delete specification["x-dokploy"];
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				specification,
+				registry,
+				deploymentId,
+				[],
+				domains,
+			),
+		).toThrow("x-dokploy.zero-downtime");
+
+		const noHealthcheck = flotsCompose();
+		delete noHealthcheck.services?.["backend-staging"]?.healthcheck;
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				noHealthcheck,
+				registry,
+				deploymentId,
+				[],
+				domains,
+			),
+		).toThrow("enabled Compose healthcheck");
+	});
+
+	it("only allows explicitly safe external shared volumes", () => {
+		const specification = apiCompose(
+			{
+				build: ".",
+				image: `registry.example.com/flots/api:${deploymentId}`,
+				volumes: [{ type: "volume", source: "uploads", target: "/uploads" }],
+			},
+			{ volumes: { uploads: { external: true } } },
+		);
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				specification,
+				registry,
+				deploymentId,
+				[],
+				[apiDomain()],
+			),
+		).toThrow("shared-volumes");
 	});
 
 	it.each([
@@ -246,25 +416,153 @@ describe("Compose Build Server commands", () => {
 	});
 
 	it("removes every build section from the runtime manifest", () => {
-		const runtime = createRuntimeComposeManifest(flotsCompose());
+		const resolved = flotsCompose();
+		resolved.networks = {
+			default: {
+				name: `${compose.appName}_default`,
+			},
+		};
+		const runtime = createRuntimeComposeManifest(resolved, {
+			appName: compose.appName,
+			composeId: "compose-1",
+			deploymentId,
+		});
 		for (const service of Object.values(runtime.services || {})) {
 			expect(service).not.toHaveProperty("build");
 		}
 		expect(runtime.services?.["scheduler-staging"]?.image).toBe(
 			`registry.example.com/flots/backend:${deploymentId}`,
 		);
+		expect(runtime).not.toHaveProperty("x-dokploy");
+		expect(runtime.services?.["backend-staging"]?.labels).toMatchObject({
+			"com.dokploy.compose-id": "compose-1",
+			"com.dokploy.deployment-id": deploymentId,
+			"com.dokploy.runtime-project": getComposeReleaseProjectName(
+				compose.appName,
+				deploymentId,
+			),
+		});
+		expect(runtime.networks?.default).not.toHaveProperty("name");
+		const runtimeNetworks = runtime.services?.["backend-staging"]?.networks;
+		expect(Array.isArray(runtimeNetworks)).toBe(false);
+		expect(
+			!Array.isArray(runtimeNetworks)
+				? runtimeNetworks?.["dokploy-network"]?.aliases
+				: undefined,
+		).toContain(
+			getComposeReleaseServiceAlias(
+				compose.appName,
+				deploymentId,
+				"backend-staging",
+			),
+		);
 	});
 
 	it("pulls immutable images before an activation that cannot build", () => {
-		const pulls = getRuntimePullCommands(compose, "/tmp/runtime.json", [
+		const projectName = getComposeReleaseProjectName(
+			compose.appName,
+			deploymentId,
+		);
+		const pulls = getRuntimePullCommands(projectName, "/tmp/runtime.json", [
 			"backend-staging",
 		]);
 		expect(pulls.every((command) => !command.includes(" up "))).toBe(true);
 		expect(pulls.every((command) => !command.includes("--build"))).toBe(true);
 		expect(pulls[0]).toContain("pull --policy always backend-staging");
 		expect(pulls[1]).toContain("pull --policy missing");
-		const deploy = getRuntimeDeployCommand(compose, "/tmp/runtime.json");
-		expect(deploy).toContain("up -d --no-build --pull never --remove-orphans");
+		const deploy = getRuntimeDeployCommand(
+			projectName,
+			"/tmp/runtime.json",
+			120,
+		);
+		expect(deploy).toContain(
+			"up -d --no-build --pull never --wait --wait-timeout 120",
+		);
 		expect(deploy).not.toContain("--build");
+		expect(deploy).not.toContain(`-p ${compose.appName} -f`);
+	});
+
+	it("creates bounded release projects and an atomic Traefik failover", () => {
+		const projectName = getComposeReleaseProjectName(
+			"x".repeat(63),
+			deploymentId,
+		);
+		expect(projectName).toHaveLength(63);
+		const validation = validateComposeBuildServerSpecification(
+			flotsCompose(),
+			registry,
+			deploymentId,
+			[],
+			domains,
+		);
+		const release = createComposeReleaseTraefikServiceConfig({
+			appName: compose.appName,
+			deploymentId,
+			domains,
+			settings: validation.zeroDowntime,
+		});
+		expect(
+			release.config.http?.routers?.[`${release.domainServices["1"]}-probe`]
+				?.rule,
+		).toContain(".dokploy.invalid`)");
+		expect(
+			release.config.http?.routers?.[`${release.domainServices["1"]}-probe`]
+				?.service,
+		).toBe(release.domainServices["1"]);
+		expect(
+			Object.values(release.config.http?.routers ?? {}).some((router) =>
+				router.rule.includes("backend.flots.test"),
+			),
+		).toBe(false);
+		const candidate: ComposeRuntimeReleaseState = {
+			version: 1,
+			composeId: "compose-1",
+			deploymentId,
+			projectName,
+			manifestPath: "/runtime.json",
+			serviceConfigPath: "/service.yml",
+			routerConfigPath: "/router.yml",
+			domainServices: release.domainServices,
+			activatedAt: new Date(0).toISOString(),
+		};
+		const previous: ComposeRuntimeReleaseState = {
+			...candidate,
+			deploymentId: "previous",
+			domainServices: Object.fromEntries(
+				Object.keys(candidate.domainServices).map((key) => [
+					key,
+					`previous-${key}`,
+				]),
+			),
+		};
+		const router = createComposeReleaseTraefikRouterConfig({
+			appName: compose.appName,
+			domains,
+			candidate,
+			previous,
+		});
+		expect(
+			router.http?.services?.[`${compose.appName}-1-web-zdt-cutover`],
+		).toEqual({
+			failover: {
+				service: candidate.domainServices["1"],
+				fallback: "previous-1",
+			},
+		});
+		expect(
+			router.http?.routers?.[`${compose.appName}-1-websecure`]?.priority,
+		).toBe(1_000_000);
+		const wait = getWaitTraefikRoutersCommand({
+			[`${compose.appName}-1-web`]: `${compose.appName}-1-web-zdt-cutover`,
+		});
+		expect(wait).toContain(`routers/${compose.appName}-1-web\\@file`);
+		expect(wait).toContain(`"service":"${compose.appName}-1-web-zdt-cutover"`);
+		const recoverableLock = getAcquireComposeActivationLockCommand(
+			"/runtime/.activation.lock",
+			deploymentId,
+			"/runtime/activation.json",
+		);
+		expect(recoverableLock).toContain("journal_deployment");
+		expect(recoverableLock).toContain("deployment-id");
 	});
 });

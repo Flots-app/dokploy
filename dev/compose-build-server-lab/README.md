@@ -42,14 +42,27 @@ needed in Dokploy. Registry credentials can be changed in the ignored `.env` fil
 1. shallow-clone and resolve the Git Compose project on the build VM;
 2. build and push exactly three deployment-tagged images;
 3. remove every `build` field and transfer the runtime manifest through base64;
-4. pull on the runtime VM before running `up --no-build --pull never`;
-5. keep the first release available during a deliberately slow second build;
-6. prove that a failed pull does not replace containers or the active manifest;
-7. stop and restart from the active runtime manifest.
+4. start each runtime release under a deployment-specific Compose project;
+5. register healthy candidate backends in Traefik before an atomic router switch;
+6. keep the first release available during a deliberately slow build and during
+   the complete blue/green activation, including an in-flight request shorter
+   than the drain period;
+7. prove that a failed pull and an unhealthy candidate do not replace containers
+   or the active manifest;
+8. crash the activation process immediately after cutover and prove that the
+   next deployment restores the previous router, removes the orphan candidate
+   and resumes from the activation journal;
+9. cancel one deployment before cutover and another after cutover, proving that
+   the former only removes its candidate while the latter restores the previous
+   router before removing its candidate;
+10. run two successful redeployments in succession, assert that application
+   containers exist only on the runtime VM, and verify the immutable image tags;
+11. verify the fixture scheduler's shared-volume leader election, then stop and
+    restart from the active release state.
 
 The successful smoke release is deliberately left running for inspection. Run
-`make smoke-clean` before deploying the fixture from Dokploy itself, so ports
-`18080`–`18082` are available to the Dokploy-managed Compose project.
+`make smoke-clean` before deploying the fixture from Dokploy itself so its
+Traefik routes do not overlap with the Dokploy-managed Compose project.
 
 ## Connect the local Dokploy development server
 
@@ -75,8 +88,19 @@ same organization.
      `http://lima-dokploy-runtime.internal:8080/flots-compose.git`;
    - branch `main`, Compose path `compose.yml`;
    - Compose type `docker-compose` and no custom command.
-6. In the Compose **Advanced** tab, select the build VM and local registry, then
+6. Add these Domains, all using container port `80`:
+   - `backend.flots.test` → `backend-staging`;
+   - `frontend.flots.test` → `frontend-staging`;
+   - `admin.flots.test` → `back-office-staging`.
+7. In the Compose **Advanced** tab, select the build VM and local registry, then
    deploy.
+
+The runtime VM exposes Traefik on its port 80. From the host, verify a route with:
+
+```bash
+ssh -p 22222 -i .state/id_ed25519 dokploy@127.0.0.1 \
+  "curl -H 'Host: backend.flots.test' http://127.0.0.1/"
+```
 
 The servers already contain Docker, Swarm/runtime networking and Dokploy's base
 directory, so the full Dokploy setup step is optional for this focused test. When
@@ -90,3 +114,9 @@ The fixture has three build targets: backend, frontend and back office. The
 scheduler uses the backend image without a `build` section. Every image is under
 the configured registry namespace and uses `${DOKPLOY_DEPLOYMENT_ID}` as its
 immutable tag. It has no bind mount, local config or local secret.
+The three HTTP services define readiness and graceful shutdown, and the
+`x-dokploy.zero-downtime` extension explicitly acknowledges release overlap.
+The scheduler fixture uses an external shared volume for a minimal leader lock,
+so the smoke test can prove that only one overlapping release executes jobs. The
+real Flots scheduler must provide its own production-grade leader election
+before enabling this mode.

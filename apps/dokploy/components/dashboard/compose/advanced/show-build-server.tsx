@@ -84,7 +84,9 @@ export const ShowComposeBuildServer = ({
 	const eligible =
 		data?.sourceType !== "raw" &&
 		data?.composeType === "docker-compose" &&
-		!data?.command?.trim();
+		!data?.command?.trim() &&
+		!data?.isolatedDeployment &&
+		!data?.randomize;
 
 	const onSubmit = async (values: Schema) => {
 		const buildServerId =
@@ -116,17 +118,23 @@ export const ShowComposeBuildServer = ({
 					<div>
 						<CardTitle className="text-xl">Compose Build Server</CardTitle>
 						<CardDescription>
-							Build and push images away from the runtime server.
+							Build remotely and activate releases with HTTP blue/green routing.
 						</CardDescription>
 					</div>
 				</div>
 			</CardHeader>
 			<CardContent className="flex flex-col gap-4">
 				<AlertBlock type="info">
-					V1 supports Git sources, Docker Compose, and the default Dokploy
-					command. Each buildable service needs an image in the selected
-					registry tagged with <code>DOKPLOY_DEPLOYMENT_ID</code>. Bind mounts
-					and local config or secret files are not supported.
+					This mode is strict zero-downtime through Dokploy Domains and Traefik.
+					The Git Compose must declare <code>x-dokploy.zero-downtime</code>,
+					healthchecks, graceful stop periods, overlap safety, and immutable
+					images tagged with <code>DOKPLOY_DEPLOYMENT_ID</code>. Host ports,
+					container names, custom Traefik labels, local files, and unsafe
+					volumes are rejected before the runtime is changed. Defaults are 120
+					seconds for readiness, 30 seconds for stabilization, and 30 seconds
+					for drain. Deployment logs identify the violating service, volume,
+					network, image, healthcheck, or Domain before starting a runtime
+					candidate.
 				</AlertBlock>
 				{!eligible ? (
 					<AlertBlock type="warning">

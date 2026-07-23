@@ -28,7 +28,8 @@ load_lab_env() {
 }
 
 instance_exists() {
-	limactl list --format '{{.Name}}' | grep -Fxq "$1"
+	limactl list --format '{{.Name}}' |
+		awk -v expected="$1" '$0 == expected { found = 1 } END { exit !found }'
 }
 
 ssh_to() {

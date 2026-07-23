@@ -32,13 +32,14 @@ provision:
 
 probes:
   - mode: readiness
-    description: Docker, Swarm and the Dokploy network are available
+    description: Docker, Swarm, the Dokploy network and Traefik are available
     script: |
       #!/usr/bin/env bash
       set -e
       sudo docker info >/dev/null
       sudo docker info | grep -q 'Swarm: active'
       sudo docker network inspect dokploy-network >/dev/null
+      sudo docker inspect dokploy-traefik >/dev/null
 
 message: |
   Runtime VM ready. Dokploy reaches it at 127.0.0.1:22222 as user dokploy.

@@ -1,6 +1,9 @@
-FROM nginx:1.29-alpine
+FROM node:24-alpine
 ARG DOKPLOY_DEPLOYMENT_ID
 ARG SLOW_BUILD_SECONDS=0
-RUN sleep "${SLOW_BUILD_SECONDS}" \
-	&& printf 'backend:%s\n' "${DOKPLOY_DEPLOYMENT_ID}" >/usr/share/nginx/html/index.html
+RUN sleep "${SLOW_BUILD_SECONDS}"
+ENV RELEASE_ID="${DOKPLOY_DEPLOYMENT_ID}"
+WORKDIR /app
+COPY server.mjs .
 EXPOSE 80
+CMD ["node", "server.mjs"]

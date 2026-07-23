@@ -42,6 +42,7 @@ server {
 }
 NGINX
 
+rm -f /etc/nginx/sites-enabled/default
 ln -sfn /etc/nginx/sites-available/dokploy-lab-git \
 	/etc/nginx/sites-enabled/dokploy-lab-git
 systemctl enable --now fcgiwrap nginx

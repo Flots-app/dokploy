@@ -28,6 +28,7 @@ import {
 	removeComposeDirectory,
 	removeDeploymentsByComposeId,
 	removeDomainById,
+	requestComposeDeploymentCancellation,
 	startCompose,
 	stopCompose,
 	updateCompose,
@@ -232,12 +233,14 @@ export const composeRouter = createTRPCRouter({
 				if (
 					compose.sourceType === "raw" ||
 					compose.composeType !== "docker-compose" ||
-					Boolean(compose.command.trim())
+					Boolean(compose.command.trim()) ||
+					compose.isolatedDeployment ||
+					compose.randomize
 				) {
 					throw new TRPCError({
 						code: "BAD_REQUEST",
 						message:
-							"Compose Build Servers V1 require a Git source, composeType docker-compose, and the default Dokploy command",
+							"Zero-downtime Compose Build Servers require a Git source, composeType docker-compose, the default Dokploy command, and non-isolated deterministic resources",
 					});
 				}
 
@@ -1166,6 +1169,7 @@ export const composeRouter = createTRPCRouter({
 						composeId: input.composeId,
 						applicationType: "compose",
 					});
+					await requestComposeDeploymentCancellation(input.composeId);
 
 					await audit(ctx, {
 						action: "stop",

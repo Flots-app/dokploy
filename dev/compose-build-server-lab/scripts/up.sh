@@ -29,6 +29,11 @@ start_instance "${BUILD_VM}" "${LAB_DIR}/build.lima.yaml"
 echo 'Starting runtime VM...'
 start_instance "${RUNTIME_VM}" "${LAB_DIR}/runtime.lima.yaml"
 
+# Re-apply the focused runtime services so changes to the lab's VM-as-code are
+# picked up without forcing developers to destroy both VMs.
+limactl shell "${RUNTIME_VM}" -- sudo bash -s \
+	<"${LAB_DIR}/provision/runtime.sh"
+
 install_key() {
 	local name="$1"
 	limactl copy --backend=scp "${STATE_DIR}/id_ed25519.pub" \
