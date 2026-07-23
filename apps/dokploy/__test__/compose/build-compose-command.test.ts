@@ -1,4 +1,7 @@
-import { getBuildComposeCommand } from "@dokploy/server/utils/builders/compose";
+import {
+	getBuildComposeCommand,
+	getCreateEnvFileCommand,
+} from "@dokploy/server/utils/builders/compose";
 import { describe, expect, it, vi } from "vitest";
 
 // Isolate the command builder from the compose-file I/O performed by
@@ -48,5 +51,21 @@ describe("getBuildComposeCommand registry auth (#4401)", () => {
 
 		expect(command).toContain("compose -p my-app");
 		expect(command).toContain('env -i PATH="$PATH" HOME="$HOME"');
+	});
+
+	it("gives the reserved deployment id priority over user variables", () => {
+		const command = getCreateEnvFileCommand(
+			{
+				...baseCompose,
+				env: "DOKPLOY_DEPLOYMENT_ID=user-value",
+			},
+			"deployment-value",
+		);
+		const encoded = command.match(/echo "([A-Za-z0-9+/=]+)" \| base64/)?.[1];
+		expect(encoded).toBeDefined();
+		const env = Buffer.from(encoded || "", "base64").toString("utf8");
+		expect(env.trim().endsWith("DOKPLOY_DEPLOYMENT_ID=deployment-value")).toBe(
+			true,
+		);
 	});
 });

@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { promises as fsPromises } from "node:fs";
+import { dirname, join } from "node:path";
 import { paths } from "@dokploy/server/constants";
 import { db } from "@dokploy/server/db";
 import {
@@ -7,7 +8,52 @@ import {
 	cleanAppName,
 	compose,
 } from "@dokploy/server/db/schema";
-import { getBuildComposeCommand } from "@dokploy/server/utils/builders/compose";
+import { findRegistryByIdWithCredentials } from "@dokploy/server/services/registry";
+import {
+	getBuildComposeCommand,
+	getCreateEnvFileCommand,
+} from "@dokploy/server/utils/builders/compose";
+import {
+	assertComposeBuildServerDeploymentReady,
+	assertComposeBuildServerRuntimeSelection,
+	type ComposeActivationJournal,
+	type ComposeBuildServerDomain,
+	type ComposeLegacyRouterFallbacks,
+	type ComposeRuntimeReleaseState,
+	createComposeReleaseTraefikRouterConfig,
+	createComposeReleaseTraefikServiceConfig,
+	createRuntimeComposeManifest,
+	detectComposeLegacyRouterFallbacks,
+	getAcquireComposeActivationLockCommand,
+	getActivateRuntimeManifestCommand,
+	getCancellableComposeCommand,
+	getComposeBuildPushCommand,
+	getComposeConfigCommand,
+	getComposeDomainRouterNames,
+	getComposeRegistryLoginCommand,
+	getComposeReleaseProjectName,
+	getComposeRuntimeDrainSeconds,
+	getComposeRuntimeReadinessTimeoutSeconds,
+	getInstallTraefikConfigCommand,
+	getObserveTraefikServicesCommand,
+	getReleaseComposeActivationLockCommand,
+	getRemoveRuntimeReleaseCommand,
+	getRemoveTemporaryManifestCommand,
+	getRemoveTraefikConfigCommand,
+	getRestoreLegacyTraefikRoutersCommand,
+	getRuntimeComposePaths,
+	getRuntimeDeployCommand,
+	getRuntimePullCommands,
+	getRuntimeReleaseDownCommand,
+	getTraefikRoutersSnapshotCommand,
+	getTransferRuntimeManifestCommand,
+	getWaitTraefikRoutersCommand,
+	getWaitTraefikServicesCommand,
+	getWriteActivationJournalCommand,
+	getWriteReleaseMetadataCommand,
+	getWriteRuntimeReleaseStateCommand,
+	validateComposeBuildServerSpecification,
+} from "@dokploy/server/utils/builders/compose-build-server";
 import { randomizeSpecificationFile } from "@dokploy/server/utils/docker/compose";
 import {
 	cloneCompose,
@@ -21,6 +67,7 @@ import {
 	ExecError,
 	execAsync,
 	execAsyncRemote,
+	execFileAsync,
 } from "@dokploy/server/utils/process/execAsync";
 import { cloneBitbucketRepository } from "@dokploy/server/utils/providers/bitbucket";
 import {
@@ -46,6 +93,363 @@ import { generateApplyPatchesCommand } from "./patch";
 import { validUniqueServerAppName } from "./project";
 
 export type Compose = typeof compose.$inferSelect;
+
+const appendDeploymentLog = async (
+	serverId: string | null,
+	logPath: string,
+	content: string,
+) => {
+	if (!content) return;
+	const command = `echo ${quote([encodeBase64(content)])} | base64 -d >> ${quote(
+		[logPath],
+	)}`;
+	if (serverId) {
+		await execAsyncRemote(serverId, command);
+	} else {
+		await fsPromises.appendFile(logPath, content);
+	}
+};
+
+const executeOnServer = async (serverId: string | null, command: string) => {
+	if (serverId) return await execAsyncRemote(serverId, command);
+	return await execAsync(command);
+};
+
+const readRuntimeJson = async <T>(
+	serverId: string | null,
+	path: string,
+): Promise<T | null> => {
+	const result = await executeOnServer(
+		serverId,
+		`if [ -f ${quote([path])} ]; then cat ${quote([path])}; fi`,
+	);
+	const value = result.stdout.trim();
+	if (!value) return null;
+	try {
+		return JSON.parse(value) as T;
+	} catch {
+		throw new Error(`Invalid Dokploy runtime state in ${path}`);
+	}
+};
+
+const installRuntimeFileAtomically = (source: string, destination: string) =>
+	`mkdir -p ${quote([dirname(destination)])} && cp -f ${quote([
+		source,
+	])} ${quote([`${destination}.tmp`])} && chmod 0644 ${quote([
+		`${destination}.tmp`,
+	])} && mv -f ${quote([`${destination}.tmp`])} ${quote([destination])}`;
+
+const traefikRouterTargets = (config: {
+	http?: { routers?: Record<string, { service: string }> };
+}) =>
+	Object.fromEntries(
+		Object.entries(config.http?.routers || {}).map(([name, router]) => [
+			name,
+			router.service,
+		]),
+	);
+
+const detectLegacyTraefikRouterFallbacks = async (
+	compose: Pick<Compose, "appName" | "serverId"> & {
+		domains: ComposeBuildServerDomain[];
+	},
+) => {
+	const result = await executeOnServer(
+		compose.serverId,
+		getTraefikRoutersSnapshotCommand(),
+	);
+	let routers: unknown;
+	try {
+		routers = JSON.parse(result.stdout);
+	} catch (error) {
+		throw new Error(
+			`Traefik returned an invalid HTTP router snapshot: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+	return detectComposeLegacyRouterFallbacks(
+		compose.appName,
+		compose.domains,
+		routers,
+	);
+};
+
+const cleanupLegacyComposeProjectCommand = (
+	appName: string,
+	drainSeconds: number,
+) =>
+	`containers="$(docker ps -aq --filter label=com.docker.compose.project=${quote(
+		[appName],
+	)})"; if [ -n "$containers" ]; then docker stop --time ${drainSeconds} $containers && docker rm $containers; fi; docker network rm ${quote(
+		[`${appName}_default`],
+	)} >/dev/null 2>&1 || true`;
+
+const cleanupRuntimeRelease = async (
+	serverId: string | null,
+	state: ComposeRuntimeReleaseState,
+	drainSeconds: number,
+) => {
+	await executeOnServer(
+		serverId,
+		getRuntimeReleaseDownCommand(state, drainSeconds),
+	);
+	await executeOnServer(
+		serverId,
+		`${getRemoveTraefikConfigCommand(
+			state.serviceConfigPath,
+		)}; ${getRemoveRuntimeReleaseCommand(state)}`,
+	);
+};
+
+const recoverInterruptedComposeActivation = async (
+	compose: Pick<Compose, "appName" | "serverId"> & {
+		domains: ComposeBuildServerDomain[];
+	},
+) => {
+	const runtimePaths = getRuntimeComposePaths(compose, "recovery");
+	const journal = await readRuntimeJson<ComposeActivationJournal>(
+		compose.serverId,
+		runtimePaths.activationJournal,
+	);
+	if (!journal) {
+		return;
+	}
+	const legacyProject =
+		journal.legacyProject ?? journal.legacyFallback ?? false;
+	const legacyFallbacks =
+		journal.legacyFallbacks ??
+		(journal.legacyFallback
+			? await detectLegacyTraefikRouterFallbacks(compose)
+			: {});
+	const active = await readRuntimeJson<ComposeRuntimeReleaseState>(
+		compose.serverId,
+		runtimePaths.activeState,
+	);
+	if (active?.deploymentId === journal.candidate.deploymentId) {
+		if (journal.previous) {
+			try {
+				await cleanupRuntimeRelease(
+					compose.serverId,
+					journal.previous,
+					getComposeRuntimeDrainSeconds(journal.previous),
+				);
+			} catch {
+				await executeOnServer(
+					compose.serverId,
+					getWriteRuntimeReleaseStateCommand(
+						runtimePaths.cleanupPending,
+						journal.previous,
+					),
+				);
+			}
+		} else if (legacyProject) {
+			try {
+				await executeOnServer(
+					compose.serverId,
+					cleanupLegacyComposeProjectCommand(
+						compose.appName,
+						getComposeRuntimeDrainSeconds(journal.candidate),
+					),
+				);
+			} catch {
+				// The next activation retries stale legacy project cleanup.
+			}
+		}
+		await executeOnServer(
+			compose.serverId,
+			`rm -f ${quote([runtimePaths.activationJournal])}`,
+		);
+		return;
+	}
+
+	let restoreRouter = getRemoveTraefikConfigCommand(runtimePaths.traefikRouter);
+	if (journal.previous) {
+		const previousRouterConfig = createComposeReleaseTraefikRouterConfig({
+			appName: compose.appName,
+			domains: compose.domains,
+			candidate: journal.previous,
+		});
+		restoreRouter = `${installRuntimeFileAtomically(
+			journal.previous.routerConfigPath,
+			runtimePaths.traefikRouter,
+		)} && ${getWaitTraefikRoutersCommand(
+			traefikRouterTargets(previousRouterConfig),
+		)}`;
+	} else {
+		restoreRouter = getRestoreLegacyTraefikRoutersCommand(
+			runtimePaths.traefikRouter,
+			legacyFallbacks,
+		);
+	}
+	await executeOnServer(compose.serverId, restoreRouter);
+	await cleanupRuntimeRelease(
+		compose.serverId,
+		journal.candidate,
+		getComposeRuntimeDrainSeconds(journal.candidate),
+	);
+	await executeOnServer(
+		compose.serverId,
+		`rm -f ${quote([runtimePaths.activationJournal])}`,
+	);
+};
+
+const assertComposeDeploymentNotCancelled = async (
+	serverId: string | null,
+	cancellationRequest: string,
+) => {
+	try {
+		await executeOnServer(
+			serverId,
+			`if [ -f ${quote([cancellationRequest])} ]; then echo "Compose deployment cancellation requested" >&2; exit 130; fi`,
+		);
+	} catch (error) {
+		if (
+			error instanceof ExecError &&
+			error.stderr?.includes("Compose deployment cancellation requested")
+		) {
+			throw new Error("Compose deployment cancellation requested");
+		}
+		throw error;
+	}
+};
+
+const runBuildServerStage = async (
+	serverId: string,
+	logPath: string,
+	stage: string,
+	command: string,
+	cancellationRequest: string,
+) => {
+	await appendDeploymentLog(serverId, logPath, `\n===== ${stage} =====\n`);
+	return await execAsyncRemote(
+		serverId,
+		`(${getCancellableComposeCommand(
+			command,
+			cancellationRequest,
+		)}) >> ${quote([logPath])} 2>&1`,
+	);
+};
+
+const runRuntimeStage = async (
+	runtimeServerId: string | null,
+	buildServerId: string,
+	logPath: string,
+	stage: string,
+	command: string,
+) => {
+	await appendDeploymentLog(buildServerId, logPath, `\n===== ${stage} =====\n`);
+	try {
+		const result = await executeOnServer(runtimeServerId, command);
+		await appendDeploymentLog(
+			buildServerId,
+			logPath,
+			`${result.stdout}${result.stderr}`,
+		);
+		return result;
+	} catch (error) {
+		if (error instanceof ExecError) {
+			await appendDeploymentLog(
+				buildServerId,
+				logPath,
+				`${error.stdout || ""}${error.stderr || ""}`,
+			);
+		}
+		throw error;
+	}
+};
+
+const loginComposeRegistry = async (
+	serverId: string | null,
+	registry: Awaited<ReturnType<typeof findRegistryByIdWithCredentials>>,
+) => {
+	const command = getComposeRegistryLoginCommand(registry);
+	if (serverId) {
+		return await execAsyncRemote(
+			serverId,
+			command,
+			undefined,
+			registry.password,
+		);
+	}
+	const args = [
+		"login",
+		...(registry.registryUrl ? [registry.registryUrl] : []),
+		"--username",
+		registry.username,
+		"--password-stdin",
+	];
+	return await execFileAsync("docker", args, {
+		input: registry.password,
+		env: { ...process.env, HOME: process.env.HOME },
+	});
+};
+
+const loginComposeRegistryWithLog = async (
+	serverId: string | null,
+	buildServerId: string,
+	logPath: string,
+	registry: Awaited<ReturnType<typeof findRegistryByIdWithCredentials>>,
+) => {
+	try {
+		const result = await loginComposeRegistry(serverId, registry);
+		await appendDeploymentLog(
+			buildServerId,
+			logPath,
+			`${result.stdout}${result.stderr}`,
+		);
+		return result;
+	} catch (error) {
+		if (error instanceof ExecError) {
+			await appendDeploymentLog(
+				buildServerId,
+				logPath,
+				`${error.stdout || ""}${error.stderr || ""}`,
+			);
+		}
+		throw error;
+	}
+};
+
+const removeActiveRuntimeManifest = async (
+	compose: Pick<Compose, "appName" | "serverId"> & {
+		domains: ComposeBuildServerDomain[];
+	},
+) => {
+	const runtimePaths = getRuntimeComposePaths(compose, "legacy");
+	const active = await readRuntimeJson<ComposeRuntimeReleaseState>(
+		compose.serverId,
+		runtimePaths.activeState,
+	);
+	if (active) {
+		const legacyRouterTargets = Object.fromEntries(
+			getComposeDomainRouterNames(compose.appName, compose.domains).map(
+				(name) => [name, name],
+			),
+		);
+		await executeOnServer(
+			compose.serverId,
+			`${getWaitTraefikRoutersCommand(
+				legacyRouterTargets,
+				30,
+				"docker",
+			)} && ${getRemoveTraefikConfigCommand(
+				runtimePaths.traefikRouter,
+			)} && ${getRuntimeReleaseDownCommand(
+				active,
+				getComposeRuntimeDrainSeconds(active),
+				false,
+			)} && ${getRemoveRuntimeReleaseCommand(active)} && rm -f ${quote([
+				runtimePaths.activeState,
+				runtimePaths.activationJournal,
+			])}`,
+		);
+	}
+	await executeOnServer(
+		compose.serverId,
+		`rm -f ${quote([runtimePaths.active])}`,
+	);
+};
 
 export const createCompose = async (
 	input: z.infer<typeof apiCreateCompose>,
@@ -130,6 +534,12 @@ export const findComposeById = async (composeId: string) => {
 			bitbucket: true,
 			gitea: true,
 			server: true,
+			buildServer: true,
+			buildRegistry: {
+				columns: {
+					password: false,
+				},
+			},
 			backups: {
 				with: {
 					destination: {
@@ -157,11 +567,13 @@ export const loadServices = async (
 	type: "fetch" | "cache" = "fetch",
 ) => {
 	const compose = await findComposeById(composeId);
+	const sourceServerId = compose.buildServerId || compose.serverId;
+	const sourceCompose = { ...compose, serverId: sourceServerId };
 
 	if (type === "fetch") {
-		const command = await cloneCompose(compose);
-		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, command);
+		const command = await cloneCompose(sourceCompose);
+		if (sourceServerId) {
+			await execAsyncRemote(sourceServerId, command);
 		} else {
 			await execAsync(command);
 		}
@@ -169,10 +581,10 @@ export const loadServices = async (
 
 	let composeData: ComposeSpecification | null;
 
-	if (compose.serverId) {
-		composeData = await loadDockerComposeRemote(compose);
+	if (sourceServerId) {
+		composeData = await loadDockerComposeRemote(sourceCompose);
 	} else {
-		composeData = await loadDockerCompose(compose);
+		composeData = await loadDockerCompose(sourceCompose);
 	}
 
 	if (compose.randomize && composeData) {
@@ -211,6 +623,694 @@ export const updateCompose = async (
 	return composeResult[0];
 };
 
+const deployComposeWithBuildServer = async (
+	compose: Awaited<ReturnType<typeof findComposeById>>,
+	deployment: Awaited<ReturnType<typeof createDeploymentCompose>>,
+	options: { cloneRepository: boolean },
+) => {
+	if (!compose.buildServerId || !compose.buildRegistryId) {
+		throw new Error(
+			"Build Server and Build Registry must be configured together",
+		);
+	}
+	assertComposeBuildServerDeploymentReady(compose);
+
+	const buildServerId = compose.buildServerId;
+	const runtimeServerId = compose.serverId;
+	const buildCompose = {
+		...compose,
+		serverId: buildServerId,
+		type: "compose" as const,
+	};
+	const registry = await findRegistryByIdWithCredentials(
+		compose.buildRegistryId,
+	);
+	assertComposeBuildServerRuntimeSelection({
+		organizationId: compose.environment.project.organizationId,
+		server: compose.buildServer,
+		registry,
+	});
+	const cancellationPath = getRuntimeComposePaths(
+		{ appName: compose.appName, serverId: runtimeServerId },
+		"cancel",
+	).cancellationRequest;
+	const buildCancellationPath = getRuntimeComposePaths(
+		{ appName: compose.appName, serverId: buildServerId },
+		"cancel",
+	).cancellationRequest;
+	let temporaryManifest: string | null = null;
+	let runtimePaths: ReturnType<typeof getRuntimeComposePaths> | null = null;
+	let candidateState: ComposeRuntimeReleaseState | null = null;
+	let previousState: ComposeRuntimeReleaseState | null = null;
+	let lockAcquired = false;
+	let routeSwitched = false;
+	let promoted = false;
+	let legacyProject = false;
+	let legacyFallbacks: ComposeLegacyRouterFallbacks = {};
+	let candidateCleanupComplete = false;
+	let interruptedRecoveryComplete = false;
+	let runtimeMutationAttempted = false;
+	let validation: ReturnType<
+		typeof validateComposeBuildServerSpecification
+	> | null = null;
+
+	try {
+		await Promise.all([
+			executeOnServer(runtimeServerId, `rm -f ${quote([cancellationPath])}`),
+			executeOnServer(buildServerId, `rm -f ${quote([buildCancellationPath])}`),
+		]);
+		if (options.cloneRepository) {
+			let cloneCommand = "set -e;";
+			if (compose.sourceType === "github") {
+				cloneCommand += await cloneGithubRepository(buildCompose);
+			} else if (compose.sourceType === "gitlab") {
+				cloneCommand += await cloneGitlabRepository(buildCompose);
+			} else if (compose.sourceType === "bitbucket") {
+				cloneCommand += await cloneBitbucketRepository(buildCompose);
+			} else if (compose.sourceType === "git") {
+				cloneCommand += await cloneGitRepository(buildCompose);
+			} else if (compose.sourceType === "gitea") {
+				cloneCommand += await cloneGiteaRepository(buildCompose);
+			}
+			await runBuildServerStage(
+				buildServerId,
+				deployment.logPath,
+				"Build: checkout",
+				cloneCommand,
+				buildCancellationPath,
+			);
+		}
+
+		const patchCommand = await generateApplyPatchesCommand({
+			id: compose.composeId,
+			type: "compose",
+			serverId: buildServerId,
+		});
+		if (patchCommand) {
+			await runBuildServerStage(
+				buildServerId,
+				deployment.logPath,
+				"Build: patches",
+				`set -e; ${patchCommand}`,
+				buildCancellationPath,
+			);
+		}
+
+		const envCommand = getCreateEnvFileCommand(
+			buildCompose,
+			deployment.deploymentId,
+		);
+		await runBuildServerStage(
+			buildServerId,
+			deployment.logPath,
+			"Build: resolve",
+			`set -e; ${envCommand}`,
+			buildCancellationPath,
+		);
+
+		let resolved: { stdout: string; stderr: string };
+		try {
+			resolved = await execAsyncRemote(
+				buildServerId,
+				getCancellableComposeCommand(
+					getComposeConfigCommand(buildCompose, deployment.deploymentId),
+					buildCancellationPath,
+				),
+			);
+		} catch (error) {
+			if (error instanceof ExecError) {
+				await appendDeploymentLog(
+					buildServerId,
+					deployment.logPath,
+					`${error.stdout || ""}${error.stderr || ""}`,
+				);
+			}
+			throw error;
+		}
+		if (resolved.stderr) {
+			await appendDeploymentLog(
+				buildServerId,
+				deployment.logPath,
+				resolved.stderr,
+			);
+		}
+
+		let specification: ComposeSpecification;
+		try {
+			specification = JSON.parse(resolved.stdout) as ComposeSpecification;
+		} catch (error) {
+			throw new Error(
+				`Docker Compose returned an invalid JSON configuration: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+
+		validation = validateComposeBuildServerSpecification(
+			specification,
+			registry,
+			deployment.deploymentId,
+			compose.mounts,
+			compose.domains,
+		);
+
+		await appendDeploymentLog(
+			buildServerId,
+			deployment.logPath,
+			"\n===== Build =====\n",
+		);
+		await loginComposeRegistryWithLog(
+			buildServerId,
+			buildServerId,
+			deployment.logPath,
+			registry,
+		);
+		await runBuildServerStage(
+			buildServerId,
+			deployment.logPath,
+			"Push (docker compose build --push)",
+			getComposeBuildPushCommand(buildCompose, deployment.deploymentId),
+			buildCancellationPath,
+		);
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
+		);
+
+		const projectName = getComposeReleaseProjectName(
+			compose.appName,
+			deployment.deploymentId,
+		);
+		const manifest = createRuntimeComposeManifest(specification, {
+			appName: compose.appName,
+			composeId: compose.composeId,
+			deploymentId: deployment.deploymentId,
+		});
+		runtimePaths = getRuntimeComposePaths(
+			{ appName: compose.appName, serverId: runtimeServerId },
+			deployment.deploymentId,
+		);
+		const traefikRelease = createComposeReleaseTraefikServiceConfig({
+			appName: compose.appName,
+			deploymentId: deployment.deploymentId,
+			domains: compose.domains,
+			settings: validation.zeroDowntime,
+		});
+		candidateState = {
+			version: 1,
+			composeId: compose.composeId,
+			deploymentId: deployment.deploymentId,
+			projectName,
+			manifestPath: runtimePaths.manifest,
+			serviceConfigPath: runtimePaths.traefikService,
+			routerConfigPath: runtimePaths.routerConfig,
+			domainServices: traefikRelease.domainServices,
+			activatedAt: new Date().toISOString(),
+			timings: {
+				readinessTimeoutSeconds:
+					validation.zeroDowntime.readinessTimeoutSeconds,
+				stabilizationSeconds: validation.zeroDowntime.stabilizationSeconds,
+				drainSeconds: validation.zeroDowntime.drainSeconds,
+			},
+		};
+
+		temporaryManifest = runtimePaths.temporary;
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Pull: prepare runtime manifest",
+			getTransferRuntimeManifestCommand(manifest, runtimePaths),
+		);
+		temporaryManifest = null;
+
+		await appendDeploymentLog(
+			buildServerId,
+			deployment.logPath,
+			"\n===== Pull =====\n",
+		);
+		await loginComposeRegistryWithLog(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			registry,
+		);
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Pull images",
+			getRuntimePullCommands(
+				projectName,
+				runtimePaths.manifest,
+				validation.builtServices,
+			).join(" && "),
+		);
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
+		);
+
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Deploy: acquire activation lock",
+			getAcquireComposeActivationLockCommand(
+				runtimePaths.lockDirectory,
+				deployment.deploymentId,
+				runtimePaths.activationJournal,
+			),
+		);
+		lockAcquired = true;
+		await recoverInterruptedComposeActivation(compose);
+		interruptedRecoveryComplete = true;
+		const pendingCleanup = await readRuntimeJson<ComposeRuntimeReleaseState>(
+			runtimeServerId,
+			runtimePaths.cleanupPending,
+		);
+		if (pendingCleanup) {
+			try {
+				await runRuntimeStage(
+					runtimeServerId,
+					buildServerId,
+					deployment.logPath,
+					"Deploy: retry previous cleanup",
+					`${getRuntimeReleaseDownCommand(
+						pendingCleanup,
+						getComposeRuntimeDrainSeconds(pendingCleanup),
+					)} && ${getRemoveRuntimeReleaseCommand(
+						pendingCleanup,
+					)} && rm -f ${quote([runtimePaths.cleanupPending])}`,
+				);
+			} catch (cleanupError) {
+				await appendDeploymentLog(
+					buildServerId,
+					deployment.logPath,
+					`\nWarning: a previous release still needs cleanup: ${
+						cleanupError instanceof Error
+							? cleanupError.message
+							: String(cleanupError)
+					}\n`,
+				);
+			}
+		}
+		previousState = await readRuntimeJson<ComposeRuntimeReleaseState>(
+			runtimeServerId,
+			runtimePaths.activeState,
+		);
+		const legacy = await executeOnServer(
+			runtimeServerId,
+			`docker ps -q --filter label=com.docker.compose.project=${quote([
+				compose.appName,
+			])} | head -n 1`,
+		);
+		if (!previousState) {
+			legacyProject = Boolean(legacy.stdout.trim());
+			if (legacyProject) {
+				legacyFallbacks = await detectLegacyTraefikRouterFallbacks(compose);
+				const expectedLegacyRouters = getComposeDomainRouterNames(
+					compose.appName,
+					compose.domains,
+				);
+				const detectedLegacyRouters = Object.keys(legacyFallbacks);
+				if (detectedLegacyRouters.length < expectedLegacyRouters.length) {
+					await appendDeploymentLog(
+						buildServerId,
+						deployment.logPath,
+						`\nWarning: legacy Compose project detected, but only ${detectedLegacyRouters.length}/${expectedLegacyRouters.length} Dokploy Docker router(s) are enabled. Missing routers will activate without a legacy fallback; verified fallbacks: ${detectedLegacyRouters.join(", ") || "none"}.\n`,
+					);
+				}
+			}
+		} else if (legacy.stdout.trim()) {
+			try {
+				await runRuntimeStage(
+					runtimeServerId,
+					buildServerId,
+					deployment.logPath,
+					"Deploy: retry legacy cleanup",
+					cleanupLegacyComposeProjectCommand(
+						compose.appName,
+						getComposeRuntimeDrainSeconds(previousState),
+					),
+				);
+			} catch (cleanupError) {
+				await appendDeploymentLog(
+					buildServerId,
+					deployment.logPath,
+					`\nWarning: a legacy Compose project still needs cleanup: ${
+						cleanupError instanceof Error
+							? cleanupError.message
+							: String(cleanupError)
+					}\n`,
+				);
+			}
+		}
+
+		const activeRouterConfig = createComposeReleaseTraefikRouterConfig({
+			appName: compose.appName,
+			domains: compose.domains,
+			candidate: candidateState,
+		});
+		const cutoverRouterConfig = createComposeReleaseTraefikRouterConfig({
+			appName: compose.appName,
+			domains: compose.domains,
+			candidate: candidateState,
+			previous: previousState,
+			legacyFallbacks,
+		});
+		const preparedJournal: ComposeActivationJournal = {
+			version: 1,
+			phase: "prepared",
+			candidate: candidateState,
+			previous: previousState,
+			legacyProject,
+			legacyFallbacks,
+		};
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Deploy: prepare release state",
+			`${getWriteReleaseMetadataCommand(
+				runtimePaths,
+				candidateState,
+				traefikRelease.config,
+				activeRouterConfig,
+			)} && ${getWriteActivationJournalCommand(
+				runtimePaths.activationJournal,
+				preparedJournal,
+			)}`,
+		);
+
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
+		);
+		runtimeMutationAttempted = true;
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Deploy: start candidate",
+			getRuntimeDeployCommand(
+				projectName,
+				runtimePaths.manifest,
+				validation.zeroDowntime.readinessTimeoutSeconds,
+			),
+		);
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
+		);
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Deploy: stage candidate in Traefik",
+			`${getInstallTraefikConfigCommand(
+				traefikRelease.config,
+				runtimePaths.traefikService,
+			)} && ${getWaitTraefikServicesCommand(
+				Object.values(traefikRelease.domainServices),
+				validation.zeroDowntime.readinessTimeoutSeconds,
+			)}`,
+		);
+
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
+		);
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Deploy: atomic traffic cutover",
+			getInstallTraefikConfigCommand(
+				cutoverRouterConfig,
+				runtimePaths.traefikRouter,
+			),
+		);
+		routeSwitched = true;
+		const routedJournal: ComposeActivationJournal = {
+			...preparedJournal,
+			phase: "routed",
+		};
+		await executeOnServer(
+			runtimeServerId,
+			getWriteActivationJournalCommand(
+				runtimePaths.activationJournal,
+				routedJournal,
+			),
+		);
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
+		);
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Deploy: verify and stabilize",
+			`${getWaitTraefikRoutersCommand(
+				traefikRouterTargets(cutoverRouterConfig),
+			)} && ${getObserveTraefikServicesCommand(
+				Object.values(traefikRelease.domainServices),
+				validation.zeroDowntime.stabilizationSeconds,
+			)}`,
+		);
+
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
+		);
+		candidateState = {
+			...candidateState,
+			activatedAt: new Date().toISOString(),
+		};
+		const promotedJournal: ComposeActivationJournal = {
+			...routedJournal,
+			phase: "promoted",
+			candidate: candidateState,
+		};
+		await runRuntimeStage(
+			runtimeServerId,
+			buildServerId,
+			deployment.logPath,
+			"Deploy: promote release",
+			`${getInstallTraefikConfigCommand(
+				activeRouterConfig,
+				runtimePaths.traefikRouter,
+			)} && ${getWaitTraefikRoutersCommand(
+				traefikRouterTargets(activeRouterConfig),
+			)} && ${getWriteActivationJournalCommand(
+				runtimePaths.activationJournal,
+				promotedJournal,
+			)} && ${getActivateRuntimeManifestCommand(runtimePaths, candidateState)}`,
+		);
+		promoted = true;
+		routeSwitched = false;
+
+		try {
+			if (previousState) {
+				await runRuntimeStage(
+					runtimeServerId,
+					buildServerId,
+					deployment.logPath,
+					"Deploy: drain previous release",
+					`${getRuntimeReleaseDownCommand(
+						previousState,
+						validation.zeroDowntime.drainSeconds,
+					)} && ${getRemoveRuntimeReleaseCommand(previousState)}`,
+				);
+			} else if (legacyProject) {
+				await runRuntimeStage(
+					runtimeServerId,
+					buildServerId,
+					deployment.logPath,
+					"Deploy: drain legacy release",
+					cleanupLegacyComposeProjectCommand(
+						compose.appName,
+						validation.zeroDowntime.drainSeconds,
+					),
+				);
+			}
+		} catch (cleanupError) {
+			if (previousState) {
+				await executeOnServer(
+					runtimeServerId,
+					getWriteRuntimeReleaseStateCommand(
+						runtimePaths.cleanupPending,
+						previousState,
+					),
+				);
+			}
+			await appendDeploymentLog(
+				buildServerId,
+				deployment.logPath,
+				`\nWarning: the new release is active, but cleanup of the previous release failed: ${
+					cleanupError instanceof Error
+						? cleanupError.message
+						: String(cleanupError)
+				}\n`,
+			);
+		}
+		try {
+			await executeOnServer(
+				runtimeServerId,
+				`rm -f ${quote([runtimePaths.activationJournal])}`,
+			);
+		} catch (journalError) {
+			await appendDeploymentLog(
+				buildServerId,
+				deployment.logPath,
+				`\nWarning: release is active but the activation journal could not be finalized: ${
+					journalError instanceof Error
+						? journalError.message
+						: String(journalError)
+				}\n`,
+			);
+		}
+	} catch (error) {
+		if (routeSwitched && !promoted && runtimePaths && candidateState) {
+			try {
+				let restoreRouter = getRemoveTraefikConfigCommand(
+					runtimePaths.traefikRouter,
+				);
+				if (previousState) {
+					const previousRouterConfig = createComposeReleaseTraefikRouterConfig({
+						appName: compose.appName,
+						domains: compose.domains,
+						candidate: previousState,
+					});
+					restoreRouter = `${installRuntimeFileAtomically(
+						previousState.routerConfigPath,
+						runtimePaths.traefikRouter,
+					)} && ${getWaitTraefikRoutersCommand(
+						traefikRouterTargets(previousRouterConfig),
+					)}`;
+				} else {
+					restoreRouter = getRestoreLegacyTraefikRoutersCommand(
+						runtimePaths.traefikRouter,
+						legacyFallbacks,
+					);
+				}
+				await runRuntimeStage(
+					runtimeServerId,
+					buildServerId,
+					deployment.logPath,
+					"Deploy: rollback traffic",
+					restoreRouter,
+				);
+				routeSwitched = false;
+			} catch {
+				// Keep the candidate and journal intact: the failover router still
+				// references it, and the next activation can retry recovery safely.
+			}
+		}
+		if (!promoted && candidateState && !routeSwitched) {
+			try {
+				if (runtimeMutationAttempted) {
+					await cleanupRuntimeRelease(
+						runtimeServerId,
+						candidateState,
+						getComposeRuntimeDrainSeconds(candidateState),
+					);
+				} else {
+					await executeOnServer(
+						runtimeServerId,
+						getRemoveRuntimeReleaseCommand(candidateState),
+					);
+				}
+				candidateCleanupComplete = true;
+			} catch {
+				// Preserve the original deployment failure.
+			}
+		}
+		if (temporaryManifest) {
+			try {
+				await executeOnServer(
+					runtimeServerId,
+					getRemoveTemporaryManifestCommand(temporaryManifest),
+				);
+			} catch {
+				// Preserve the original deployment failure.
+			}
+		}
+		if (
+			runtimePaths &&
+			candidateCleanupComplete &&
+			interruptedRecoveryComplete
+		) {
+			try {
+				await executeOnServer(
+					runtimeServerId,
+					`rm -f ${quote([runtimePaths.activationJournal])}`,
+				);
+			} catch {
+				// Preserve the original deployment failure.
+			}
+		}
+		throw error;
+	} finally {
+		await Promise.allSettled([
+			executeOnServer(runtimeServerId, `rm -f ${quote([cancellationPath])}`),
+			executeOnServer(buildServerId, `rm -f ${quote([buildCancellationPath])}`),
+		]);
+		if (lockAcquired && runtimePaths) {
+			try {
+				await executeOnServer(
+					runtimeServerId,
+					getReleaseComposeActivationLockCommand(runtimePaths.lockDirectory),
+				);
+			} catch {
+				// A stale lock is reclaimed by the next activation.
+			}
+		}
+	}
+};
+
+export const requestComposeDeploymentCancellation = async (
+	composeId: string,
+) => {
+	const compose = await findComposeById(composeId);
+	if (!compose.buildServerId || !compose.buildRegistryId) return false;
+	const cancellationRequest = getRuntimeComposePaths(
+		compose,
+		"cancel",
+	).cancellationRequest;
+	const buildCancellationRequest = getRuntimeComposePaths(
+		{ appName: compose.appName, serverId: compose.buildServerId },
+		"cancel",
+	).cancellationRequest;
+	const cancellationResults = await Promise.allSettled([
+		executeOnServer(
+			compose.serverId,
+			`mkdir -p ${quote([
+				dirname(cancellationRequest),
+			])} && touch ${quote([cancellationRequest])}`,
+		),
+		executeOnServer(
+			compose.buildServerId,
+			`mkdir -p ${quote([
+				dirname(buildCancellationRequest),
+			])} && touch ${quote([buildCancellationRequest])}`,
+		),
+	]);
+	const firstSuccess = cancellationResults.find(
+		(result) => result.status === "fulfilled",
+	);
+	if (!firstSuccess) {
+		const firstFailure = cancellationResults.find(
+			(result) => result.status === "rejected",
+		);
+		if (firstFailure?.status === "rejected") {
+			throw firstFailure.reason;
+		}
+	}
+	return true;
+};
+
 export const deployCompose = async ({
 	composeId,
 	titleLog = "Manual deployment",
@@ -232,53 +1332,61 @@ export const deployCompose = async ({
 	});
 
 	try {
-		const entity = {
-			...compose,
-			type: "compose" as const,
-		};
-		let command = "set -e;";
-		if (compose.sourceType === "github") {
-			command += await cloneGithubRepository(entity);
-		} else if (compose.sourceType === "gitlab") {
-			command += await cloneGitlabRepository(entity);
-		} else if (compose.sourceType === "bitbucket") {
-			command += await cloneBitbucketRepository(entity);
-		} else if (compose.sourceType === "git") {
-			command += await cloneGitRepository(entity);
-		} else if (compose.sourceType === "gitea") {
-			command += await cloneGiteaRepository(entity);
-		} else if (compose.sourceType === "raw") {
-			command += getCreateComposeFileCommand(entity);
-		}
-
-		let commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
-		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, commandWithLog);
-		} else {
-			await execAsync(commandWithLog);
-		}
-		if (compose.sourceType !== "raw") {
-			command = "set -e;";
-			command += await generateApplyPatchesCommand({
-				id: compose.composeId,
-				type: "compose",
-				serverId: compose.serverId,
+		assertComposeBuildServerDeploymentReady(compose);
+		if (compose.buildServerId && compose.buildRegistryId) {
+			await deployComposeWithBuildServer(compose, deployment, {
+				cloneRepository: true,
 			});
+		} else {
+			const entity = {
+				...compose,
+				type: "compose" as const,
+			};
+			let command = "set -e;";
+			if (compose.sourceType === "github") {
+				command += await cloneGithubRepository(entity);
+			} else if (compose.sourceType === "gitlab") {
+				command += await cloneGitlabRepository(entity);
+			} else if (compose.sourceType === "bitbucket") {
+				command += await cloneBitbucketRepository(entity);
+			} else if (compose.sourceType === "git") {
+				command += await cloneGitRepository(entity);
+			} else if (compose.sourceType === "gitea") {
+				command += await cloneGiteaRepository(entity);
+			} else if (compose.sourceType === "raw") {
+				command += getCreateComposeFileCommand(entity);
+			}
+
+			let commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
+			if (compose.serverId) {
+				await execAsyncRemote(compose.serverId, commandWithLog);
+			} else {
+				await execAsync(commandWithLog);
+			}
+			if (compose.sourceType !== "raw") {
+				command = "set -e;";
+				command += await generateApplyPatchesCommand({
+					id: compose.composeId,
+					type: "compose",
+					serverId: compose.serverId,
+				});
+				commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
+				if (compose.serverId) {
+					await execAsyncRemote(compose.serverId, commandWithLog);
+				} else {
+					await execAsync(commandWithLog);
+				}
+			}
+
+			command = "set -e;";
+			command += await getBuildComposeCommand(entity, deployment.deploymentId);
 			commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 			if (compose.serverId) {
 				await execAsyncRemote(compose.serverId, commandWithLog);
 			} else {
 				await execAsync(commandWithLog);
 			}
-		}
-
-		command = "set -e;";
-		command += await getBuildComposeCommand(entity);
-		commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
-		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, commandWithLog);
-		} else {
-			await execAsync(commandWithLog);
+			await removeActiveRuntimeManifest(compose);
 		}
 
 		await updateDeploymentStatus(deployment.deploymentId, "done");
@@ -306,8 +1414,9 @@ export const deployCompose = async ({
 		}
 
 		command += `echo "\nError occurred ❌, check the logs for details." >> ${deployment.logPath};`;
-		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, command);
+		const logServerId = compose.buildServerId || compose.serverId;
+		if (logServerId) {
+			await execAsyncRemote(logServerId, command);
 		} else {
 			await execAsync(command);
 		}
@@ -329,6 +1438,7 @@ export const deployCompose = async ({
 		if (compose.sourceType !== "raw") {
 			const commitInfo = await getGitCommitInfo({
 				...compose,
+				serverId: compose.buildServerId || compose.serverId,
 				type: "compose",
 			});
 			if (commitInfo) {
@@ -359,40 +1469,48 @@ export const rebuildCompose = async ({
 	});
 
 	try {
-		let command = "set -e;";
-		if (compose.sourceType === "raw") {
-			command += getCreateComposeFileCommand(compose);
-		}
-
-		let commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
-		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, commandWithLog);
-		} else {
-			await execAsync(commandWithLog);
-		}
-
-		if (compose.sourceType !== "raw") {
-			command = "set -e;";
-			command += await generateApplyPatchesCommand({
-				id: compose.composeId,
-				type: "compose",
-				serverId: compose.serverId,
+		assertComposeBuildServerDeploymentReady(compose);
+		if (compose.buildServerId && compose.buildRegistryId) {
+			await deployComposeWithBuildServer(compose, deployment, {
+				cloneRepository: false,
 			});
+		} else {
+			let command = "set -e;";
+			if (compose.sourceType === "raw") {
+				command += getCreateComposeFileCommand(compose);
+			}
+
+			let commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
+			if (compose.serverId) {
+				await execAsyncRemote(compose.serverId, commandWithLog);
+			} else {
+				await execAsync(commandWithLog);
+			}
+
+			if (compose.sourceType !== "raw") {
+				command = "set -e;";
+				command += await generateApplyPatchesCommand({
+					id: compose.composeId,
+					type: "compose",
+					serverId: compose.serverId,
+				});
+				commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
+				if (compose.serverId) {
+					await execAsyncRemote(compose.serverId, commandWithLog);
+				} else {
+					await execAsync(commandWithLog);
+				}
+			}
+
+			command = "set -e;";
+			command += await getBuildComposeCommand(compose, deployment.deploymentId);
 			commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 			if (compose.serverId) {
 				await execAsyncRemote(compose.serverId, commandWithLog);
 			} else {
 				await execAsync(commandWithLog);
 			}
-		}
-
-		command = "set -e;";
-		command += await getBuildComposeCommand(compose);
-		commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
-		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, commandWithLog);
-		} else {
-			await execAsync(commandWithLog);
+			await removeActiveRuntimeManifest(compose);
 		}
 
 		await updateDeploymentStatus(deployment.deploymentId, "done");
@@ -410,8 +1528,9 @@ export const rebuildCompose = async ({
 		}
 
 		command += `echo "\nError occurred ❌, check the logs for details." >> ${deployment.logPath};`;
-		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, command);
+		const logServerId = compose.buildServerId || compose.serverId;
+		if (logServerId) {
+			await execAsyncRemote(logServerId, command);
 		} else {
 			await execAsync(command);
 		}
@@ -432,6 +1551,17 @@ export const removeCompose = async (
 	try {
 		const { COMPOSE_PATH } = paths(!!compose.serverId);
 		const projectPath = join(COMPOSE_PATH, compose.appName);
+		const codePath = join(projectPath, "code");
+		const sourcePath =
+			compose.sourceType === "raw" ? "docker-compose.yml" : compose.composePath;
+		const runtimePaths = getRuntimeComposePaths(compose, "remove");
+		const activeRelease =
+			compose.composeType === "docker-compose"
+				? await readRuntimeJson<ComposeRuntimeReleaseState>(
+						compose.serverId,
+						runtimePaths.activeState,
+					)
+				: null;
 
 		if (compose.composeType === "stack") {
 			const command = `
@@ -445,12 +1575,48 @@ export const removeCompose = async (
 				await execAsync(command);
 			}
 		} else {
+			const activeCleanup = activeRelease
+				? `${getRuntimeReleaseDownCommand(
+						activeRelease,
+						getComposeRuntimeDrainSeconds(activeRelease),
+						deleteVolumes,
+					)} || true;`
+				: "";
+			const legacyManifest = `[ -f ${quote([runtimePaths.active])} ] && printf %s ${quote(
+				[runtimePaths.active],
+			)} || printf %s ${quote([join(codePath, sourcePath)])}`;
 			const command = `
-			docker network disconnect ${compose.appName} dokploy-traefik;
-			env -i PATH="$PATH" docker compose -p ${compose.appName} down ${
-				deleteVolumes ? "--volumes" : ""
-			};
-			rm -rf ${projectPath}`;
+				${getRemoveTraefikConfigCommand(runtimePaths.traefikRouter)};
+				${activeCleanup}
+				legacy_containers="$(docker ps -aq --filter label=com.docker.compose.project=${quote(
+					[compose.appName],
+				)})";
+				if [ -n "$legacy_containers" ]; then
+					legacy_manifest="$(${legacyManifest})";
+					if [ -f "$legacy_manifest" ]; then
+						env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([
+							compose.appName,
+						])} -f "$legacy_manifest" down ${deleteVolumes ? "--volumes" : ""} || true;
+					fi;
+				fi;
+				containers="$(docker ps -aq --filter label=com.dokploy.compose-id=${quote(
+					[compose.composeId],
+				)})";
+				projects="";
+				if [ -n "$containers" ]; then
+					projects="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' $containers | sort -u)";
+					docker rm -f ${deleteVolumes ? "-v " : ""}$containers;
+				fi;
+				for project in $projects; do
+					networks="$(docker network ls -q --filter label=com.docker.compose.project="$project")";
+					if [ -n "$networks" ]; then docker network rm $networks >/dev/null 2>&1 || true; fi;
+				done;
+				find ${quote([
+					paths(!!compose.serverId).DYNAMIC_TRAEFIK_PATH,
+				])} -maxdepth 1 -type f -name ${quote([
+					`${compose.appName}.zdt.*.yml`,
+				])} -delete;
+				rm -rf ${quote([projectPath])}`;
 
 			if (compose.serverId) {
 				await execAsyncRemote(compose.serverId, command);
@@ -473,18 +1639,38 @@ export const startCompose = async (composeId: string) => {
 		const projectPath = join(COMPOSE_PATH, compose.appName, "code");
 		const path =
 			compose.sourceType === "raw" ? "docker-compose.yml" : compose.composePath;
-		const baseCommand = `env -i PATH="$PATH" docker compose -p ${quote([compose.appName])} -f ${quote([path])} up -d`;
+		const runtimePaths = getRuntimeComposePaths(compose, "start");
+		const activeRelease = await readRuntimeJson<ComposeRuntimeReleaseState>(
+			compose.serverId,
+			runtimePaths.activeState,
+		);
+		const baseCommand = activeRelease
+			? (() => {
+					const activeRouterConfig = createComposeReleaseTraefikRouterConfig({
+						appName: compose.appName,
+						domains: compose.domains,
+						candidate: activeRelease,
+					});
+					return `${getRuntimeDeployCommand(
+						activeRelease.projectName,
+						activeRelease.manifestPath,
+						getComposeRuntimeReadinessTimeoutSeconds(activeRelease),
+					)} && ${installRuntimeFileAtomically(
+						join(dirname(activeRelease.manifestPath), "service.yml"),
+						activeRelease.serviceConfigPath,
+					)} && ${getWaitTraefikServicesCommand(
+						Object.values(activeRelease.domainServices),
+						getComposeRuntimeReadinessTimeoutSeconds(activeRelease),
+					)} && ${installRuntimeFileAtomically(
+						activeRelease.routerConfigPath,
+						runtimePaths.traefikRouter,
+					)} && ${getWaitTraefikRoutersCommand(
+						traefikRouterTargets(activeRouterConfig),
+					)}`;
+				})()
+			: `if [ -f ${quote([runtimePaths.active])} ]; then env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([compose.appName])} -f ${quote([runtimePaths.active])} up -d --no-build --pull never; else cd ${quote([projectPath])} && env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([compose.appName])} -f ${quote([path])} up -d; fi`;
 		if (compose.composeType === "docker-compose") {
-			if (compose.serverId) {
-				await execAsyncRemote(
-					compose.serverId,
-					`cd ${projectPath} && ${baseCommand}`,
-				);
-			} else {
-				await execAsync(baseCommand, {
-					cwd: projectPath,
-				});
-			}
+			await executeOnServer(compose.serverId, baseCommand);
 		}
 
 		await updateCompose(composeId, {
@@ -505,21 +1691,26 @@ export const stopCompose = async (composeId: string) => {
 	try {
 		const { COMPOSE_PATH } = paths(!!compose.serverId);
 		if (compose.composeType === "docker-compose") {
-			if (compose.serverId) {
-				await execAsyncRemote(
-					compose.serverId,
-					`cd ${join(COMPOSE_PATH, compose.appName)} && env -i PATH="$PATH" docker compose -p ${
-						compose.appName
-					} stop`,
-				);
-			} else {
-				await execAsync(
-					`env -i PATH="$PATH" docker compose -p ${compose.appName} stop`,
-					{
-						cwd: join(COMPOSE_PATH, compose.appName),
-					},
-				);
-			}
+			const projectPath = join(COMPOSE_PATH, compose.appName, "code");
+			const sourcePath =
+				compose.sourceType === "raw"
+					? "docker-compose.yml"
+					: compose.composePath;
+			const runtimePaths = getRuntimeComposePaths(compose, "stop");
+			const activeRelease = await readRuntimeJson<ComposeRuntimeReleaseState>(
+				compose.serverId,
+				runtimePaths.activeState,
+			);
+			const command = activeRelease
+				? `${getRemoveTraefikConfigCommand(
+						runtimePaths.traefikRouter,
+					)} && env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([
+						activeRelease.projectName,
+					])} -f ${quote([
+						activeRelease.manifestPath,
+					])} stop --timeout ${getComposeRuntimeDrainSeconds(activeRelease)}`
+				: `if [ -f ${quote([runtimePaths.active])} ]; then env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([compose.appName])} -f ${quote([runtimePaths.active])} stop; else cd ${quote([projectPath])} && env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([compose.appName])} -f ${quote([sourcePath])} stop; fi`;
+			await executeOnServer(compose.serverId, command);
 		}
 
 		if (compose.composeType === "stack") {

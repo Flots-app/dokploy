@@ -31,7 +31,7 @@ export const ensurePatchRepo = async ({
 		serverId = application.buildServerId || application.serverId;
 	} else {
 		const compose = await findComposeById(id);
-		serverId = compose.serverId;
+		serverId = compose.buildServerId || compose.serverId;
 	}
 
 	const application =
@@ -157,7 +157,7 @@ export const readPatchRepoFile = async (
 		serverId = application.buildServerId || application.serverId;
 	} else {
 		const compose = await findComposeById(id);
-		serverId = compose.serverId;
+		serverId = compose.buildServerId || compose.serverId;
 	}
 	const { PATCH_REPOS_PATH } = paths(!!serverId);
 

@@ -1,6 +1,7 @@
 import { db } from "@dokploy/server/db";
 import {
 	type apiCreateServer,
+	compose,
 	member,
 	organization,
 	server,
@@ -88,13 +89,21 @@ export const findServersByUserId = async (userId: string) => {
 };
 
 export const deleteServer = async (serverId: string) => {
-	const currentServer = await db
-		.delete(server)
-		.where(eq(server.serverId, serverId))
-		.returning()
-		.then((value) => value[0]);
+	return await db.transaction(async (tx) => {
+		await tx
+			.update(compose)
+			.set({
+				buildServerId: null,
+				buildRegistryId: null,
+			})
+			.where(eq(compose.buildServerId, serverId));
 
-	return currentServer;
+		return await tx
+			.delete(server)
+			.where(eq(server.serverId, serverId))
+			.returning()
+			.then((value) => value[0]);
+	});
 };
 
 export const haveActiveServices = async (serverId: string) => {

@@ -1,51 +1,93 @@
-name: Pull Request
+name: CI
 
 on:
   pull_request:
     branches: [main, canary]
+  push:
+    branches: [main, canary]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  pr-check:
-    runs-on: ubuntu-latest
+  check:
+    name: ${{ matrix.job }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         job: [build, test, typecheck]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.4.0
           cache: "pnpm"
-      
-      - name: Install Nixpacks
-        if: matrix.job == 'test'
-        run:  |
-          export NIXPACKS_VERSION=1.41.0
-          curl -sSL https://nixpacks.com/install.sh | bash
-          echo "Nixpacks installed $NIXPACKS_VERSION"
 
-      - name: Install Railpack
+      - name: Install checksum-verified Nixpacks
         if: matrix.job == 'test'
-        run:  |
-          export RAILPACK_VERSION=0.15.4
-          curl -sSL https://railpack.com/install.sh | bash
-          echo "Railpack installed $RAILPACK_VERSION"
-      
+        env:
+          NIXPACKS_VERSION: "1.41.0"
+          NIXPACKS_SHA256: "194bcad8c379f78a309eee1a88b2e6b2abc59f354efe7ecd7b4bbaf21de99a06"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/nixpacks.tar.gz"
+          url="https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl --fail --silent --show-error --location --output "$archive" "$url"
+          printf '%s  %s\n' "$NIXPACKS_SHA256" "$archive" | sha256sum --check -
+          mkdir -p "$HOME/.local/bin"
+          tar --extract --gzip --file "$archive" --directory "$HOME/.local/bin" nixpacks
+
+      - name: Install checksum-verified Railpack
+        if: matrix.job == 'test'
+        env:
+          RAILPACK_VERSION: "0.15.4"
+          RAILPACK_SHA256: "459d86f5a9d8698bee8c7be4f224a305f51158fe5f44eb528255dfd568e4eaf1"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/railpack.tar.gz"
+          url="https://github.com/railwayapp/railpack/releases/download/v${RAILPACK_VERSION}/railpack-v${RAILPACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl --fail --silent --show-error --location --output "$archive" "$url"
+          printf '%s  %s\n' "$RAILPACK_SHA256" "$archive" | sha256sum --check -
+          mkdir -p "$HOME/.local/bin"
+          tar --extract --gzip --file "$archive" --directory "$HOME/.local/bin" railpack
+
       - name: Add build tools to PATH
         if: matrix.job == 'test'
-        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
-      
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify build tools
+        if: matrix.job == 'test'
+        run: |
+          nixpacks --version
+          railpack --version
+
       - name: Initialize Docker Swarm
         if: matrix.job == 'test'
         run: |
+          set -euo pipefail
           docker swarm init
           docker network create --driver overlay dokploy-network || true
-          echo "✅ Docker Swarm initialized"
-      
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm server:build
-      - run: pnpm ${{ matrix.job }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared server package
+        run: pnpm server:build
+
+      - name: Run ${{ matrix.job }}
+        run: pnpm ${{ matrix.job == 'test' && 'test:ci' || matrix.job }}

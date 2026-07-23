@@ -86,6 +86,7 @@ export const registryRouter = createTRPCRouter({
 	all: withPermission("registry", "read").query(async ({ ctx }) => {
 		const registryResponse = await db.query.registry.findMany({
 			where: eq(registry.organizationId, ctx.session.activeOrganizationId),
+			columns: { password: false },
 		});
 		return registryResponse;
 	}),

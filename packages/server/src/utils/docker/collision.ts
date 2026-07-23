@@ -30,20 +30,22 @@ export const randomizeIsolatedDeploymentComposeFile = async (
 	suffix?: string,
 ) => {
 	const compose = await findComposeById(composeId);
+	const sourceServerId = compose.buildServerId || compose.serverId;
+	const sourceCompose = { ...compose, serverId: sourceServerId };
 
-	const command = await cloneCompose(compose);
-	if (compose.serverId) {
-		await execAsyncRemote(compose.serverId, command);
+	const command = await cloneCompose(sourceCompose);
+	if (sourceServerId) {
+		await execAsyncRemote(sourceServerId, command);
 	} else {
 		await execAsync(command);
 	}
 
 	let composeData: ComposeSpecification | null;
 
-	if (compose.serverId) {
-		composeData = await loadDockerComposeRemote(compose);
+	if (sourceServerId) {
+		composeData = await loadDockerComposeRemote(sourceCompose);
 	} else {
-		composeData = await loadDockerCompose(compose);
+		composeData = await loadDockerCompose(sourceCompose);
 	}
 
 	if (!composeData) {

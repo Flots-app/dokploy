@@ -1,5 +1,7 @@
 import {
 	addDomainToCompose,
+	assertComposeBuildServerDeploymentReady,
+	assertComposeBuildServerSelection,
 	clearOldDeployments,
 	cloneCompose,
 	createCommand,
@@ -16,6 +18,7 @@ import {
 	findProjectById,
 	findServerById,
 	getAccessibleServerIds,
+	getComposeBuildServerCleanupIds,
 	getComposeContainer,
 	getContainerLogs,
 	getWebServerSettings,
@@ -27,6 +30,7 @@ import {
 	removeComposeDirectory,
 	removeDeploymentsByComposeId,
 	removeDomainById,
+	requestComposeDeploymentCancellation,
 	startCompose,
 	stopCompose,
 	updateCompose,
@@ -36,6 +40,7 @@ import { db } from "@dokploy/server/db";
 import { canEditDeployGitSource } from "@dokploy/server/services/git-provider";
 import {
 	addNewService,
+	checkPermission,
 	checkServiceAccess,
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
@@ -64,9 +69,12 @@ import {
 	apiRedeployCompose,
 	apiSaveEnvironmentVariablesCompose,
 	apiUpdateCompose,
+	apiUpdateComposeBuildServer,
 	compose as composeTable,
 	environments,
 	projects,
+	registry,
+	server,
 } from "@/server/db/schema";
 import type { DeploymentJob } from "@/server/queues/queue-types";
 import {
@@ -78,6 +86,23 @@ import { cancelDeployment, deploy } from "@/server/utils/deploy";
 import { generatePassword } from "@/templates/utils";
 import { createTRPCRouter, protectedProcedure } from "../trpc";
 import { audit } from "../utils/audit";
+
+const assertBuildServerDeploymentReady = (
+	compose: Parameters<typeof assertComposeBuildServerDeploymentReady>[0],
+) => {
+	try {
+		assertComposeBuildServerDeploymentReady(compose);
+	} catch (error) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message:
+				error instanceof Error
+					? error.message
+					: "Compose Build Server configuration is not ready",
+			cause: error,
+		});
+	}
+};
 
 export const composeRouter = createTRPCRouter({
 	create: protectedProcedure
@@ -203,6 +228,88 @@ export const composeRouter = createTRPCRouter({
 			});
 			return updated;
 		}),
+	updateBuildServer: protectedProcedure
+		.input(apiUpdateComposeBuildServer)
+		.mutation(async ({ input, ctx }) => {
+			await checkServicePermissionAndAccess(ctx, input.composeId, {
+				service: ["create"],
+			});
+
+			const compose = await findComposeById(input.composeId);
+			const organizationId = compose.environment.project.organizationId;
+			if (organizationId !== ctx.session.activeOrganizationId) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You are not authorized to update this compose",
+				});
+			}
+
+			if (input.buildServerId && input.buildRegistryId) {
+				assertBuildServerDeploymentReady({
+					...compose,
+					buildServerId: input.buildServerId,
+					buildRegistryId: input.buildRegistryId,
+				});
+				await checkPermission(ctx, {
+					server: ["read"],
+					registry: ["read"],
+				});
+				if (
+					compose.sourceType === "raw" ||
+					compose.composeType !== "docker-compose" ||
+					Boolean(compose.command.trim()) ||
+					compose.isolatedDeployment ||
+					compose.randomize
+				) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Zero-downtime Compose Build Servers require a Git source, composeType docker-compose, the default Dokploy command, and non-isolated deterministic resources",
+					});
+				}
+
+				const accessibleIds = await getAccessibleServerIds(ctx.session);
+				const [buildServer, buildRegistry] = await Promise.all([
+					db.query.server.findFirst({
+						where: eq(server.serverId, input.buildServerId),
+					}),
+					db.query.registry.findFirst({
+						where: eq(registry.registryId, input.buildRegistryId),
+						columns: { password: false },
+					}),
+				]);
+
+				try {
+					assertComposeBuildServerSelection({
+						organizationId,
+						accessibleServerIds: accessibleIds,
+						server: buildServer,
+						registry: buildRegistry,
+					});
+				} catch (error) {
+					throw new TRPCError({
+						code:
+							error instanceof Error && error.message.includes("authorized")
+								? "UNAUTHORIZED"
+								: "BAD_REQUEST",
+						message:
+							error instanceof Error ? error.message : "Invalid Build Server",
+					});
+				}
+			}
+
+			const updated = await updateCompose(input.composeId, {
+				buildServerId: input.buildServerId,
+				buildRegistryId: input.buildRegistryId,
+			});
+			await audit(ctx, {
+				action: "update",
+				resourceType: "compose",
+				resourceId: input.composeId,
+				resourceName: updated?.name,
+			});
+			return updated;
+		}),
 	saveEnvironment: protectedProcedure
 		.input(apiSaveEnvironmentVariablesCompose)
 		.mutation(async ({ input, ctx }) => {
@@ -244,19 +351,21 @@ export const composeRouter = createTRPCRouter({
 				});
 			}
 
-			const result = await db
-				.delete(composeTable)
-				.where(eq(composeTable.composeId, input.composeId))
-				.returning();
-
 			if (!IS_CLOUD) {
 				await cleanQueuesByCompose(input.composeId);
 			}
 
+			const buildServerIds = getComposeBuildServerCleanupIds(
+				composeResult.buildServerId,
+				composeResult.deployments,
+			);
 			const cleanupOperations = [
 				async () => await removeCompose(composeResult, input.deleteVolumes),
 				async () => await removeDeploymentsByComposeId(composeResult),
-				async () => await removeComposeDirectory(composeResult.appName),
+				...buildServerIds.map(
+					(buildServerId) => async () =>
+						await removeComposeDirectory(composeResult.appName, buildServerId),
+				),
 			];
 
 			for (const operation of cleanupOperations) {
@@ -264,6 +373,11 @@ export const composeRouter = createTRPCRouter({
 					await operation();
 				} catch (_) {}
 			}
+
+			await db
+				.delete(composeTable)
+				.where(eq(composeTable.composeId, input.composeId))
+				.returning();
 
 			await audit(ctx, {
 				action: "delete",
@@ -289,7 +403,10 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
-			await clearOldDeployments(compose.appName, compose.serverId);
+			await clearOldDeployments(
+				compose.appName,
+				compose.buildServerId || compose.serverId,
+			);
 			await audit(ctx, {
 				action: "update",
 				resourceType: "compose",
@@ -305,7 +422,11 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["cancel"],
 			});
 			const compose = await findComposeById(input.composeId);
-			await killDockerBuild("compose", compose.serverId);
+			if (compose.buildServerId && compose.buildRegistryId) {
+				await requestComposeDeploymentCancellation(compose.composeId);
+			} else {
+				await killDockerBuild("compose", compose.serverId);
+			}
 		}),
 
 	loadServices: protectedProcedure
@@ -343,9 +464,13 @@ export const composeRouter = createTRPCRouter({
 				});
 				const compose = await findComposeById(input.composeId);
 
-				const command = await cloneCompose(compose);
-				if (compose.serverId) {
-					await execAsyncRemote(compose.serverId, command);
+				const sourceServerId = compose.buildServerId || compose.serverId;
+				const command = await cloneCompose({
+					...compose,
+					serverId: sourceServerId,
+				});
+				if (sourceServerId) {
+					await execAsyncRemote(sourceServerId, command);
 				} else {
 					await execAsync(command);
 				}
@@ -415,6 +540,7 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
+			assertBuildServerDeploymentReady(compose);
 
 			const jobData: DeploymentJob = {
 				composeId: input.composeId,
@@ -422,11 +548,11 @@ export const composeRouter = createTRPCRouter({
 				type: "deploy",
 				applicationType: "compose",
 				descriptionLog: input.description || "",
-				server: !!compose.serverId,
-				serverId: compose.serverId ?? undefined,
+				server: !!(compose.buildServerId || compose.serverId),
+				serverId: compose.buildServerId || compose.serverId || undefined,
 			};
 
-			if (IS_CLOUD && compose.serverId) {
+			if (IS_CLOUD && (compose.buildServerId || compose.serverId)) {
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});
@@ -465,16 +591,17 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
+			assertBuildServerDeploymentReady(compose);
 			const jobData: DeploymentJob = {
 				composeId: input.composeId,
 				titleLog: input.title || "Rebuild deployment",
 				type: "redeploy",
 				applicationType: "compose",
 				descriptionLog: input.description || "",
-				server: !!compose.serverId,
-				serverId: compose.serverId ?? undefined,
+				server: !!(compose.buildServerId || compose.serverId),
+				serverId: compose.buildServerId || compose.serverId || undefined,
 			};
-			if (IS_CLOUD && compose.serverId) {
+			if (IS_CLOUD && (compose.buildServerId || compose.serverId)) {
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});
@@ -1051,7 +1178,7 @@ export const composeRouter = createTRPCRouter({
 			});
 			const compose = await findComposeById(input.composeId);
 
-			if (IS_CLOUD && compose.serverId) {
+			if (IS_CLOUD && (compose.buildServerId || compose.serverId)) {
 				try {
 					await updateCompose(input.composeId, {
 						composeStatus: "idle",
@@ -1068,6 +1195,7 @@ export const composeRouter = createTRPCRouter({
 						composeId: input.composeId,
 						applicationType: "compose",
 					});
+					await requestComposeDeploymentCancellation(input.composeId);
 
 					await audit(ctx, {
 						action: "stop",
