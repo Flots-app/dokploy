@@ -24,6 +24,7 @@ import {
 import { TRPCError } from "@trpc/server";
 import { format } from "date-fns";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { quote } from "shell-quote";
 import type { z } from "zod";
 import {
 	type Application,
@@ -775,7 +776,7 @@ export const removeDeploymentsByComposeId = async (compose: Compose) => {
 		const logServerId =
 			deployment.buildServerId || compose.buildServerId || compose.serverId;
 		const commands = commandsByServer.get(logServerId) || [];
-		commands.push(`rm -f ${JSON.stringify(deployment.logPath)}`);
+		commands.push(`rm -f ${quote([deployment.logPath])}`);
 		commandsByServer.set(logServerId, commands);
 	}
 
