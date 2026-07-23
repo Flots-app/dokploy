@@ -16,6 +16,7 @@
 		"server:build": "pnpm --filter=server run build",
 		"docker:build:canary": "./apps/dokploy/docker/build.sh canary",
 		"typecheck": "pnpm -r run typecheck",
+		"test:ci": "pnpm --filter=dokploy run test:ci",
 		"build": "pnpm -r run build",
 		"format-and-lint": "biome check .",
 		"check": "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true",

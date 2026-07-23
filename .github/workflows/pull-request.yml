@@ -1,16 +1,26 @@
-name: Pull Request
+name: CI
 
 on:
   pull_request:
     branches: [main, canary]
+  push:
+    branches: [main, canary]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  pr-check:
-    runs-on: ubuntu-latest
+  check:
+    name: ${{ matrix.job }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         job: [build, test, typecheck]
     steps:
@@ -73,6 +83,11 @@ jobs:
           docker swarm init
           docker network create --driver overlay dokploy-network || true
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm server:build
-      - run: pnpm ${{ matrix.job }}
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared server package
+        run: pnpm server:build
+
+      - name: Run ${{ matrix.job }}
+        run: pnpm ${{ matrix.job == 'test' && 'test:ci' || matrix.job }}
