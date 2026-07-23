@@ -1,7 +1,11 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { generateDeploymentId } from "@dokploy/server/db/schema/deployment";
 import {
 	assertComposeBuildServerDeploymentReady,
+	assertComposeBuildServerRuntimeSelection,
 	assertComposeBuildServerSelection,
 	assertComposeBuildServerSupported,
 	type ComposeActivationJournal,
@@ -12,12 +16,16 @@ import {
 	createRuntimeComposeManifest,
 	detectComposeLegacyRouterFallbacks,
 	getAcquireComposeActivationLockCommand,
+	getCancellableComposeCommand,
 	getComposeBuildPushCommand,
+	getComposeBuildServerCleanupIds,
 	getComposeConfigCommand,
 	getComposeDomainRouterNames,
 	getComposeRegistryLoginCommand,
 	getComposeReleaseProjectName,
 	getComposeReleaseServiceAlias,
+	getComposeRuntimeDrainSeconds,
+	getComposeRuntimeReadinessTimeoutSeconds,
 	getObserveTraefikServicesCommand,
 	getRestoreLegacyTraefikRoutersCommand,
 	getRuntimeDeployCommand,
@@ -29,6 +37,7 @@ import {
 	validateComposeBuildServerSpecification,
 } from "@dokploy/server/utils/builders/compose-build-server";
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
+import { quote } from "shell-quote";
 import { describe, expect, it } from "vitest";
 
 const deploymentId = "deployment-123";
@@ -212,6 +221,35 @@ describe("Compose Build Server validation", () => {
 		],
 	] as const)("rejects %s", (_name, selection, message) => {
 		expect(() => assertComposeBuildServerSelection(selection)).toThrow(message);
+	});
+
+	it("revalidates mutable Build Server state at deployment time", () => {
+		const runtimeSelection = {
+			organizationId: validSelection.organizationId,
+			server: validSelection.server,
+			registry: validSelection.registry,
+		};
+		expect(() =>
+			assertComposeBuildServerRuntimeSelection(runtimeSelection),
+		).not.toThrow();
+		expect(() =>
+			assertComposeBuildServerRuntimeSelection({
+				...runtimeSelection,
+				server: {
+					...runtimeSelection.server,
+					serverType: "deploy",
+				},
+			}),
+		).toThrow("active Build Server");
+		expect(() =>
+			assertComposeBuildServerRuntimeSelection({
+				...runtimeSelection,
+				server: {
+					...runtimeSelection.server,
+					serverStatus: "inactive",
+				},
+			}),
+		).toThrow("active Build Server");
 	});
 
 	it("accepts the corrected Flots contract and shared backend image", () => {
@@ -452,6 +490,75 @@ describe("Compose Build Server commands", () => {
 		expect(command).toContain("build --push");
 		expect(command).toContain(`DOKPLOY_DEPLOYMENT_ID=${deploymentId}`);
 		expect(command).not.toContain(" up ");
+	});
+
+	it("cancels only the wrapped Compose command when its request file appears", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "dokploy-compose-cancel-"));
+		const cancellationRequest = join(directory, "cancel");
+		const completed = join(directory, "completed");
+		const command = getCancellableComposeCommand(
+			`sleep 10; touch ${quote([completed])}`,
+			cancellationRequest,
+		);
+		const startedAt = Date.now();
+		const unrelated = spawn("sleep", ["10"]);
+
+		try {
+			const child = spawn("bash", ["-c", command], {
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			let stderr = "";
+			child.stderr.setEncoding("utf8");
+			child.stderr.on("data", (chunk) => {
+				stderr += chunk;
+			});
+			setTimeout(() => writeFileSync(cancellationRequest, ""), 100);
+
+			const exitCode = await new Promise<number | null>((resolve, reject) => {
+				child.once("error", reject);
+				child.once("close", resolve);
+			});
+
+			expect(exitCode).toBe(130);
+			expect(stderr).toContain("Compose deployment cancellation requested");
+			expect(existsSync(completed)).toBe(false);
+			expect(() => process.kill(unrelated.pid!, 0)).not.toThrow();
+			expect(Date.now() - startedAt).toBeLessThan(5_000);
+		} finally {
+			unrelated.kill("SIGTERM");
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("retains every recorded Build Server for checkout cleanup", () => {
+		expect(
+			getComposeBuildServerCleanupIds("build-current", [
+				{ buildServerId: "build-old" },
+				{ buildServerId: "build-current" },
+				{ buildServerId: null },
+			]),
+		).toEqual(["build-current", "build-old"]);
+		expect(
+			getComposeBuildServerCleanupIds(null, [
+				{ buildServerId: "build-disabled" },
+			]),
+		).toEqual(["build-disabled"]);
+	});
+
+	it("reads persisted release timings and preserves legacy defaults", () => {
+		const legacy = { timings: undefined };
+		expect(getComposeRuntimeReadinessTimeoutSeconds(legacy)).toBe(120);
+		expect(getComposeRuntimeDrainSeconds(legacy)).toBe(30);
+
+		const persisted = {
+			timings: {
+				readinessTimeoutSeconds: 240,
+				stabilizationSeconds: 45,
+				drainSeconds: 90,
+			},
+		};
+		expect(getComposeRuntimeReadinessTimeoutSeconds(persisted)).toBe(240);
+		expect(getComposeRuntimeDrainSeconds(persisted)).toBe(90);
 	});
 
 	it("removes every build section from the runtime manifest", () => {
@@ -734,6 +841,7 @@ describe("Compose Build Server commands", () => {
 
 	it("generates syntactically valid Bash for every Traefik command", () => {
 		const commands = [
+			getCancellableComposeCommand("docker compose build --push", "/cancel"),
 			getTraefikRoutersSnapshotCommand(),
 			getWaitTraefikServicesCommand(["candidate-service"], 120),
 			getWaitTraefikRoutersCommand({ "candidate-router": "candidate-service" }),

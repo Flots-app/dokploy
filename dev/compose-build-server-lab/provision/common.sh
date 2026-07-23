@@ -35,4 +35,3 @@ usermod -aG docker dokploy
 install -d -m 0755 -o dokploy -g dokploy /etc/dokploy
 install -d -m 0755 /var/lib/dokploy-lab
 touch "${MARKER}"
-

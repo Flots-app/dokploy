@@ -12,4 +12,3 @@ for instance in "${BUILD_VM}" "${RUNTIME_VM}"; do
 done
 
 rm -rf "${STATE_DIR}"
-

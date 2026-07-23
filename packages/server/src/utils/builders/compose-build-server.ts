@@ -64,6 +64,12 @@ export interface ComposeZeroDowntimeSettings {
 	drainSeconds: number;
 }
 
+export interface ComposeRuntimeTimingSettings {
+	readinessTimeoutSeconds: number;
+	stabilizationSeconds: number;
+	drainSeconds: number;
+}
+
 export interface ComposeRuntimeReleaseState {
 	version: 1;
 	composeId: string;
@@ -74,6 +80,11 @@ export interface ComposeRuntimeReleaseState {
 	routerConfigPath: string;
 	domainServices: Record<string, string>;
 	activatedAt: string;
+	/**
+	 * Optional for active-release.json and activation.json files created before
+	 * release-specific timing settings were persisted.
+	 */
+	timings?: ComposeRuntimeTimingSettings;
 }
 
 export interface ComposeLegacyRouterFallback {
@@ -170,16 +181,18 @@ export interface ComposeBuildServerSelection {
 	registry: { organizationId: string } | null | undefined;
 }
 
-export const assertComposeBuildServerSelection = ({
+export type ComposeBuildServerRuntimeSelection = Omit<
+	ComposeBuildServerSelection,
+	"accessibleServerIds"
+>;
+
+export const assertComposeBuildServerRuntimeSelection = ({
 	organizationId,
-	accessibleServerIds,
 	server,
 	registry,
-}: ComposeBuildServerSelection) => {
-	if (!server || !accessibleServerIds.has(server.serverId)) {
-		throw new Error("You are not authorized to access this build server");
-	}
+}: ComposeBuildServerRuntimeSelection) => {
 	if (
+		!server ||
 		server.organizationId !== organizationId ||
 		server.serverStatus !== "active" ||
 		server.serverType !== "build" ||
@@ -194,6 +207,22 @@ export const assertComposeBuildServerSelection = ({
 			"The selected registry must belong to the same organization",
 		);
 	}
+};
+
+export const assertComposeBuildServerSelection = ({
+	organizationId,
+	accessibleServerIds,
+	server,
+	registry,
+}: ComposeBuildServerSelection) => {
+	if (!server || !accessibleServerIds.has(server.serverId)) {
+		throw new Error("You are not authorized to access this build server");
+	}
+	assertComposeBuildServerRuntimeSelection({
+		organizationId,
+		server,
+		registry,
+	});
 };
 
 const composeFile = (compose: ComposeBuildServerSettings) =>
@@ -284,6 +313,46 @@ export const getComposeBuildPushCommand = (
 		deploymentId,
 		composeFile(compose),
 	)} build --push`;
+};
+
+export const getCancellableComposeCommand = (
+	command: string,
+	cancellationRequest: string,
+) => {
+	const script = `set -e
+cancellation_request=${quote([cancellationRequest])}
+if [ -f "$cancellation_request" ]; then
+	echo "Compose deployment cancellation requested" >&2
+	exit 130
+fi
+umask 077
+command_file="$(mktemp)"
+cleanup() {
+	rm -f "$command_file"
+}
+terminate_tree() {
+	local parent="$1"
+	local child
+	for child in $(pgrep -P "$parent" 2>/dev/null || true); do
+		terminate_tree "$child"
+	done
+	kill -TERM "$parent" 2>/dev/null || true
+}
+trap cleanup EXIT
+echo ${quote([encodeBase64(command)])} | base64 -d > "$command_file"
+bash "$command_file" &
+command_pid=$!
+while kill -0 "$command_pid" 2>/dev/null; do
+	if [ -f "$cancellation_request" ]; then
+		echo "Compose deployment cancellation requested" >&2
+		terminate_tree "$command_pid"
+		wait "$command_pid" 2>/dev/null || true
+		exit 130
+	fi
+	sleep 1
+done
+wait "$command_pid"`;
+	return `bash -c ${quote([script])}`;
 };
 
 export const getComposeRegistryLoginCommand = (
@@ -1022,6 +1091,27 @@ export const getRuntimeDeployCommand = (
 	const invocation = runtimeComposeInvocation(projectName, manifest);
 	return `${invocation} up -d --no-build --pull never --wait --wait-timeout ${readinessTimeoutSeconds}`;
 };
+
+export const getComposeRuntimeReadinessTimeoutSeconds = (
+	state: Pick<ComposeRuntimeReleaseState, "timings">,
+) =>
+	state.timings?.readinessTimeoutSeconds ?? DEFAULT_READINESS_TIMEOUT_SECONDS;
+
+export const getComposeRuntimeDrainSeconds = (
+	state: Pick<ComposeRuntimeReleaseState, "timings">,
+) => state.timings?.drainSeconds ?? DEFAULT_DRAIN_SECONDS;
+
+export const getComposeBuildServerCleanupIds = (
+	currentBuildServerId: string | null | undefined,
+	deployments: Array<{ buildServerId?: string | null }>,
+) => [
+	...new Set(
+		[
+			currentBuildServerId,
+			...deployments.map((deployment) => deployment.buildServerId),
+		].filter((serverId): serverId is string => Boolean(serverId)),
+	),
+];
 
 const atomicWriteCommand = (
 	path: string,

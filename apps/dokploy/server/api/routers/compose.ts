@@ -18,6 +18,7 @@ import {
 	findProjectById,
 	findServerById,
 	getAccessibleServerIds,
+	getComposeBuildServerCleanupIds,
 	getComposeContainer,
 	getContainerLogs,
 	getWebServerSettings,
@@ -354,18 +355,17 @@ export const composeRouter = createTRPCRouter({
 				await cleanQueuesByCompose(input.composeId);
 			}
 
+			const buildServerIds = getComposeBuildServerCleanupIds(
+				composeResult.buildServerId,
+				composeResult.deployments,
+			);
 			const cleanupOperations = [
 				async () => await removeCompose(composeResult, input.deleteVolumes),
 				async () => await removeDeploymentsByComposeId(composeResult),
-				...(composeResult.buildServerId
-					? [
-							async () =>
-								await removeComposeDirectory(
-									composeResult.appName,
-									composeResult.buildServerId,
-								),
-						]
-					: []),
+				...buildServerIds.map(
+					(buildServerId) => async () =>
+						await removeComposeDirectory(composeResult.appName, buildServerId),
+				),
 			];
 
 			for (const operation of cleanupOperations) {
@@ -422,10 +422,11 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["cancel"],
 			});
 			const compose = await findComposeById(input.composeId);
-			await killDockerBuild(
-				"compose",
-				compose.buildServerId || compose.serverId,
-			);
+			if (compose.buildServerId && compose.buildRegistryId) {
+				await requestComposeDeploymentCancellation(compose.composeId);
+			} else {
+				await killDockerBuild("compose", compose.serverId);
+			}
 		}),
 
 	loadServices: protectedProcedure

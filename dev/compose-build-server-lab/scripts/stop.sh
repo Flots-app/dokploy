@@ -10,4 +10,3 @@ for instance in "${BUILD_VM}" "${RUNTIME_VM}"; do
 		limactl stop "${instance}"
 	fi
 done
-

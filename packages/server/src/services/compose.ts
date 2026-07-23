@@ -15,6 +15,7 @@ import {
 } from "@dokploy/server/utils/builders/compose";
 import {
 	assertComposeBuildServerDeploymentReady,
+	assertComposeBuildServerRuntimeSelection,
 	type ComposeActivationJournal,
 	type ComposeBuildServerDomain,
 	type ComposeLegacyRouterFallbacks,
@@ -25,11 +26,14 @@ import {
 	detectComposeLegacyRouterFallbacks,
 	getAcquireComposeActivationLockCommand,
 	getActivateRuntimeManifestCommand,
+	getCancellableComposeCommand,
 	getComposeBuildPushCommand,
 	getComposeConfigCommand,
 	getComposeDomainRouterNames,
 	getComposeRegistryLoginCommand,
 	getComposeReleaseProjectName,
+	getComposeRuntimeDrainSeconds,
+	getComposeRuntimeReadinessTimeoutSeconds,
 	getInstallTraefikConfigCommand,
 	getObserveTraefikServicesCommand,
 	getReleaseComposeActivationLockCommand,
@@ -228,7 +232,7 @@ const recoverInterruptedComposeActivation = async (
 				await cleanupRuntimeRelease(
 					compose.serverId,
 					journal.previous,
-					DEFAULT_RUNTIME_DRAIN_SECONDS,
+					getComposeRuntimeDrainSeconds(journal.previous),
 				);
 			} catch {
 				await executeOnServer(
@@ -245,7 +249,7 @@ const recoverInterruptedComposeActivation = async (
 					compose.serverId,
 					cleanupLegacyComposeProjectCommand(
 						compose.appName,
-						DEFAULT_RUNTIME_DRAIN_SECONDS,
+						getComposeRuntimeDrainSeconds(journal.candidate),
 					),
 				);
 			} catch {
@@ -282,15 +286,13 @@ const recoverInterruptedComposeActivation = async (
 	await cleanupRuntimeRelease(
 		compose.serverId,
 		journal.candidate,
-		DEFAULT_RUNTIME_DRAIN_SECONDS,
+		getComposeRuntimeDrainSeconds(journal.candidate),
 	);
 	await executeOnServer(
 		compose.serverId,
 		`rm -f ${quote([runtimePaths.activationJournal])}`,
 	);
 };
-
-const DEFAULT_RUNTIME_DRAIN_SECONDS = 30;
 
 const assertComposeDeploymentNotCancelled = async (
 	serverId: string | null,
@@ -317,11 +319,15 @@ const runBuildServerStage = async (
 	logPath: string,
 	stage: string,
 	command: string,
+	cancellationRequest: string,
 ) => {
 	await appendDeploymentLog(serverId, logPath, `\n===== ${stage} =====\n`);
 	return await execAsyncRemote(
 		serverId,
-		`(${command}) >> ${quote([logPath])} 2>&1`,
+		`(${getCancellableComposeCommand(
+			command,
+			cancellationRequest,
+		)}) >> ${quote([logPath])} 2>&1`,
 	);
 };
 
@@ -431,7 +437,7 @@ const removeActiveRuntimeManifest = async (
 				runtimePaths.traefikRouter,
 			)} && ${getRuntimeReleaseDownCommand(
 				active,
-				DEFAULT_RUNTIME_DRAIN_SECONDS,
+				getComposeRuntimeDrainSeconds(active),
 				false,
 			)} && ${getRemoveRuntimeReleaseCommand(active)} && rm -f ${quote([
 				runtimePaths.activeState,
@@ -639,8 +645,17 @@ const deployComposeWithBuildServer = async (
 	const registry = await findRegistryByIdWithCredentials(
 		compose.buildRegistryId,
 	);
+	assertComposeBuildServerRuntimeSelection({
+		organizationId: compose.environment.project.organizationId,
+		server: compose.buildServer,
+		registry,
+	});
 	const cancellationPath = getRuntimeComposePaths(
 		{ appName: compose.appName, serverId: runtimeServerId },
+		"cancel",
+	).cancellationRequest;
+	const buildCancellationPath = getRuntimeComposePaths(
+		{ appName: compose.appName, serverId: buildServerId },
 		"cancel",
 	).cancellationRequest;
 	let temporaryManifest: string | null = null;
@@ -660,10 +675,10 @@ const deployComposeWithBuildServer = async (
 	> | null = null;
 
 	try {
-		await executeOnServer(
-			runtimeServerId,
-			`rm -f ${quote([cancellationPath])}`,
-		);
+		await Promise.all([
+			executeOnServer(runtimeServerId, `rm -f ${quote([cancellationPath])}`),
+			executeOnServer(buildServerId, `rm -f ${quote([buildCancellationPath])}`),
+		]);
 		if (options.cloneRepository) {
 			let cloneCommand = "set -e;";
 			if (compose.sourceType === "github") {
@@ -682,6 +697,7 @@ const deployComposeWithBuildServer = async (
 				deployment.logPath,
 				"Build: checkout",
 				cloneCommand,
+				buildCancellationPath,
 			);
 		}
 
@@ -696,6 +712,7 @@ const deployComposeWithBuildServer = async (
 				deployment.logPath,
 				"Build: patches",
 				`set -e; ${patchCommand}`,
+				buildCancellationPath,
 			);
 		}
 
@@ -708,13 +725,17 @@ const deployComposeWithBuildServer = async (
 			deployment.logPath,
 			"Build: resolve",
 			`set -e; ${envCommand}`,
+			buildCancellationPath,
 		);
 
 		let resolved: { stdout: string; stderr: string };
 		try {
 			resolved = await execAsyncRemote(
 				buildServerId,
-				getComposeConfigCommand(buildCompose, deployment.deploymentId),
+				getCancellableComposeCommand(
+					getComposeConfigCommand(buildCompose, deployment.deploymentId),
+					buildCancellationPath,
+				),
 			);
 		} catch (error) {
 			if (error instanceof ExecError) {
@@ -769,6 +790,11 @@ const deployComposeWithBuildServer = async (
 			deployment.logPath,
 			"Push (docker compose build --push)",
 			getComposeBuildPushCommand(buildCompose, deployment.deploymentId),
+			buildCancellationPath,
+		);
+		await assertComposeDeploymentNotCancelled(
+			runtimeServerId,
+			cancellationPath,
 		);
 
 		const projectName = getComposeReleaseProjectName(
@@ -800,6 +826,12 @@ const deployComposeWithBuildServer = async (
 			routerConfigPath: runtimePaths.routerConfig,
 			domainServices: traefikRelease.domainServices,
 			activatedAt: new Date().toISOString(),
+			timings: {
+				readinessTimeoutSeconds:
+					validation.zeroDowntime.readinessTimeoutSeconds,
+				stabilizationSeconds: validation.zeroDowntime.stabilizationSeconds,
+				drainSeconds: validation.zeroDowntime.drainSeconds,
+			},
 		};
 
 		temporaryManifest = runtimePaths.temporary;
@@ -866,7 +898,7 @@ const deployComposeWithBuildServer = async (
 					"Deploy: retry previous cleanup",
 					`${getRuntimeReleaseDownCommand(
 						pendingCleanup,
-						DEFAULT_RUNTIME_DRAIN_SECONDS,
+						getComposeRuntimeDrainSeconds(pendingCleanup),
 					)} && ${getRemoveRuntimeReleaseCommand(
 						pendingCleanup,
 					)} && rm -f ${quote([runtimePaths.cleanupPending])}`,
@@ -919,7 +951,7 @@ const deployComposeWithBuildServer = async (
 					"Deploy: retry legacy cleanup",
 					cleanupLegacyComposeProjectCommand(
 						compose.appName,
-						DEFAULT_RUNTIME_DRAIN_SECONDS,
+						getComposeRuntimeDrainSeconds(previousState),
 					),
 				);
 			} catch (cleanupError) {
@@ -1182,8 +1214,7 @@ const deployComposeWithBuildServer = async (
 					await cleanupRuntimeRelease(
 						runtimeServerId,
 						candidateState,
-						validation?.zeroDowntime.drainSeconds ||
-							DEFAULT_RUNTIME_DRAIN_SECONDS,
+						getComposeRuntimeDrainSeconds(candidateState),
 					);
 				} else {
 					await executeOnServer(
@@ -1222,14 +1253,10 @@ const deployComposeWithBuildServer = async (
 		}
 		throw error;
 	} finally {
-		try {
-			await executeOnServer(
-				runtimeServerId,
-				`rm -f ${quote([cancellationPath])}`,
-			);
-		} catch {
-			// A stale cancellation request is cleared by the next deployment.
-		}
+		await Promise.allSettled([
+			executeOnServer(runtimeServerId, `rm -f ${quote([cancellationPath])}`),
+			executeOnServer(buildServerId, `rm -f ${quote([buildCancellationPath])}`),
+		]);
 		if (lockAcquired && runtimePaths) {
 			try {
 				await executeOnServer(
@@ -1252,12 +1279,35 @@ export const requestComposeDeploymentCancellation = async (
 		compose,
 		"cancel",
 	).cancellationRequest;
-	await executeOnServer(
-		compose.serverId,
-		`mkdir -p ${quote([
-			dirname(cancellationRequest),
-		])} && touch ${quote([cancellationRequest])}`,
+	const buildCancellationRequest = getRuntimeComposePaths(
+		{ appName: compose.appName, serverId: compose.buildServerId },
+		"cancel",
+	).cancellationRequest;
+	const cancellationResults = await Promise.allSettled([
+		executeOnServer(
+			compose.serverId,
+			`mkdir -p ${quote([
+				dirname(cancellationRequest),
+			])} && touch ${quote([cancellationRequest])}`,
+		),
+		executeOnServer(
+			compose.buildServerId,
+			`mkdir -p ${quote([
+				dirname(buildCancellationRequest),
+			])} && touch ${quote([buildCancellationRequest])}`,
+		),
+	]);
+	const firstSuccess = cancellationResults.find(
+		(result) => result.status === "fulfilled",
 	);
+	if (!firstSuccess) {
+		const firstFailure = cancellationResults.find(
+			(result) => result.status === "rejected",
+		);
+		if (firstFailure?.status === "rejected") {
+			throw firstFailure.reason;
+		}
+	}
 	return true;
 };
 
@@ -1528,7 +1578,7 @@ export const removeCompose = async (
 			const activeCleanup = activeRelease
 				? `${getRuntimeReleaseDownCommand(
 						activeRelease,
-						DEFAULT_RUNTIME_DRAIN_SECONDS,
+						getComposeRuntimeDrainSeconds(activeRelease),
 						deleteVolumes,
 					)} || true;`
 				: "";
@@ -1604,12 +1654,13 @@ export const startCompose = async (composeId: string) => {
 					return `${getRuntimeDeployCommand(
 						activeRelease.projectName,
 						activeRelease.manifestPath,
+						getComposeRuntimeReadinessTimeoutSeconds(activeRelease),
 					)} && ${installRuntimeFileAtomically(
 						join(dirname(activeRelease.manifestPath), "service.yml"),
 						activeRelease.serviceConfigPath,
 					)} && ${getWaitTraefikServicesCommand(
 						Object.values(activeRelease.domainServices),
-						DEFAULT_RUNTIME_DRAIN_SECONDS,
+						getComposeRuntimeReadinessTimeoutSeconds(activeRelease),
 					)} && ${installRuntimeFileAtomically(
 						activeRelease.routerConfigPath,
 						runtimePaths.traefikRouter,
@@ -1657,7 +1708,7 @@ export const stopCompose = async (composeId: string) => {
 						activeRelease.projectName,
 					])} -f ${quote([
 						activeRelease.manifestPath,
-					])} stop --timeout ${DEFAULT_RUNTIME_DRAIN_SECONDS}`
+					])} stop --timeout ${getComposeRuntimeDrainSeconds(activeRelease)}`
 				: `if [ -f ${quote([runtimePaths.active])} ]; then env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([compose.appName])} -f ${quote([runtimePaths.active])} stop; else cd ${quote([projectPath])} && env -i PATH="$PATH" HOME="$HOME" docker compose -p ${quote([compose.appName])} -f ${quote([sourcePath])} stop; fi`;
 			await executeOnServer(compose.serverId, command);
 		}
