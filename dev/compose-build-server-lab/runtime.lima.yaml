@@ -1,0 +1,45 @@
+minimumLimaVersion: 2.0.0
+
+base:
+  - template:_images/ubuntu-lts
+
+cpus: 2
+memory: 4GiB
+disk: 30GiB
+
+user:
+  name: dokploy
+
+ssh:
+  localPort: 22222
+  loadDotSSHPubKeys: false
+  forwardAgent: false
+
+mounts: []
+
+networks:
+  - lima: user-v2
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    file: provision/common.sh
+  - mode: system
+    file: provision/runtime.sh
+
+probes:
+  - mode: readiness
+    description: Docker, Swarm, the Dokploy network and Traefik are available
+    script: |
+      #!/usr/bin/env bash
+      set -e
+      sudo docker info >/dev/null
+      sudo docker info | grep -q 'Swarm: active'
+      sudo docker network inspect dokploy-network >/dev/null
+      sudo docker inspect dokploy-traefik >/dev/null
+
+message: |
+  Runtime VM ready. Dokploy reaches it at 127.0.0.1:22222 as user dokploy.

@@ -15,13 +15,16 @@ export type ComposeNested = InferResultType<
 	{ environment: { with: { project: true } }; mounts: true; domains: true }
 >;
 
-export const getBuildComposeCommand = async (compose: ComposeNested) => {
+export const getBuildComposeCommand = async (
+	compose: ComposeNested,
+	deploymentId?: string,
+) => {
 	const { COMPOSE_PATH } = paths(!!compose.serverId);
 	const { sourceType, appName, mounts, composeType, domains } = compose;
 	const command = createCommand(compose);
-	const envCommand = getCreateEnvFileCommand(compose);
+	const envCommand = getCreateEnvFileCommand(compose, deploymentId);
 	const projectPath = join(COMPOSE_PATH, compose.appName, "code");
-	const exportEnvCommand = getExportEnvCommand(compose);
+	const exportEnvCommand = getExportEnvCommand(compose, deploymentId);
 
 	const newCompose = await writeDomainsToCompose(compose, domains);
 	const logContent = `
@@ -107,7 +110,10 @@ export const createCommand = (compose: ComposeNested) => {
 	return command;
 };
 
-export const getCreateEnvFileCommand = (compose: ComposeNested) => {
+export const getCreateEnvFileCommand = (
+	compose: ComposeNested,
+	deploymentId?: string,
+) => {
 	const { COMPOSE_PATH } = paths(!!compose.serverId);
 	const { env, composePath, appName } = compose;
 	const composeFilePath =
@@ -127,11 +133,15 @@ export const getCreateEnvFileCommand = (compose: ComposeNested) => {
 		envContent += `\nCOMPOSE_PREFIX=${compose.suffix}`;
 	}
 
-	const envFileContent = prepareEnvironmentVariables(
+	const envFileLines = prepareEnvironmentVariables(
 		envContent,
 		compose.environment.project.env,
 		compose.environment.env,
-	).join("\n");
+	);
+	if (deploymentId) {
+		envFileLines.push(`DOKPLOY_DEPLOYMENT_ID=${deploymentId}`);
+	}
+	const envFileContent = envFileLines.join("\n");
 
 	const encodedContent = encodeBase64(envFileContent);
 	return `
@@ -140,7 +150,7 @@ echo "${encodedContent}" | base64 -d > ${quote([envFilePath])};
 	`;
 };
 
-const getExportEnvCommand = (compose: ComposeNested) => {
+const getExportEnvCommand = (compose: ComposeNested, deploymentId?: string) => {
 	if (compose.composeType !== "stack") return "";
 
 	const envVars = getEnvironmentVariablesObject(
@@ -148,6 +158,9 @@ const getExportEnvCommand = (compose: ComposeNested) => {
 		compose.environment.project.env,
 		compose.environment.env,
 	);
+	if (deploymentId) {
+		envVars.DOKPLOY_DEPLOYMENT_ID = deploymentId;
+	}
 	const exports = Object.entries(envVars)
 		.map(([key, value]) => `${key}=${quote([value])}`)
 		.join(" ");

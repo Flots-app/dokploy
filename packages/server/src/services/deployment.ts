@@ -24,6 +24,7 @@ import {
 import { TRPCError } from "@trpc/server";
 import { format } from "date-fns";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { quote } from "shell-quote";
 import type { z } from "zod";
 import {
 	type Application,
@@ -284,16 +285,17 @@ export const createDeploymentCompose = async (
 	await removeLastTenDeployments(
 		deployment.composeId,
 		"compose",
-		compose.serverId,
+		compose.buildServerId || compose.serverId,
 	);
 	try {
-		const { LOGS_PATH } = paths(!!compose.serverId);
+		const logServerId = compose.buildServerId || compose.serverId;
+		const { LOGS_PATH } = paths(!!logServerId);
 		const formattedDateTime = format(new Date(), "yyyy-MM-dd:HH:mm:ss");
 		const fileName = `${compose.appName}-${formattedDateTime}.log`;
 		const logFilePath = path.join(LOGS_PATH, compose.appName, fileName);
 
-		if (compose.serverId) {
-			const server = await findServerById(compose.serverId);
+		if (logServerId) {
+			const server = await findServerById(logServerId);
 
 			const command = `
 mkdir -p ${LOGS_PATH}/${compose.appName};
@@ -317,6 +319,9 @@ echo "Initializing deployment\n" >> ${logFilePath};
 				status: "running",
 				logPath: logFilePath,
 				startedAt: new Date().toISOString(),
+				...(compose.buildServerId && {
+					buildServerId: compose.buildServerId,
+				}),
 			})
 			.returning();
 		if (deploymentCreate.length === 0 || !deploymentCreate[0]) {
@@ -338,6 +343,9 @@ echo "Initializing deployment\n" >> ${logFilePath};
 				errorMessage: `An error have occurred: ${error instanceof Error ? error.message : error}`,
 				startedAt: new Date().toISOString(),
 				finishedAt: new Date().toISOString(),
+				...(compose.buildServerId && {
+					buildServerId: compose.buildServerId,
+				}),
 			})
 			.returning();
 		await updateCompose(compose.composeId, {
@@ -607,8 +615,9 @@ export const removeDeployment = async (deploymentId: string) => {
 		const logPath = path.join(deployment.logPath);
 		if (logPath && logPath !== ".") {
 			const command = `rm -f ${logPath};`;
-			if (deployment.serverId) {
-				await execAsyncRemote(deployment.serverId, command);
+			const logServerId = deployment.buildServerId || deployment.serverId;
+			if (logServerId) {
+				await execAsyncRemote(logServerId, command);
 			} else {
 				await execAsync(command);
 			}
@@ -758,13 +767,26 @@ export const removeDeploymentsByPreviewDeploymentId = async (
 };
 
 export const removeDeploymentsByComposeId = async (compose: Compose) => {
-	const { appName } = compose;
-	const { LOGS_PATH } = paths(!!compose.serverId);
-	const logsPath = path.join(LOGS_PATH, appName);
-	if (compose.serverId) {
-		await execAsyncRemote(compose.serverId, `rm -rf ${logsPath}`);
-	} else {
-		await removeDirectoryIfExistsContent(logsPath);
+	const deploymentList = await db.query.deployments.findMany({
+		where: eq(deployments.composeId, compose.composeId),
+	});
+	const commandsByServer = new Map<string | null, string[]>();
+	for (const deployment of deploymentList) {
+		if (!deployment.logPath) continue;
+		const logServerId =
+			deployment.buildServerId || compose.buildServerId || compose.serverId;
+		const commands = commandsByServer.get(logServerId) || [];
+		commands.push(`rm -f ${quote([deployment.logPath])}`);
+		commandsByServer.set(logServerId, commands);
+	}
+
+	for (const [serverId, commands] of commandsByServer) {
+		if (commands.length === 0) continue;
+		if (serverId) {
+			await execAsyncRemote(serverId, commands.join(";"));
+		} else {
+			await execAsync(commands.join(";"));
+		}
 	}
 
 	await db
@@ -823,6 +845,9 @@ const centralizedDeploymentsWith = {
 				},
 			},
 			server: {
+				columns: { serverId: true, name: true, serverType: true },
+			},
+			buildServer: {
 				columns: { serverId: true, name: true, serverType: true },
 			},
 		},

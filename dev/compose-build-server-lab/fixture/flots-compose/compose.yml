@@ -1,0 +1,86 @@
+x-dokploy:
+  zero-downtime:
+    overlap-safe: true
+    healthchecks:
+      backend-staging:
+        path: /
+      frontend-staging:
+        path: /
+      back-office-staging:
+        path: /
+    shared-volumes:
+      - scheduler-state
+    readiness-timeout-seconds: 120
+    stabilization-seconds: 5
+    drain-seconds: 5
+
+services:
+  backend-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/backend:${DOKPLOY_DEPLOYMENT_ID}
+    build:
+      context: ./backend
+      args:
+        DOKPLOY_DEPLOYMENT_ID: ${DOKPLOY_DEPLOYMENT_ID}
+        SLOW_BUILD_SECONDS: ${SLOW_BUILD_SECONDS:-0}
+    environment:
+      UNHEALTHY: ${CANDIDATE_UNHEALTHY:-false}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    stop_signal: SIGTERM
+    stop_grace_period: 5s
+
+  scheduler-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/backend:${DOKPLOY_DEPLOYMENT_ID}
+    command:
+      - sh
+      - -c
+      - >-
+        while ! mkdir /scheduler-state/leader.lock 2>/dev/null; do sleep 1; done;
+        trap 'rmdir /scheduler-state/leader.lock; exit 0' TERM INT QUIT;
+        while true; do printf '%s\n' "$$RELEASE_ID" > /scheduler-state/active; sleep 1; done
+    volumes:
+      - scheduler-state:/scheduler-state
+
+  frontend-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/frontend:${DOKPLOY_DEPLOYMENT_ID}
+    build:
+      context: ./frontend
+      args:
+        DOKPLOY_DEPLOYMENT_ID: ${DOKPLOY_DEPLOYMENT_ID}
+        SLOW_BUILD_SECONDS: ${SLOW_BUILD_SECONDS:-0}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    stop_signal: SIGQUIT
+    stop_grace_period: 5s
+
+  back-office-staging:
+    image: lima-dokploy-runtime.internal:5000/flots/back-office:${DOKPLOY_DEPLOYMENT_ID}
+    build:
+      context: ./back-office
+      args:
+        DOKPLOY_DEPLOYMENT_ID: ${DOKPLOY_DEPLOYMENT_ID}
+        SLOW_BUILD_SECONDS: ${SLOW_BUILD_SECONDS:-0}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    stop_signal: SIGQUIT
+    stop_grace_period: 5s
+
+volumes:
+  scheduler-state:
+    name: dokploy-lab-scheduler-state
+    external: true

@@ -1,5 +1,9 @@
 import { db } from "@dokploy/server/db";
-import { type apiCreateRegistry, registry } from "@dokploy/server/db/schema";
+import {
+	type apiCreateRegistry,
+	compose,
+	registry,
+} from "@dokploy/server/db/schema";
 import {
 	execAsync,
 	execAsyncRemote,
@@ -86,11 +90,21 @@ export const createRegistry = async (
 
 export const removeRegistry = async (registryId: string) => {
 	try {
-		const response = await db
-			.delete(registry)
-			.where(eq(registry.registryId, registryId))
-			.returning()
-			.then((res) => res[0]);
+		const response = await db.transaction(async (tx) => {
+			await tx
+				.update(compose)
+				.set({
+					buildServerId: null,
+					buildRegistryId: null,
+				})
+				.where(eq(compose.buildRegistryId, registryId));
+
+			return await tx
+				.delete(registry)
+				.where(eq(registry.registryId, registryId))
+				.returning()
+				.then((res) => res[0]);
+		});
 
 		if (!response) {
 			throw new TRPCError({

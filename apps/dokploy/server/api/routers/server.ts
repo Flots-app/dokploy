@@ -197,18 +197,12 @@ export const serverRouter = createTRPCRouter({
 
 		const result = await db.query.server.findMany({
 			orderBy: desc(server.createdAt),
-			where: IS_CLOUD
-				? and(
-						isNotNull(server.sshKeyId),
-						eq(server.organizationId, ctx.session.activeOrganizationId),
-						eq(server.serverStatus, "active"),
-						eq(server.serverType, "build"),
-					)
-				: and(
-						isNotNull(server.sshKeyId),
-						eq(server.organizationId, ctx.session.activeOrganizationId),
-						eq(server.serverType, "build"),
-					),
+			where: and(
+				isNotNull(server.sshKeyId),
+				eq(server.organizationId, ctx.session.activeOrganizationId),
+				eq(server.serverStatus, "active"),
+				eq(server.serverType, "build"),
+			),
 		});
 		return result.filter((s) => accessibleIds.has(s.serverId));
 	}),

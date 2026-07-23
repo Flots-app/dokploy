@@ -177,15 +177,18 @@ export default async function handler(
 				type: "deploy",
 				applicationType: "compose",
 				descriptionLog: `Hash: ${deploymentHash}`,
-				server: !!composeResult.serverId,
+				server: !!(composeResult.buildServerId || composeResult.serverId),
 			};
 
-			if (IS_CLOUD && composeResult.serverId) {
-				jobData.serverId = composeResult.serverId;
+			if (IS_CLOUD && (composeResult.buildServerId || composeResult.serverId)) {
+				jobData.serverId =
+					composeResult.buildServerId || composeResult.serverId || undefined;
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});
 			} else {
+				jobData.serverId =
+					composeResult.buildServerId || composeResult.serverId || undefined;
 				await myQueue.add(
 					"deployments",
 					{ ...jobData },
