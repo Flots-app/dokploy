@@ -30,6 +30,7 @@ import {
 	PieChart,
 	Rocket,
 	Server,
+	ShieldAlert,
 	ShieldCheck,
 	Star,
 	Tags,
@@ -72,6 +73,7 @@ import {
 	SidebarHeader,
 	SidebarInset,
 	SidebarMenu,
+	SidebarMenuBadge,
 	SidebarMenuButton,
 	SidebarMenuItem,
 	SidebarMenuSub,
@@ -175,6 +177,14 @@ const MENU: Menu = {
 			url: "/dashboard/monitoring",
 			icon: BarChartHorizontalBigIcon,
 			// Only enabled in non-cloud environments and if user has monitoring.read
+			isEnabled: ({ isCloud, permissions }) =>
+				!isCloud && !!permissions?.monitoring.read,
+		},
+		{
+			isSingle: true,
+			title: "Alerts",
+			url: "/dashboard/alerts",
+			icon: ShieldAlert,
 			isEnabled: ({ isCloud, permissions }) =>
 				!isCloud && !!permissions?.monitoring.read,
 		},
@@ -914,6 +924,12 @@ export default function Page({ children }: Props) {
 
 	const includesProjects = pathname?.includes("/dashboard/project");
 	const { data: isCloud } = api.settings.isCloud.useQuery();
+	const activeAlerts = api.observability.activeAlerts.useQuery(undefined, {
+		enabled: isCloud === false && !!permissions?.monitoring.read,
+		refetchInterval: 15_000,
+		retry: false,
+	});
+	const activeAlertCount = activeAlerts.data?.length ?? 0;
 
 	const {
 		home: filteredHome,
@@ -983,23 +999,33 @@ export default function Page({ children }: Props) {
 									>
 										<SidebarMenuItem>
 											{isSingle ? (
-												<SidebarMenuButton
-													asChild
-													tooltip={item.title}
-													className={cn(isActive && "bg-border")}
-												>
-													<Link
-														href={item.url}
-														className="flex w-full items-center gap-2"
+												<>
+													<SidebarMenuButton
+														asChild
+														tooltip={item.title}
+														className={cn(isActive && "bg-border")}
 													>
-														{item.icon && (
-															<item.icon
-																className={cn(isActive && "text-primary")}
-															/>
+														<Link
+															href={item.url}
+															className="flex w-full items-center gap-2"
+														>
+															{item.icon && (
+																<item.icon
+																	className={cn(isActive && "text-primary")}
+																/>
+															)}
+															<span>{item.title}</span>
+														</Link>
+													</SidebarMenuButton>
+													{item.url === "/dashboard/alerts" &&
+														activeAlertCount > 0 && (
+															<SidebarMenuBadge className="bg-destructive/15 text-destructive">
+																{activeAlertCount > 99
+																	? "99+"
+																	: activeAlertCount}
+															</SidebarMenuBadge>
 														)}
-														<span>{item.title}</span>
-													</Link>
-												</SidebarMenuButton>
+												</>
 											) : (
 												<>
 													<CollapsibleTrigger asChild>

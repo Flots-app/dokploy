@@ -15,6 +15,8 @@ import {
 	getServiceContainerCommand,
 	getWebServerSettings,
 	IS_CLOUD,
+	queueObservabilityReconcile,
+	queueOrganizationObservabilityReconcile,
 	rebuildDatabase,
 	removePostgresById,
 	removeService,
@@ -333,6 +335,9 @@ export const postgresRouter = createTRPCRouter({
 					await operation();
 				} catch (_) {}
 			}
+			void queueOrganizationObservabilityReconcile(
+				postgres.environment.project.organizationId,
+			);
 
 			return postgres;
 		}),
@@ -459,6 +464,7 @@ export const postgresRouter = createTRPCRouter({
 					await execAsync(command, { shell: "/bin/bash" });
 				}
 			});
+			void queueObservabilityReconcile(postgresId);
 
 			await audit(ctx, {
 				action: "update",

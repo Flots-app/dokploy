@@ -1,10 +1,80 @@
 import { describe, expect, it } from "vitest";
 import {
+	createLogSearchForwarder,
+	getDockerLogsArgs,
 	isValidContainerId,
 	isValidSearch,
 	isValidSince,
 	isValidTail,
 } from "../../server/wss/utils";
+
+describe("getDockerLogsArgs", () => {
+	it("builds native container log arguments without a shell", () => {
+		expect(
+			getDockerLogsArgs({
+				containerId: "123456789abc",
+				tail: "100",
+				since: "all",
+				runType: "native",
+			}),
+		).toEqual([
+			"container",
+			"logs",
+			"--timestamps",
+			"--tail",
+			"100",
+			"--follow",
+			"123456789abc",
+		]);
+	});
+
+	it("builds swarm service log arguments with a time range", () => {
+		expect(
+			getDockerLogsArgs({
+				containerId: "example-service",
+				tail: "500",
+				since: "10m",
+				runType: "swarm",
+			}),
+		).toEqual([
+			"service",
+			"logs",
+			"--timestamps",
+			"--raw",
+			"--tail",
+			"500",
+			"--since",
+			"10m",
+			"--follow",
+			"example-service",
+		]);
+	});
+});
+
+describe("createLogSearchForwarder", () => {
+	it("forwards unfiltered chunks immediately", () => {
+		const output: string[] = [];
+		const forwarder = createLogSearchForwarder("", (data) => output.push(data));
+
+		forwarder.write("first\nsecond");
+		forwarder.flush();
+
+		expect(output).toEqual(["first\nsecond"]);
+	});
+
+	it("matches literal lines case-insensitively across chunk boundaries", () => {
+		const output: string[] = [];
+		const forwarder = createLogSearchForwarder("error", (data) =>
+			output.push(data),
+		);
+
+		forwarder.write("info\nER");
+		forwarder.write("ROR first\nwarning\nerror last");
+		forwarder.flush();
+
+		expect(output).toEqual(["ERROR first\n", "error last"]);
+	});
+});
 
 describe("isValidTail (docker-container-logs)", () => {
 	it("accepts valid numeric tail values", () => {

@@ -16,6 +16,7 @@ import { ShowEnvironment } from "@/components/dashboard/application/environment/
 import { ShowDockerLogs } from "@/components/dashboard/application/logs/show";
 import { DeleteService } from "@/components/dashboard/compose/delete-service";
 import { ShowBackups } from "@/components/dashboard/database/backups/show-backups";
+import { ManagedDatabaseMonitoring } from "@/components/dashboard/monitoring/database/managed-database-monitoring";
 import { ContainerFreeMonitoring } from "@/components/dashboard/monitoring/free/container/show-free-container-monitoring";
 import { ContainerPaidMonitoring } from "@/components/dashboard/monitoring/paid/container/show-paid-container-monitoring";
 import { ShowExternalPostgresCredentials } from "@/components/dashboard/postgres/general/show-external-postgres-credentials";
@@ -54,13 +55,11 @@ type TabState = "projects" | "monitoring" | "settings" | "backups" | "advanced";
 const Postgresql = (
 	props: InferGetServerSidePropsType<typeof getServerSideProps>,
 ) => {
-	const [_toggleMonitoring, _setToggleMonitoring] = useState(false);
 	const { postgresId, activeTab } = props;
 	const router = useRouter();
 	const { projectId, environmentId } = router.query;
 	const [tab, setSab] = useState<TabState>(activeTab);
 	const { data } = api.postgres.one.useQuery({ postgresId });
-	const { data: auth } = api.user.get.useQuery();
 	const { data: permissions } = api.user.getPermissions.useQuery();
 
 	const { data: isCloud } = api.settings.isCloud.useQuery();
@@ -221,7 +220,9 @@ const Postgresql = (
 												<TabsTrigger value="logs">Logs</TabsTrigger>
 											)}
 											{permissions?.monitoring.read &&
-												((data?.serverId && isCloud) || !data?.server) && (
+												(!isCloud ||
+													(data?.serverId && isCloud) ||
+													!data?.server) && (
 													<TabsTrigger value="monitoring">
 														Monitoring
 													</TabsTrigger>
@@ -254,27 +255,49 @@ const Postgresql = (
 									{permissions?.monitoring.read && (
 										<TabsContent value="monitoring">
 											<div className="pt-2.5">
-												<div className="flex flex-col gap-4 border rounded-lg p-6">
-													{data?.serverId && isCloud ? (
-														<ContainerPaidMonitoring
-															appName={data?.appName || ""}
-															baseUrl={`${
-																data?.serverId
-																	? `http://${data?.server?.ipAddress}:${data?.server?.metricsConfig?.server?.port}`
-																	: "http://localhost:4500"
-															}`}
-															token={
-																data?.server?.metricsConfig?.server?.token || ""
-															}
-														/>
-													) : (
-														<>
+												{isCloud ? (
+													<div className="flex flex-col gap-4 border rounded-lg p-6">
+														{data?.serverId ? (
+															<ContainerPaidMonitoring
+																appName={data?.appName || ""}
+																baseUrl={`http://${data?.server?.ipAddress}:${data?.server?.metricsConfig?.server?.port}`}
+																token={
+																	data?.server?.metricsConfig?.server?.token ||
+																	""
+																}
+															/>
+														) : (
 															<ContainerFreeMonitoring
 																appName={data?.appName || ""}
 															/>
-														</>
-													)}
-												</div>
+														)}
+													</div>
+												) : (
+													<ManagedDatabaseMonitoring
+														serviceId={postgresId}
+														databaseType="postgres"
+														monitoringEnabled={data?.monitoringEnabled ?? true}
+														canCreate={permissions.monitoring.create}
+														canUpdate={permissions.monitoring.update}
+														canDelete={permissions.monitoring.delete}
+														resources={
+															data?.serverId ? (
+																<ContainerPaidMonitoring
+																	appName={data?.appName || ""}
+																	baseUrl={`http://${data?.server?.ipAddress}:${data?.server?.metricsConfig?.server?.port}`}
+																	token={
+																		data?.server?.metricsConfig?.server
+																			?.token || ""
+																	}
+																/>
+															) : (
+																<ContainerFreeMonitoring
+																	appName={data?.appName || ""}
+																/>
+															)
+														}
+													/>
+												)}
 											</div>
 										</TabsContent>
 									)}
