@@ -1,0 +1,170 @@
+# Plumber v0.4.12 policy for GitHub Actions.
+# Source: https://github.com/getplumber/plumber/blob/v0.4.12/.plumber.yaml
+version: "2.0"
+
+github:
+  controls:
+    # Require immutable refs even for GitHub-owned actions.
+    actionsMustBePinnedByCommitSha:
+      enabled: true
+      trustedOwners: []
+
+    # Only explicitly reviewed third-party actions may enter the CI trust boundary.
+    githubActionMustComeFromAuthorizedSources:
+      enabled: true
+      trustGithubOfficialActions: true
+      trustSameOrgActions: false
+      minimumStars: 0
+      trustedGithubActions:
+        - autofix-ci/action
+        - biomejs/setup-biome
+        - docker/build-push-action
+        - docker/login-action
+        - docker/setup-buildx-action
+        - getplumber/plumber
+        - pnpm/action-setup
+        - softprops/action-gh-release
+
+    containerImageMustNotUseForbiddenTags:
+      enabled: true
+      tags:
+        - latest
+        - dev
+        - development
+        - staging
+        - main
+        - master
+      containerImagesMustBePinnedByDigest: true
+
+    pipelineMustNotUseDockerInDocker:
+      enabled: true
+      detectInsecureDaemon: true
+
+    pipelineMustNotExecuteUnverifiedScripts:
+      enabled: true
+      trustedUrls: []
+
+    reusableWorkflowsMustNotInheritSecrets:
+      enabled: true
+
+    workflowMustNotExportEntireSecretsContext:
+      enabled: true
+
+    securityJobsMustNotBeWeakened:
+      enabled: true
+      securityJobPatterns:
+        - '*codeql*'
+        - '*dependency-review*'
+        - '*trufflehog*'
+        - '*gitleaks*'
+        - '*osv-scanner*'
+        - '*-sast'
+        - '*-sast-*'
+        - '*-scan'
+        - '*scan*'
+        - '*-security'
+        - '*-security-*'
+        - '*-audit'
+        - '*-audit-*'
+      allowFailureMustBeFalse:
+        enabled: true
+      rulesMustNotBeRedefined:
+        enabled: true
+      whenMustNotBeManual:
+        enabled: true
+
+    workflowMustNotInjectUserInputInScripts:
+      enabled: true
+
+    workflowMustNotWriteUntrustedContentToGitHubEnv:
+      enabled: true
+
+    workflowMustNotUseDangerousTriggers:
+      enabled: true
+
+    pullRequestTargetMustNotCheckoutHead:
+      enabled: true
+
+    workflowsMustDeclarePermissions:
+      enabled: true
+
+    # Branch protection is managed outside this change. Keep the expected
+    # branches documented so this control can be enabled independently.
+    branchMustBeProtected:
+      enabled: false
+      defaultMustBeProtected: true
+      namePatterns:
+        - canary
+        - main
+      allowForcePush: false
+      codeOwnerApprovalRequired: false
+
+    # Dokploy has several specialized workflows, so there is no single action
+    # that every workflow must execute.
+    workflowMustIncludeRequiredActions:
+      enabled: false
+      requiredGroups: []
+
+    workflowMustNotGrantPermissionsWriteAll:
+      enabled: true
+
+    externalRefsMustNotCollide:
+      enabled: true
+
+    actionsMustNotBeArchived:
+      enabled: true
+
+    actionRefsMustExistUpstream:
+      enabled: true
+
+    actionsMustNotCarryKnownCVEs:
+      enabled: true
+
+    actionsMustNotExecuteMutableRemoteCode:
+      enabled: true
+
+    releaseWorkflowsMustNotRestoreUntrustedCache:
+      enabled: true
+      publishActions:
+        - pypa/gh-action-pypi-publish
+        - JS-DevTools/npm-publish
+        - gradle/publish-plugin
+        - softprops/action-gh-release
+        - ncipollo/release-action
+        - goreleaser/goreleaser-action
+        - crazy-max/ghaction-docker-buildx
+        - changesets/action
+      cacheActions:
+        - { action: actions/cache, mode: always }
+        - { action: actions/cache/restore, mode: always }
+        - { action: Swatinem/rust-cache, mode: always }
+        - { action: actions/setup-go, mode: default, disableInput: cache, disableValue: false }
+        - { action: gradle/actions/setup-gradle, mode: default, disableInput: cache-disabled, disableValue: true }
+        - { action: actions/setup-node, mode: opt-in, enableInput: cache }
+        - { action: actions/setup-python, mode: opt-in, enableInput: cache }
+        - { action: actions/setup-java, mode: opt-in, enableInput: cache }
+        - { action: pnpm/action-setup, mode: opt-in, enableInput: cache }
+        - { action: docker/build-push-action, mode: opt-in, enableInput: cache-from, enableContains: type=gha }
+      publishScriptPatterns:
+        - '(?i)(npm|pnpm|yarn|bun)\s+publish'
+        - '(?i)cargo\s+publish'
+        - '(?i)twine\s+upload'
+        - '(?i)poetry\s+publish'
+        - '(?i)gh\s+release\s+create'
+        - '(?i)goreleaser\s+release'
+        - '(?i)semantic-release'
+        - '(?i)gradlew?\b[^\n]*\bpublish'
+        - '(?i)\bmvnw?\b[^\n]*\bdeploy\b'
+        - '(?i)dotnet\s+nuget\s+push'
+        - '(?i)gem\s+push'
+        - '(?i)docker\s+push'
+      publishScriptExcludePatterns:
+        - '(?i)--dry-run'
+        - '(?i)publishToMavenLocal'
+      allowedJobs: []
+
+    pipelineMustNotEnableDebugTrace:
+      enabled: true
+      forbiddenVariables:
+        - ACTIONS_STEP_DEBUG
+        - ACTIONS_RUNNER_DEBUG

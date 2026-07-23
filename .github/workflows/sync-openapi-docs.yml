@@ -12,17 +12,20 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   generate-and-commit:
     name: Generate OpenAPI and commit to Dokploy repo
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Dokploy repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.4.0
           cache: "pnpm"
@@ -130,4 +133,3 @@ jobs:
           git push
 
           echo "✅ OpenAPI synced to SDK repository successfully"
-
