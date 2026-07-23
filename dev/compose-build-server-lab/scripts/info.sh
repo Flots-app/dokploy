@@ -16,10 +16,10 @@ Registry URL : ${REGISTRY_HOST}
 Registry user: ${DOKPLOY_LAB_REGISTRY_USER}
 Registry pass: ${DOKPLOY_LAB_REGISTRY_PASSWORD}
 Image prefix : flots
+Test server  : ${BUILD_VM} (select it in the registry Server field)
 Git URL      : ${GIT_URL}
 Git branch   : main
 Compose path : compose.yml
 
 Run the infrastructure smoke test with: make smoke
 EOF
-

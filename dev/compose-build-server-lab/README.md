@@ -67,6 +67,9 @@ same organization.
    - URL `lima-dokploy-runtime.internal:5000`;
    - user and password printed by `make info`;
    - image prefix `flots`.
+   - select `dokploy-build` in the **Server** field so the registry test runs
+     inside the Lima network. Leaving this field empty makes Docker Desktop test
+     the internal hostname from the host, where it cannot be resolved.
 5. Create a Git Compose service on the runtime server:
    - repository URL
      `http://lima-dokploy-runtime.internal:8080/flots-compose.git`;
