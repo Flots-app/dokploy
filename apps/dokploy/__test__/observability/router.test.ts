@@ -93,7 +93,7 @@ const validRule = {
 	lookbackWindow: "1m",
 	forDuration: "1m",
 	severity: "critical" as const,
-	name: "PostgreSQL down",
+	name: "alert-postgres-availability-critical-eq-0",
 	description: "Unavailable",
 	notificationIds: [],
 	enabled: true,

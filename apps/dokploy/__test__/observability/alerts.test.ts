@@ -137,7 +137,7 @@ describe("Alertmanager webhook transitions and delivery", () => {
 			serviceId: "postgres-1",
 			metricKey: "postgres.up",
 			severity: "critical",
-			name: "PostgreSQL down",
+			name: "alert-postgres-apps-frc-prd-cpu-critical-gt-90",
 			description: "Unavailable",
 		});
 		state.findNotification.mockImplementation(
@@ -180,6 +180,22 @@ describe("Alertmanager webhook transitions and delivery", () => {
 		).resolves.toEqual({ accepted: 1 });
 
 		expect(notificationSenders.sendCustomNotification).toHaveBeenCalledTimes(3);
+		expect(notificationSenders.sendCustomNotification).toHaveBeenNthCalledWith(
+			1,
+			expect.anything(),
+			expect.objectContaining({
+				title:
+					"Dokploy: Activated Severity: critical alert-postgres-apps-frc-prd-cpu-critical-gt-90",
+			}),
+		);
+		expect(notificationSenders.sendCustomNotification).toHaveBeenNthCalledWith(
+			2,
+			expect.anything(),
+			expect.objectContaining({
+				title:
+					"Dokploy: Resolved Severity: critical alert-postgres-apps-frc-prd-cpu-critical-gt-90",
+			}),
+		);
 		expect(state.findNotification).toHaveBeenCalledTimes(3);
 		expect(state.conflictTargetNames[0]).toEqual([
 			"organizationId",

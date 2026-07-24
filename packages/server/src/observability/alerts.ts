@@ -34,6 +34,17 @@ export type AlertmanagerWebhook = {
 	}>;
 };
 
+export const formatDatabaseAlertTitle = ({
+	status,
+	severity,
+	name,
+}: {
+	status: "firing" | "resolved";
+	severity: string;
+	name: string;
+}) =>
+	`Dokploy: ${status === "resolved" ? "Resolved" : "Activated"} Severity: ${severity} ${name}`;
+
 const escapeHtml = (value: string) =>
 	value
 		.replaceAll("&", "&amp;")
@@ -315,7 +326,11 @@ export const processAlertmanagerWebhook = async ({
 		if (!event) continue;
 
 		accepted += 1;
-		const title = `${status === "resolved" ? "Resolved" : rule.severity.toUpperCase()}: ${rule.name}`;
+		const title = formatDatabaseAlertTitle({
+			status,
+			severity: rule.severity,
+			name: rule.name,
+		});
 		const message =
 			alert.annotations?.description ||
 			rule.description ||

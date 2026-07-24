@@ -18,7 +18,7 @@ describe("DatabaseAlertRuleInput", () => {
 		lookbackWindow: "1m",
 		forDuration: "1m",
 		severity: "critical" as const,
-		name: "Postgres down",
+		name: "alert-postgres-apps-frc-prd-cpu-critical-gt-90",
 		description: "The database is unavailable",
 		notificationIds: ["notification-1"],
 		enabled: true,
@@ -48,6 +48,18 @@ describe("DatabaseAlertRuleInput", () => {
 		expect(() =>
 			DatabaseAlertRuleInput.parse({ ...valid, operator: "contains" }),
 		).toThrow();
+	});
+
+	it.each([
+		"Postgres down",
+		"alert_Postgres_down",
+		"alert-postgres--down",
+		"alert-postgres-down-",
+		"postgres-down",
+	])("rejects alert names outside the naming convention: %s", (name) => {
+		expect(() => DatabaseAlertRuleInput.parse({ ...valid, name })).toThrow(
+			"lowercase kebab-case",
+		);
 	});
 });
 
@@ -148,7 +160,7 @@ describe("alert compilation and presets", () => {
 			lookbackWindow: "1m",
 			forDuration: "1m",
 			severity: "critical",
-			name: "Postgres down",
+			name: "alert-postgres-availability-critical-eq-0",
 			description: "Unavailable",
 		});
 		expect(rule.expr).toContain(
@@ -172,7 +184,7 @@ describe("alert compilation and presets", () => {
 					lookbackWindow: "5m",
 					forDuration: "5m",
 					severity: "warning",
-					name: "Low cache",
+					name: "alert-postgres-cache-hit-warning-eq-90",
 					description: "",
 					notificationIds: [],
 					enabled: true,
@@ -190,6 +202,37 @@ describe("alert compilation and presets", () => {
 			...DATABASE_ALERT_PRESETS.redis,
 		]) {
 			expect(preset.enabled).toBe(false);
+			expect(
+				preset.name.startsWith(`alert-${preset.metricKey.split(".")[0]}-`),
+			).toBe(true);
+			expect(() =>
+				DatabaseAlertRuleInput.parse({
+					...preset,
+					serviceId: "service-1",
+					notificationIds: [],
+				}),
+			).not.toThrow();
 		}
+	});
+
+	it("requires the alert name to match the database type", () => {
+		expect(() =>
+			validateDatabaseAlertInput(
+				{
+					serviceId: "postgres-1",
+					metricKey: "postgres.up",
+					operator: "eq",
+					threshold: 0,
+					lookbackWindow: "1m",
+					forDuration: "1m",
+					severity: "critical",
+					name: "alert-redis-availability-critical-eq-0",
+					description: "",
+					notificationIds: [],
+					enabled: true,
+				},
+				"postgres",
+			),
+		).toThrow('must start with "alert-postgres-"');
 	});
 });

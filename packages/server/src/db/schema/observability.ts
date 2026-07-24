@@ -357,6 +357,18 @@ export const PrometheusDuration = z
 	.string()
 	.regex(/^(?:0|[1-9]\d*)(?:s|m|h|d|w)$/, "Invalid Prometheus duration");
 
+export const DATABASE_ALERT_NAME_PATTERN = /^alert-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export const DATABASE_ALERT_NAME_MESSAGE =
+	'Alert names must use lowercase kebab-case, start with "alert-", and contain only letters, numbers, and single hyphens';
+
+export const DatabaseAlertName = z
+	.string()
+	.trim()
+	.min(1)
+	.max(120)
+	.regex(DATABASE_ALERT_NAME_PATTERN, DATABASE_ALERT_NAME_MESSAGE);
+
 /**
  * Public builder contract. The server derives databaseType and compiles PromQL;
  * callers can never submit free-form PromQL.
@@ -369,7 +381,7 @@ export const DatabaseAlertRuleInput = z.object({
 	lookbackWindow: PrometheusDuration,
 	forDuration: PrometheusDuration,
 	severity: z.enum(["info", "warning", "critical"]),
-	name: z.string().trim().min(1).max(120),
+	name: DatabaseAlertName,
 	description: z.string().trim().max(500).default(""),
 	notificationIds: z.array(z.string().min(1)).max(50),
 	enabled: z.boolean(),

@@ -50,6 +50,21 @@ const emptyDraft: RuleDraft = {
 	enabled: true,
 };
 
+const alertNamePattern = /^alert-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+const getAlertNameError = (name: string, databaseType: DatabaseKind) => {
+	const trimmedName = name.trim();
+	if (!trimmedName) return "Enter an alert name.";
+	if (!alertNamePattern.test(trimmedName)) {
+		return 'Use lowercase kebab-case starting with "alert-" and separate words with single hyphens.';
+	}
+	const requiredPrefix = `alert-${databaseType}-`;
+	if (!trimmedName.startsWith(requiredPrefix)) {
+		return `Names for this database must start with "${requiredPrefix}".`;
+	}
+	return null;
+};
+
 const datasourceUid = (serviceId: string) =>
 	`dokploy-${serviceId.replaceAll(/[^a-zA-Z0-9_-]/g, "_")}`.slice(0, 40);
 
@@ -250,6 +265,7 @@ export function ManagedDatabaseMonitoring({
 			catalog.data?.metrics.find((metric) => metric.key === draft.metricKey),
 		[catalog.data?.metrics, draft.metricKey],
 	);
+	const alertNameError = getAlertNameError(draft.name, databaseType);
 
 	const applyPreset = (
 		preset: NonNullable<typeof catalog.data>["presets"][number],
@@ -271,8 +287,12 @@ export function ManagedDatabaseMonitoring({
 
 	const submitRule = () => {
 		const threshold = Number(draft.threshold);
-		if (!draft.metricKey || !draft.name || !Number.isFinite(threshold)) {
-			toast.error("Choose a metric and enter a valid name and threshold");
+		if (!draft.metricKey || !Number.isFinite(threshold)) {
+			toast.error("Choose a metric and enter a valid threshold");
+			return;
+		}
+		if (alertNameError) {
+			toast.error(alertNameError);
 			return;
 		}
 		const rule = {
@@ -719,7 +739,23 @@ export function ManagedDatabaseMonitoring({
 													name: event.target.value,
 												}))
 											}
+											placeholder={`alert-${databaseType}-apps-prd-memory-critical-gt-90`}
+											maxLength={120}
+											autoCapitalize="none"
+											spellCheck={false}
+											aria-invalid={Boolean(draft.name && alertNameError)}
 										/>
+										<p
+											className={
+												draft.name && alertNameError
+													? "text-xs text-destructive"
+													: "text-xs text-muted-foreground"
+											}
+										>
+											{draft.name && alertNameError
+												? alertNameError
+												: `Required format: alert-${databaseType}-<scope>-<metric>-<severity>-<operator>-<threshold>.`}
+										</p>
 									</div>
 									<div className="space-y-2">
 										<Label>Description</Label>
