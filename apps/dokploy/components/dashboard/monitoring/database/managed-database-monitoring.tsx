@@ -1,4 +1,11 @@
-import { Download, Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import {
+	Download,
+	Loader2,
+	Pencil,
+	Plus,
+	RefreshCw,
+	Trash2,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -6,6 +13,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -115,6 +130,7 @@ export function ManagedDatabaseMonitoring({
 	const [publicUrl, setPublicUrl] = useState("");
 	const [draft, setDraft] = useState<RuleDraft>(emptyDraft);
 	const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+	const [alertBuilderOpen, setAlertBuilderOpen] = useState(false);
 	const [databaseMonitoringEnabled, setDatabaseMonitoringEnabled] =
 		useState(monitoringEnabled);
 	const currentMember = api.user.get.useQuery();
@@ -233,6 +249,7 @@ export function ManagedDatabaseMonitoring({
 	const createRule = api.observability.createRule.useMutation({
 		onSuccess: async () => {
 			toast.success("Alert rule saved");
+			setAlertBuilderOpen(false);
 			setDraft(emptyDraft);
 			setEditingRuleId(null);
 			await invalidate();
@@ -242,6 +259,7 @@ export function ManagedDatabaseMonitoring({
 	const updateRule = api.observability.updateRule.useMutation({
 		onSuccess: async () => {
 			toast.success("Alert rule updated");
+			setAlertBuilderOpen(false);
 			setDraft(emptyDraft);
 			setEditingRuleId(null);
 			await invalidate();
@@ -266,6 +284,20 @@ export function ManagedDatabaseMonitoring({
 		[catalog.data?.metrics, draft.metricKey],
 	);
 	const alertNameError = getAlertNameError(draft.name, databaseType);
+
+	const handleAlertBuilderOpenChange = (open: boolean) => {
+		setAlertBuilderOpen(open);
+		if (!open) {
+			setEditingRuleId(null);
+			setDraft(emptyDraft);
+		}
+	};
+
+	const openCreateAlertBuilder = () => {
+		setEditingRuleId(null);
+		setDraft(emptyDraft);
+		setAlertBuilderOpen(true);
+	};
 
 	const applyPreset = (
 		preset: NonNullable<typeof catalog.data>["presets"][number],
@@ -581,24 +613,57 @@ export function ManagedDatabaseMonitoring({
 							</CardContent>
 						</Card>
 					)}
-					{(canCreate || (canUpdate && editingRuleId)) && (
-						<Card>
-							<CardHeader>
-								<CardTitle className="text-base">Alert builder</CardTitle>
-							</CardHeader>
-							<CardContent className="space-y-5">
-								<div className="flex flex-wrap gap-2">
-									{catalog.data?.presets.map((preset) => (
-										<Button
-											key={preset.presetKey}
-											variant="outline"
-											size="sm"
-											onClick={() => applyPreset(preset)}
-										>
-											{preset.name}
-										</Button>
-									))}
-								</div>
+					<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+						<div>
+							<h3 className="font-medium">Alert rules</h3>
+							<p className="text-sm text-muted-foreground">
+								Create and manage catalog-backed alerts for this database.
+							</p>
+						</div>
+						{canCreate && (
+							<Button
+								onClick={openCreateAlertBuilder}
+								disabled={!databaseMonitoringEnabled}
+							>
+								<Plus className="mr-2 size-4" />
+								Create alert
+							</Button>
+						)}
+					</div>
+
+					<Dialog
+						open={alertBuilderOpen}
+						onOpenChange={handleAlertBuilderOpenChange}
+					>
+						<DialogContent className="sm:max-w-5xl">
+							<DialogHeader>
+								<DialogTitle>
+									{editingRuleId ? "Edit alert" : "Create alert"}
+								</DialogTitle>
+								<DialogDescription>
+									{editingRuleId
+										? "Update the alert condition and notification destinations."
+										: "Build an alert from the managed metric catalog."}
+								</DialogDescription>
+							</DialogHeader>
+							<div className="space-y-5">
+								{!editingRuleId && (
+									<div className="space-y-2">
+										<Label>Start from a preset</Label>
+										<div className="flex flex-wrap gap-2">
+											{catalog.data?.presets.map((preset) => (
+												<Button
+													key={preset.presetKey}
+													variant="outline"
+													size="sm"
+													onClick={() => applyPreset(preset)}
+												>
+													{preset.name}
+												</Button>
+											))}
+										</div>
+									</div>
+								)}
 								<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 									<div className="space-y-2">
 										<Label>Metric</Label>
@@ -806,35 +871,31 @@ export function ManagedDatabaseMonitoring({
 										})}
 									</div>
 								</div>
-								<div className="flex gap-2">
-									<Button
-										onClick={submitRule}
-										disabled={
-											createRule.isPending ||
-											updateRule.isPending ||
-											!monitoringEnabled
-										}
-									>
-										{(createRule.isPending || updateRule.isPending) && (
-											<Loader2 className="mr-2 size-4 animate-spin" />
-										)}
-										{editingRuleId ? "Update alert" : "Save alert"}
-									</Button>
-									{editingRuleId && (
-										<Button
-											variant="outline"
-											onClick={() => {
-												setEditingRuleId(null);
-												setDraft(emptyDraft);
-											}}
-										>
-											Cancel
-										</Button>
+							</div>
+							<DialogFooter>
+								<Button
+									variant="outline"
+									onClick={() => handleAlertBuilderOpenChange(false)}
+									disabled={createRule.isPending || updateRule.isPending}
+								>
+									Cancel
+								</Button>
+								<Button
+									onClick={submitRule}
+									disabled={
+										createRule.isPending ||
+										updateRule.isPending ||
+										!databaseMonitoringEnabled
+									}
+								>
+									{(createRule.isPending || updateRule.isPending) && (
+										<Loader2 className="mr-2 size-4 animate-spin" />
 									)}
-								</div>
-							</CardContent>
-						</Card>
-					)}
+									{editingRuleId ? "Update alert" : "Create alert"}
+								</Button>
+							</DialogFooter>
+						</DialogContent>
+					</Dialog>
 
 					<div className="space-y-3">
 						{rules.data?.map((rule) => (
@@ -874,6 +935,7 @@ export function ManagedDatabaseMonitoring({
 										<Button
 											variant="ghost"
 											size="icon"
+											aria-label={`Edit ${rule.name}`}
 											onClick={() => {
 												setEditingRuleId(rule.databaseAlertRuleId);
 												setDraft({
@@ -890,6 +952,7 @@ export function ManagedDatabaseMonitoring({
 													),
 													enabled: rule.enabled,
 												});
+												setAlertBuilderOpen(true);
 											}}
 										>
 											<Pencil className="size-4" />
@@ -899,6 +962,7 @@ export function ManagedDatabaseMonitoring({
 										<Button
 											variant="ghost"
 											size="icon"
+											aria-label={`Delete ${rule.name}`}
 											onClick={() =>
 												removeRule.mutate({
 													ruleId: rule.databaseAlertRuleId,
