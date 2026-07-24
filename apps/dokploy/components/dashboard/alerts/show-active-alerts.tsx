@@ -1,11 +1,10 @@
-import { formatDistanceToNow } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import {
 	AlertTriangle,
 	CheckCircle2,
 	Clock3,
 	Database,
 	ExternalLink,
-	Folder,
 	Info,
 	RefreshCw,
 	Search,
@@ -28,12 +27,22 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { api } from "@/utils/api";
+import { api, type RouterOutputs } from "@/utils/api";
 import {
 	type ActiveAlertFilters,
 	filterActiveAlerts,
 } from "./active-alert-filters";
+
+type ActiveAlert = RouterOutputs["observability"]["activeAlerts"][number];
 
 const defaultFilters: ActiveAlertFilters = {
 	search: "",
@@ -55,6 +64,18 @@ const severityIcon = {
 	critical: ShieldAlert,
 	warning: AlertTriangle,
 	info: Info,
+} as const;
+
+const severityLabel = {
+	critical: "Critical",
+	warning: "Warning",
+	info: "Info",
+} as const;
+
+const severityIconClassName = {
+	critical: "bg-red-500/10 text-red-500",
+	warning: "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400",
+	info: "bg-blue-500/10 text-blue-500",
 } as const;
 
 export function ShowActiveAlerts() {
@@ -359,8 +380,38 @@ export function ShowActiveAlerts() {
 					}
 				/>
 			) : (
-				<div className="space-y-3">
-					{filteredAlerts.map((alert) => {
+				<ActiveAlertsTable alerts={filteredAlerts} />
+			)}
+		</div>
+	);
+}
+
+function ActiveAlertsTable({ alerts }: { alerts: ActiveAlert[] }) {
+	return (
+		<div className="overflow-hidden rounded-xl border bg-card">
+			<Table
+				className="min-w-[900px] table-fixed"
+				aria-label="Unresolved alerts"
+			>
+				<TableHeader className="bg-muted/40">
+					<TableRow className="hover:bg-transparent">
+						<TableHead className="w-[28%]">Alert</TableHead>
+						<TableHead className="w-[110px]">Severity</TableHead>
+						<TableHead className="w-[160px]">Database</TableHead>
+						<TableHead className="hidden w-[180px] lg:table-cell">
+							Project / Environment
+						</TableHead>
+						<TableHead className="w-[135px]">Active for</TableHead>
+						<TableHead className="hidden w-[110px] xl:table-cell">
+							Signal
+						</TableHead>
+						<TableHead className="w-[80px] text-right">
+							<span className="sr-only">Actions</span>
+						</TableHead>
+					</TableRow>
+				</TableHeader>
+				<TableBody>
+					{alerts.map((alert) => {
 						const SeverityIcon = severityIcon[alert.severity];
 						const databaseHref =
 							alert.databaseType && alert.projectId && alert.environmentId
@@ -368,89 +419,126 @@ export function ShowActiveAlerts() {
 								: null;
 
 						return (
-							<Card
-								key={alert.databaseAlertEventId}
-								className={cn(
-									"border-l-4",
-									alert.severity === "critical" && "border-l-red-500",
-									alert.severity === "warning" && "border-l-yellow-500",
-									alert.severity === "info" && "border-l-blue-500",
-								)}
-							>
-								<CardContent className="p-4 sm:p-5">
-									<div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-										<div className="min-w-0 space-y-3">
-											<div className="flex flex-wrap items-center gap-2">
-												<SeverityIcon className="size-5" />
-												<h2 className="font-semibold">{alert.name}</h2>
-												<Badge variant={severityBadge[alert.severity]}>
-													{alert.severity}
-												</Badge>
-												<Badge variant="destructive">firing</Badge>
-												{alert.databaseType && (
-													<Badge variant="outline">
-														{alert.databaseType === "postgres"
-															? "PostgreSQL"
-															: "Redis"}
-													</Badge>
-												)}
-											</div>
-											{alert.description && (
-												<p className="text-sm text-muted-foreground">
-													{alert.description}
-												</p>
+							<TableRow key={alert.databaseAlertEventId}>
+								<TableCell className="min-w-[280px] whitespace-normal">
+									<div className="flex items-start gap-3">
+										<div
+											className={cn(
+												"mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md",
+												severityIconClassName[alert.severity],
 											)}
-											<div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
-												<span className="inline-flex items-center gap-1.5">
-													<Database className="size-4 text-muted-foreground" />
-													{alert.databaseName}
-												</span>
-												<span className="inline-flex items-center gap-1.5">
-													<Folder className="size-4 text-muted-foreground" />
-													{alert.projectName} / {alert.environmentName}
-												</span>
-												<span className="inline-flex items-center gap-1.5">
-													<Clock3 className="size-4 text-muted-foreground" />
-													Fired{" "}
-													{formatDistanceToNow(new Date(alert.startsAt), {
-														addSuffix: true,
-													})}
-												</span>
-											</div>
-											<div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-												{alert.metricKey && (
-													<code className="rounded bg-muted px-2 py-1">
-														{alert.metricKey}
-													</code>
-												)}
-												{alert.value !== null && (
-													<span className="rounded bg-muted px-2 py-1 font-mono">
-														value: {alert.value}
-													</span>
-												)}
-												<span>fingerprint: {alert.fingerprint}</span>
-											</div>
+										>
+											<SeverityIcon className="size-4" />
 										</div>
-										{databaseHref ? (
-											<Button asChild variant="outline" size="sm">
-												<Link href={databaseHref}>
-													Open database
-													<ExternalLink className="size-4" />
-												</Link>
-											</Button>
-										) : (
-											<Badge variant="secondary">
-												<Server className="size-3" />
-												Resource unavailable
-											</Badge>
-										)}
+										<div className="min-w-0">
+											<p className="truncate font-medium" title={alert.name}>
+												{alert.name}
+											</p>
+											<p
+												className="mt-0.5 max-w-[360px] truncate text-xs text-muted-foreground"
+												title={alert.description ?? undefined}
+											>
+												{alert.description || "No description provided"}
+											</p>
+										</div>
 									</div>
-								</CardContent>
-							</Card>
+								</TableCell>
+								<TableCell>
+									<div className="flex flex-col items-start gap-1.5">
+										<Badge variant={severityBadge[alert.severity]}>
+											{severityLabel[alert.severity]}
+										</Badge>
+										<span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+											<span
+												className="size-1.5 rounded-full bg-red-500"
+												aria-hidden="true"
+											/>
+											Firing
+										</span>
+									</div>
+								</TableCell>
+								<TableCell>
+									<div className="flex items-center gap-2">
+										<Database className="size-4 shrink-0 text-muted-foreground" />
+										<div className="min-w-0">
+											<p
+												className="max-w-[150px] truncate font-medium"
+												title={alert.databaseName}
+											>
+												{alert.databaseName}
+											</p>
+											<p className="text-xs text-muted-foreground">
+												{alert.databaseType === "postgres"
+													? "PostgreSQL"
+													: alert.databaseType === "redis"
+														? "Redis"
+														: "Unavailable"}
+											</p>
+										</div>
+									</div>
+								</TableCell>
+								<TableCell className="hidden whitespace-normal lg:table-cell">
+									<p
+										className="max-w-[170px] truncate font-medium"
+										title={alert.projectName}
+									>
+										{alert.projectName}
+									</p>
+									<p
+										className="max-w-[170px] truncate text-xs text-muted-foreground"
+										title={alert.environmentName}
+									>
+										{alert.environmentName}
+									</p>
+								</TableCell>
+								<TableCell>
+									<p className="font-medium">
+										{formatDistanceToNow(new Date(alert.startsAt))}
+									</p>
+									<p className="text-xs text-muted-foreground">
+										Since {format(new Date(alert.startsAt), "MMM d, HH:mm")}
+									</p>
+								</TableCell>
+								<TableCell className="hidden xl:table-cell">
+									{alert.metricKey ? (
+										<code className="rounded bg-muted px-1.5 py-1 text-xs">
+											{alert.metricKey}
+										</code>
+									) : (
+										<span className="text-muted-foreground">—</span>
+									)}
+									{alert.value !== null && (
+										<p className="mt-1 text-xs text-muted-foreground">
+											Value{" "}
+											<span className="font-mono text-foreground">
+												{alert.value}
+											</span>
+										</p>
+									)}
+								</TableCell>
+								<TableCell className="text-right">
+									{databaseHref ? (
+										<Button asChild variant="ghost" size="sm">
+											<Link href={databaseHref}>
+												Open
+												<ExternalLink className="size-3.5" />
+											</Link>
+										</Button>
+									) : (
+										<span
+											className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+											title="The database resource is no longer available"
+										>
+											<Server className="size-3.5" />
+											Unavailable
+										</span>
+									)}
+								</TableCell>
+							</TableRow>
 						);
 					})}
-				</div>
-			)}
+				</TableBody>
+			</Table>
 		</div>
 	);
 }
