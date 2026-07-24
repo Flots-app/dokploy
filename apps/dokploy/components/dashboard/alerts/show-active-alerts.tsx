@@ -395,7 +395,7 @@ function ActiveAlertsTable({ alerts }: { alerts: ActiveAlert[] }) {
 			>
 				<TableHeader className="bg-muted/40">
 					<TableRow className="hover:bg-transparent">
-						<TableHead className="w-[28%]">Alert</TableHead>
+						<TableHead className="w-[24%]">Alert</TableHead>
 						<TableHead className="w-[110px]">Severity</TableHead>
 						<TableHead className="w-[160px]">Database</TableHead>
 						<TableHead className="hidden w-[180px] lg:table-cell">
@@ -405,7 +405,7 @@ function ActiveAlertsTable({ alerts }: { alerts: ActiveAlert[] }) {
 						<TableHead className="hidden w-[110px] xl:table-cell">
 							Signal
 						</TableHead>
-						<TableHead className="w-[80px] text-right">
+						<TableHead className="w-[100px] px-2 text-right">
 							<span className="sr-only">Actions</span>
 						</TableHead>
 					</TableRow>
@@ -516,7 +516,7 @@ function ActiveAlertsTable({ alerts }: { alerts: ActiveAlert[] }) {
 										</p>
 									)}
 								</TableCell>
-								<TableCell className="text-right">
+								<TableCell className="px-2 text-right">
 									{databaseHref ? (
 										<Button asChild variant="ghost" size="sm">
 											<Link href={databaseHref}>
