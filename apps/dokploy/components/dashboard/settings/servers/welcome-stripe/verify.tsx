@@ -24,16 +24,20 @@ import { StatusRow } from "../gpu-support";
 
 export const Verify = () => {
 	const { data: servers } = api.server.all.useQuery();
-	const [serverId, setServerId] = useState<string>(
-		servers?.[0]?.serverId || "",
+	const [serverId, setServerId] = useState("");
+	const selectedServerId = serverId || servers?.[0]?.serverId || "";
+	const selectedServer = servers?.find(
+		(server) => server.serverId === selectedServerId,
 	);
+	const isBuildServer = selectedServer?.serverType === "build";
 	const { data, refetch, error, isPending, isError } =
 		api.server.validate.useQuery(
-			{ serverId },
+			{ serverId: selectedServerId },
 			{
-				enabled: !!serverId,
+				enabled: !!selectedServerId,
 			},
 		);
+	const isMacOS = data?.operatingSystem?.type === "macos";
 	const [isRefreshing, setIsRefreshing] = useState(false);
 
 	return (
@@ -43,7 +47,7 @@ export const Verify = () => {
 					<CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
 						<div className="flex flex-col gap-2 w-full">
 							<Label>Select a server</Label>
-							<Select onValueChange={setServerId} defaultValue={serverId}>
+							<Select onValueChange={setServerId} value={selectedServerId}>
 								<SelectTrigger>
 									<SelectValue placeholder="Select a server" />
 								</SelectTrigger>
@@ -101,27 +105,67 @@ export const Verify = () => {
 								<div className="border rounded-lg p-4">
 									<h3 className="text-lg font-semibold mb-1">Status</h3>
 									<p className="text-sm text-muted-foreground mb-4">
-										Shows the server configuration status
+										{isBuildServer
+											? "Shows the build server configuration status"
+											: "Shows the server configuration status"}
 									</p>
 									<div className="grid gap-2.5">
 										<StatusRow
-											label="Docker Installed"
-											isEnabled={data?.docker?.enabled}
+											label="Operating System"
+											isEnabled={data?.operatingSystem?.supported}
 											description={
-												data?.docker?.enabled
+												data?.operatingSystem
+													? `${data.operatingSystem.type} ${data.operatingSystem.version} (${data.operatingSystem.architecture})`
+													: undefined
+											}
+										/>
+										<StatusRow
+											label="Docker Installed"
+											isEnabled={data?.docker?.installed}
+											description={
+												data?.docker?.installed
 													? `Installed: ${data?.docker?.version}`
 													: undefined
 											}
 										/>
 										<StatusRow
-											label="RClone Installed"
-											isEnabled={data?.rclone?.enabled}
+											label="Docker Engine Available"
+											isEnabled={data?.docker?.engineEnabled}
 											description={
-												data?.rclone?.enabled
-													? `Installed: ${data?.rclone?.version}`
-													: undefined
+												data?.docker?.engineEnabled
+													? `Runtime: ${data?.docker?.runtime}`
+													: "Docker CLI cannot reach the engine"
 											}
 										/>
+										<StatusRow
+											label="Docker Compose Available"
+											isEnabled={data?.docker?.composeEnabled}
+											description={
+												data?.docker?.composeEnabled
+													? "Compose plugin is available"
+													: "Compose plugin is unavailable"
+											}
+										/>
+										<StatusRow
+											label="Docker Buildx Available"
+											isEnabled={data?.docker?.buildxEnabled}
+											description={
+												data?.docker?.buildxEnabled
+													? "Buildx plugin is available"
+													: "Buildx plugin is unavailable"
+											}
+										/>
+										{!isBuildServer && (
+											<StatusRow
+												label="RClone Installed"
+												isEnabled={data?.rclone?.enabled}
+												description={
+													data?.rclone?.enabled
+														? `Installed: ${data?.rclone?.version}`
+														: undefined
+												}
+											/>
+										)}
 										<StatusRow
 											label="Nixpacks Installed"
 											isEnabled={data?.nixpacks?.enabled}
@@ -141,23 +185,36 @@ export const Verify = () => {
 											}
 										/>
 										<StatusRow
-											label="Docker Swarm Initialized"
-											isEnabled={data?.isSwarmInstalled}
+											label="Railpack Installed"
+											isEnabled={data?.railpack?.enabled}
 											description={
-												data?.isSwarmInstalled
-													? "Initialized"
-													: "Not Initialized"
+												data?.railpack?.enabled
+													? `Installed: ${data?.railpack?.version}`
+													: undefined
 											}
 										/>
-										<StatusRow
-											label="Dokploy Network Created"
-											isEnabled={data?.isDokployNetworkInstalled}
-											description={
-												data?.isDokployNetworkInstalled
-													? "Created"
-													: "Not Created"
-											}
-										/>
+										{!isBuildServer && (
+											<>
+												<StatusRow
+													label="Docker Swarm Initialized"
+													isEnabled={data?.isSwarmInstalled}
+													description={
+														data?.isSwarmInstalled
+															? "Initialized"
+															: "Not Initialized"
+													}
+												/>
+												<StatusRow
+													label="Dokploy Network Created"
+													isEnabled={data?.isDokployNetworkInstalled}
+													description={
+														data?.isDokployNetworkInstalled
+															? "Created"
+															: "Not Created"
+													}
+												/>
+											</>
+										)}
 										<StatusRow
 											label="Main Directory Created"
 											isEnabled={data?.isMainDirectoryInstalled}
@@ -165,6 +222,33 @@ export const Verify = () => {
 												data?.isMainDirectoryInstalled
 													? "Created"
 													: "Not Created"
+											}
+										/>
+										<StatusRow
+											label="Privilege Mode"
+											isEnabled={
+												data?.privilegeMode === "root" ||
+												data?.privilegeMode === "sudo"
+											}
+											description={
+												data?.privilegeMode === "root"
+													? "Running as root"
+													: data?.privilegeMode === "sudo"
+														? "Running with sudo"
+														: "No sudo access (required for non-root)"
+											}
+										/>
+										<StatusRow
+											label={isMacOS ? "Colima Docker Access" : "Docker Group"}
+											isEnabled={data?.dockerGroupMember}
+											description={
+												isMacOS
+													? data?.dockerGroupMember
+														? "SSH user can access the Colima Docker engine"
+														: "SSH user cannot access the Colima Docker engine"
+													: data?.dockerGroupMember
+														? "User is in docker group"
+														: "User is not in docker group"
 											}
 										/>
 									</div>

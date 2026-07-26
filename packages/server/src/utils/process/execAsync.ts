@@ -9,6 +9,12 @@ export { ExecError } from "./ExecError";
 
 const execAsyncBase = util.promisify(exec);
 
+export const remoteCommandEnvironment = () =>
+	'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH";';
+
+export const withRemoteCommandEnvironment = (command: string) =>
+	`${remoteCommandEnvironment()}\n${command}`;
+
 export const execAsync = async (
 	command: string,
 	options?: { cwd?: string; env?: NodeJS.ProcessEnv; shell?: string },
@@ -153,11 +159,12 @@ export const execAsyncRemote = async (
 	let stderr = "";
 	return new Promise((resolve, reject) => {
 		const conn = new Client();
+		const remoteCommand = withRemoteCommandEnvironment(command);
 
 		sleep(1000);
 		conn
 			.once("ready", () => {
-				conn.exec(command, (err, stream) => {
+				conn.exec(remoteCommand, (err, stream) => {
 					if (err) {
 						onData?.(err.message);
 						reject(

@@ -20,7 +20,15 @@ import {
 import slug from "slugify";
 import { Client } from "ssh2";
 import { recreateDirectory } from "../utils/filesystem/directory";
+import {
+	remoteCommandEnvironment,
+	withRemoteCommandEnvironment,
+} from "../utils/process/execAsync";
 import { setupMonitoring } from "./monitoring-setup";
+import {
+	normalizeOperatingSystemType,
+	supportedLinuxOperatingSystemCasePattern,
+} from "./operating-system";
 
 const generateToken = () => {
 	const array = new Uint8Array(64);
@@ -121,18 +129,75 @@ else
 fi
 `;
 
+export const validateBuildServerDependencies = () => `
+	echo "Validating Build Server dependencies."
+	for dependency in git nixpacks pack railpack docker; do
+		if ! command -v "$dependency" >/dev/null 2>&1; then
+			echo "Required Build Server dependency '$dependency' is unavailable in PATH. ❌" >&2
+			exit 1
+		fi
+	done
+	if ! docker info >/dev/null 2>&1; then
+		echo "Docker CLI is installed but the Docker engine is unavailable. ❌" >&2
+		exit 1
+	fi
+	if ! docker compose version >/dev/null 2>&1; then
+		echo "Docker Compose plugin is unavailable. ❌" >&2
+		exit 1
+	fi
+	if ! docker buildx version >/dev/null 2>&1; then
+		echo "Docker Buildx plugin is unavailable. ❌" >&2
+		exit 1
+	fi
+	echo "Build Server dependencies validated ✅"
+`;
+
+export const detectOperatingSystem = (isBuildServer = false) => `
+IS_BUILD_SERVER=${isBuildServer ? "true" : "false"}
+KERNEL_NAME=$(uname -s)
+SYS_ARCH=$(uname -m)
+
+if [ "$KERNEL_NAME" = "Darwin" ]; then
+	OS_TYPE="macos"
+	OS_VERSION=$(sw_vers -productVersion)
+	MACOS_MAJOR_VERSION=$(echo "$OS_VERSION" | cut -d "." -f 1)
+	if [ "$MACOS_MAJOR_VERSION" -lt 13 ]; then
+		echo "macOS 13 or newer is required for Build Servers. Detected $OS_VERSION. ❌" >&2
+		exit 1
+	fi
+else
+	if [ ! -f /etc/os-release ]; then
+		echo "Unsupported operating system: /etc/os-release is missing. ❌" >&2
+		exit 1
+	fi
+	OS_TYPE=$(grep -w "ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
+
+	if [ "$OS_TYPE" = "arch" ] || [ "$OS_TYPE" = "archarm" ]; then
+		OS_VERSION="rolling"
+	else
+		OS_VERSION=$(grep -w "VERSION_ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
+	fi
+fi
+
+if [ "$OS_TYPE" = "macos" ] && [ "$IS_BUILD_SERVER" != "true" ]; then
+	echo "macOS is supported only for Build Servers. Runtime/deploy servers must use Linux. ❌" >&2
+	exit 1
+fi
+`;
+
 export const defaultCommand = (isBuildServer = false) => {
 	const bashCommand = `
-set -e;
+set -e
+${remoteCommandEnvironment()}
 DOCKER_VERSION=28.5.0
-OS_TYPE=$(grep -w "ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
-SYS_ARCH=$(uname -m)
-CURRENT_USER=$USER
+${detectOperatingSystem(isBuildServer)}
+CURRENT_USER=$(id -un)
+CURRENT_GROUP=$(id -gn "$CURRENT_USER")
 
 echo "Installing requirements for: OS: $OS_TYPE"
 
 # Auto-detect sudo requirement
-if [ "$EUID" -eq 0 ]; then
+if [ "$(id -u)" -eq 0 ]; then
 	SUDO_CMD=""
 	echo "Running as root"
 else
@@ -146,34 +211,9 @@ else
 	fi
 fi
 
-# Check if the OS is manjaro, if so, change it to arch
-if [ "$OS_TYPE" = "manjaro" ] || [ "$OS_TYPE" = "manjaro-arm" ]; then
-	OS_TYPE="arch"
-fi
+${normalizeOperatingSystemType("OS_TYPE")}
 
-# Check if the OS is Asahi Linux, if so, change it to fedora
-if [ "$OS_TYPE" = "fedora-asahi-remix" ]; then
-	OS_TYPE="fedora"
-fi
-
-# Check if the OS is popOS, if so, change it to ubuntu
-if [ "$OS_TYPE" = "pop" ]; then
-	OS_TYPE="ubuntu"
-fi
-
-# Check if the OS is linuxmint, if so, change it to ubuntu
-if [ "$OS_TYPE" = "linuxmint" ]; then
-	OS_TYPE="ubuntu"
-fi
-
-#Check if the OS is zorin, if so, change it to ubuntu
-if [ "$OS_TYPE" = "zorin" ]; then
-	OS_TYPE="ubuntu"
-fi
-
-if [ "$OS_TYPE" = "arch" ] || [ "$OS_TYPE" = "archarm" ]; then
-	OS_VERSION="rolling"
-else
+if [ "$OS_TYPE" != "macos" ] && [ "$OS_TYPE" != "arch" ] && [ "$OS_TYPE" != "archarm" ]; then
 	OS_VERSION=$(grep -w "VERSION_ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
 fi
 
@@ -182,10 +222,10 @@ if [ "$OS_TYPE" = 'amzn' ]; then
 fi
 
 case "$OS_TYPE" in
-arch | ubuntu | debian | raspbian | centos | fedora | rhel | ol | rocky | sles | opensuse-leap | opensuse-tumbleweed | almalinux | opencloudos | amzn | alpine) ;;
+${supportedLinuxOperatingSystemCasePattern()} | macos) ;;
 *)
-	echo "This script only supports Debian, Redhat, Arch Linux, Alpine Linux, or SLES based operating systems for now."
-	exit
+	echo "This script supports macOS Build Servers and Debian, Redhat, Arch Linux, Alpine Linux, or SLES based operating systems. ❌" >&2
+	exit 1
 	;;
 esac
 
@@ -268,6 +308,9 @@ ${installRailpack()}
 
 echo -e "7. Configuring permissions"
 ${setupPermissions()}
+
+echo -e "8. Validating Build Server"
+${validateBuildServerDependencies()}
 `
 }
 				`;
@@ -292,16 +335,25 @@ const installRequirements = async (
 		client
 			.once("ready", () => {
 				const command = server.command || defaultCommand(isBuildServer);
-				client.exec(command, (err, stream) => {
+				const remoteCommand = withRemoteCommandEnvironment(command);
+				client.exec(remoteCommand, (err, stream) => {
 					if (err) {
 						onData?.(err.message);
 						reject(err);
 						return;
 					}
 					stream
-						.on("close", () => {
+						.on("close", (code: number | null, signal: string) => {
 							client.end();
-							resolve();
+							if (code === 0) {
+								resolve();
+								return;
+							}
+							reject(
+								new Error(
+									`Setup command failed with exit code ${code ?? "unknown"}${signal ? ` (${signal})` : ""}`,
+								),
+							);
 						})
 						.on("data", (data: string) => {
 							onData?.(data.toString());
@@ -390,7 +442,7 @@ const setupMainDirectory = () => `
 	fi
 	# Ensure the current user owns the directory
 	if [ -n "$SUDO_CMD" ]; then
-		$SUDO_CMD chown -R $CURRENT_USER:$CURRENT_USER /etc/dokploy
+		$SUDO_CMD chown -R "$CURRENT_USER:$CURRENT_GROUP" /etc/dokploy
 	fi
 `;
 
@@ -481,6 +533,30 @@ const validatePorts = () => `
 const installUtilities = () => `
 
 	case "$OS_TYPE" in
+	macos)
+		if ! xcode-select -p >/dev/null 2>&1; then
+			echo "Xcode Command Line Tools are required on macOS. Run 'xcode-select --install' in the logged-in desktop session, then retry. ❌" >&2
+			exit 1
+		fi
+
+		if ! command -v brew >/dev/null 2>&1; then
+			echo "Installing Homebrew..."
+			NONINTERACTIVE=1 CI=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+		fi
+
+		if [ -x /opt/homebrew/bin/brew ]; then
+			eval "$(/opt/homebrew/bin/brew shellenv)"
+		elif [ -x /usr/local/bin/brew ]; then
+			eval "$(/usr/local/bin/brew shellenv)"
+		else
+			echo "Homebrew installation completed but brew is not available in a supported prefix. ❌" >&2
+			exit 1
+		fi
+
+		export HOMEBREW_NO_AUTO_UPDATE=1
+		brew install curl wget git git-lfs jq openssl
+		git lfs install --skip-repo
+		;;
 	arch)
 		$SUDO_CMD pacman -Sy --noconfirm --needed curl wget git git-lfs jq openssl >/dev/null || true
 		;;
@@ -512,14 +588,93 @@ const installUtilities = () => `
 		$SUDO_CMD zypper install -y curl wget git git-lfs jq openssl >/dev/null
 		;;
 	*)
-		echo "This script only supports Debian, Redhat, Arch Linux, or SLES based operating systems for now."
-		exit
+		echo "This script supports macOS Build Servers and Debian, Redhat, Arch Linux, Alpine Linux, or SLES based operating systems. ❌" >&2
+		exit 1
 		;;
 	esac
 `;
 
+export const installMacDocker = () => `
+	echo "Installing the macOS Docker build runtime with Homebrew and Colima."
+	export HOMEBREW_NO_AUTO_UPDATE=1
+	brew install colima docker docker-compose docker-buildx
+
+	HOMEBREW_PREFIX=$(brew --prefix)
+	DOCKER_CONFIG_DIR="$HOME/.docker"
+	DOCKER_CONFIG_FILE="$DOCKER_CONFIG_DIR/config.json"
+	DOCKER_PLUGIN_DIR="$HOMEBREW_PREFIX/lib/docker/cli-plugins"
+	mkdir -p "$DOCKER_CONFIG_DIR"
+
+	if [ -s "$DOCKER_CONFIG_FILE" ] && ! jq empty "$DOCKER_CONFIG_FILE" >/dev/null 2>&1; then
+		echo "Docker config $DOCKER_CONFIG_FILE is not valid JSON; refusing to overwrite it. ❌" >&2
+		exit 1
+	fi
+
+	DOCKER_CONFIG_TMP=$(mktemp)
+	if [ -s "$DOCKER_CONFIG_FILE" ]; then
+		jq --arg pluginDir "$DOCKER_PLUGIN_DIR" \
+			'.cliPluginsExtraDirs = (((.cliPluginsExtraDirs // []) + [$pluginDir]) | unique)' \
+			"$DOCKER_CONFIG_FILE" > "$DOCKER_CONFIG_TMP"
+	else
+		jq -n --arg pluginDir "$DOCKER_PLUGIN_DIR" \
+			'{cliPluginsExtraDirs: [$pluginDir]}' > "$DOCKER_CONFIG_TMP"
+	fi
+	chmod 600 "$DOCKER_CONFIG_TMP"
+	mv "$DOCKER_CONFIG_TMP" "$DOCKER_CONFIG_FILE"
+
+	if brew services list | awk '$1 == "colima" && $2 == "started" { found=1 } END { exit !found }'; then
+		echo "Colima autostart is already configured ✅"
+	else
+		HOST_CPUS=$(sysctl -n hw.ncpu)
+		HOST_MEMORY_BYTES=$(sysctl -n hw.memsize)
+		COLIMA_CPUS=$((HOST_CPUS / 2))
+		COLIMA_MEMORY=$((HOST_MEMORY_BYTES / 1024 / 1024 / 1024 / 2))
+		COLIMA_DISK=100
+
+		if [ "$COLIMA_CPUS" -lt 2 ]; then COLIMA_CPUS=2; fi
+		if [ "$COLIMA_CPUS" -gt 8 ]; then COLIMA_CPUS=8; fi
+		if [ "$COLIMA_MEMORY" -lt 4 ]; then COLIMA_MEMORY=4; fi
+		if [ "$COLIMA_MEMORY" -gt 16 ]; then COLIMA_MEMORY=16; fi
+
+		if [ -n "$DOKPLOY_COLIMA_CPUS" ]; then COLIMA_CPUS="$DOKPLOY_COLIMA_CPUS"; fi
+		if [ -n "$DOKPLOY_COLIMA_MEMORY" ]; then COLIMA_MEMORY="$DOKPLOY_COLIMA_MEMORY"; fi
+		if [ -n "$DOKPLOY_COLIMA_DISK" ]; then COLIMA_DISK="$DOKPLOY_COLIMA_DISK"; fi
+
+		echo "Initializing Colima with $COLIMA_CPUS CPUs, $COLIMA_MEMORY GiB memory and $COLIMA_DISK GiB disk."
+		if colima status >/dev/null 2>&1; then
+			colima stop
+		fi
+		colima start --runtime docker --cpu "$COLIMA_CPUS" --memory "$COLIMA_MEMORY" --disk "$COLIMA_DISK"
+		colima stop
+		brew services start colima
+	fi
+
+	DOCKER_READY=false
+	_attempt=0
+	while [ "$_attempt" -lt 60 ]; do
+		if docker info >/dev/null 2>&1; then
+			DOCKER_READY=true
+			break
+		fi
+		_attempt=$((_attempt + 1))
+		sleep 2
+	done
+
+	if [ "$DOCKER_READY" != "true" ]; then
+		echo "Colima did not expose a working Docker engine within 120 seconds. Check 'brew services info colima' and 'colima status'. ❌" >&2
+		exit 1
+	fi
+
+	docker compose version
+	docker buildx version
+	echo "macOS Docker runtime is ready and configured for autostart ✅"
+`;
+
 const installDocker = () => `
 
+if [ "$OS_TYPE" = "macos" ]; then
+	${installMacDocker()}
+else
 # Detect if docker is installed via snap
 if [ -x "$(command -v snap)" ]; then
     SNAP_DOCKER_INSTALLED=$(snap list docker >/dev/null 2>&1 && echo "true" || echo "false")
@@ -590,7 +745,7 @@ if ! [ -x "$(command -v docker)" ]; then
             $SUDO_CMD dnf install docker -y >/dev/null 2>&1
             DOCKER_CONFIG=/usr/local/lib/docker
             $SUDO_CMD mkdir -p $DOCKER_CONFIG/cli-plugins >/dev/null 2>&1
-            $SUDO_CMD curl -sL https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) -o $DOCKER_CONFIG/cli-plugins/docker-compose >/dev/null 2>&1
+            $SUDO_CMD curl -sL "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o "$DOCKER_CONFIG/cli-plugins/docker-compose" >/dev/null 2>&1
             $SUDO_CMD chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose >/dev/null 2>&1
             $SUDO_CMD systemctl start docker >/dev/null 2>&1
             $SUDO_CMD systemctl enable docker >/dev/null 2>&1
@@ -647,6 +802,7 @@ if ! [ -x "$(command -v docker)" ]; then
     echo " - Docker installed successfully."
 else
     echo " - Docker is installed."
+fi
 fi
 `;
 
@@ -728,7 +884,11 @@ const installNixpacks = () => `
 		echo "Nixpacks already installed ✅"
 	else
 	    export NIXPACKS_VERSION=1.41.0
-        $SUDO_CMD bash -c "$(curl -fsSL https://nixpacks.com/install.sh)"
+		if [ "$OS_TYPE" = "macos" ]; then
+			curl -fsSL https://nixpacks.com/install.sh | bash -s -- --yes --bin-dir "$(brew --prefix)/bin"
+		else
+			$SUDO_CMD bash -c "$(curl -fsSL https://nixpacks.com/install.sh)"
+		fi
 		echo "Nixpacks version $NIXPACKS_VERSION installed ✅"
 	fi
 `;
@@ -738,14 +898,21 @@ const installRailpack = () => `
 		echo "Railpack already installed ✅"
 	else
 	    export RAILPACK_VERSION=0.15.4
-		$SUDO_CMD bash -c "$(curl -fsSL https://railpack.com/install.sh)"
+		if [ "$OS_TYPE" = "macos" ]; then
+			curl -fsSL https://railpack.com/install.sh | bash -s -- --yes --bin-dir "$(brew --prefix)/bin"
+		else
+			$SUDO_CMD bash -c "$(curl -fsSL https://railpack.com/install.sh)"
+		fi
 		echo "Railpack version $RAILPACK_VERSION installed ✅"
 	fi
 `;
 
 const setupPermissions = () => `
+	if [ "$OS_TYPE" = "macos" ]; then
+		$SUDO_CMD chown -R "$CURRENT_USER:$CURRENT_GROUP" /etc/dokploy
+		echo "Permissions configured for $CURRENT_USER; Colima provides Docker access without a docker group ✅"
 	# Add user to docker group if not root
-	if [ -n "$SUDO_CMD" ]; then
+	elif [ -n "$SUDO_CMD" ]; then
 		if ! groups $CURRENT_USER | grep -qw docker; then
 			$SUDO_CMD usermod -aG docker $CURRENT_USER
 			echo "User $CURRENT_USER added to docker group ✅"
@@ -753,7 +920,7 @@ const setupPermissions = () => `
 			echo "User $CURRENT_USER already in docker group ✅"
 		fi
 		# Ensure the user owns the dokploy directory
-		$SUDO_CMD chown -R $CURRENT_USER:$CURRENT_USER /etc/dokploy
+		$SUDO_CMD chown -R "$CURRENT_USER:$CURRENT_GROUP" /etc/dokploy
 		echo "Permissions configured for $CURRENT_USER ✅"
 	else
 		echo "Running as root, no extra permissions needed ✅"
@@ -761,15 +928,19 @@ const setupPermissions = () => `
 `;
 
 const installBuildpacks = () => `
-	SUFFIX=""
-	if [ "$SYS_ARCH" = "aarch64" ] || [ "$SYS_ARCH" = "arm64" ]; then
-		SUFFIX="-arm64"
-	fi
 	if command_exists pack; then
 		echo "Buildpacks already installed ✅"
 	else
 		BUILDPACKS_VERSION=0.39.1
-		curl -sSL "https://github.com/buildpacks/pack/releases/download/v0.39.1/pack-v$BUILDPACKS_VERSION-linux$SUFFIX.tgz" | $SUDO_CMD tar -C /usr/local/bin/ --no-same-owner -xzv pack
+		SUFFIX=""
+		if [ "$SYS_ARCH" = "aarch64" ] || [ "$SYS_ARCH" = "arm64" ]; then
+			SUFFIX="-arm64"
+		fi
+		if [ "$OS_TYPE" = "macos" ]; then
+			curl -sSL "https://github.com/buildpacks/pack/releases/download/v$BUILDPACKS_VERSION/pack-v$BUILDPACKS_VERSION-macos$SUFFIX.tgz" | tar -C "$(brew --prefix)/bin" --no-same-owner -xzv pack
+		else
+			curl -sSL "https://github.com/buildpacks/pack/releases/download/v$BUILDPACKS_VERSION/pack-v$BUILDPACKS_VERSION-linux$SUFFIX.tgz" | $SUDO_CMD tar -C /usr/local/bin/ --no-same-owner -xzv pack
+		fi
 		echo "Buildpacks version $BUILDPACKS_VERSION installed ✅"
 	fi
 `;

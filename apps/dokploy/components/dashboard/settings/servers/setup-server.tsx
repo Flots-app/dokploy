@@ -123,6 +123,16 @@ export const SetupServer = ({ serverId, asButton = false }: Props) => {
 							sudo access. If using a non-root user, ensure passwordless sudo is
 							configured.
 						</AlertBlock>
+						{isBuildServer && (
+							<AlertBlock type="info">
+								Build Servers support Linux and macOS 13 or newer. On macOS,
+								Setup Server installs Homebrew, Colima, Docker Compose and
+								Buildx, then configures Colima to start with the logged-in user.
+								Xcode Command Line Tools and an active macOS user session are
+								required. Apple Silicon builds must target the architecture used
+								by the runtime server.
+							</AlertBlock>
+						)}
 
 						<Tabs defaultValue="ssh-keys">
 							<TabsList
@@ -252,13 +262,16 @@ export const SetupServer = ({ serverId, asButton = false }: Props) => {
 									</div>
 									<div className="flex flex-col gap-2 w-full border rounded-lg p-4">
 										<span className="text-base font-semibold text-primary">
-											Supported Distros:
+											Supported Operating Systems:
 										</span>
 										<p>
 											We strongly recommend to use the following distros to
 											ensure the best experience:
 										</p>
 										<ul>
+											{isBuildServer && (
+												<li>macOS 13 or newer (Build Servers only)</li>
+											)}
 											<li>1. Ubuntu 24.04 LTS</li>
 											<li>2. Ubuntu 23.10 LTS </li>
 											<li>3. Ubuntu 22.04 LTS</li>
@@ -285,8 +298,9 @@ export const SetupServer = ({ serverId, asButton = false }: Props) => {
 															Setup Server
 														</CardTitle>
 														<CardDescription>
-															To setup a server, please click on the button
-															below.
+															{isBuildServer
+																? "Install and configure the Build Server dependencies."
+																: "To setup a server, please click on the button below."}
 														</CardDescription>
 													</div>
 												</div>
@@ -303,7 +317,11 @@ export const SetupServer = ({ serverId, asButton = false }: Props) => {
 														<DialogAction
 															title={"Setup Server?"}
 															type="default"
-															description="This will setup the server and all associated data"
+															description={
+																isBuildServer
+																	? "This installs the Build Server dependencies. macOS uses Homebrew and Colima."
+																	: "This will setup the server and all associated data"
+															}
 															onClick={async () => {
 																setIsDeploying(true);
 															}}
