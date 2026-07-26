@@ -68,6 +68,40 @@ const makeDarwinSandbox = (version = "14.7.2") => {
 	return dir;
 };
 
+const validateLinuxOperatingSystem = (
+	operatingSystemType: string,
+	operatingSystemVersion: string,
+) => {
+	const dir = makeSandbox();
+	const operatingSystemReleaseFile = path.join(dir, "os-release");
+	writeFileSync(
+		operatingSystemReleaseFile,
+		`ID="${operatingSystemType}"\nVERSION_ID="${operatingSystemVersion}"\n`,
+	);
+	addShim(
+		dir,
+		"uname",
+		[
+			"#!/bin/sh",
+			'[ "$1" = "-s" ] && { echo Linux; exit 0; }',
+			'[ "$1" = "-m" ] && { echo x86_64; exit 0; }',
+			"echo Linux",
+		].join("\n"),
+	);
+
+	return execFileSync(
+		resolveBin("bash"),
+		[
+			"-c",
+			`${validateOperatingSystem(false, operatingSystemReleaseFile)}\nprintf '%s|%s|%s' "$operatingSystemType" "$operatingSystemVersion" "$operatingSystemSupported"`,
+		],
+		{
+			encoding: "utf8",
+			env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+		},
+	).trim();
+};
+
 const runReport = (sandboxPath: string) => {
 	const script = [
 		"DOCKER_VERSION=28.5.0",
@@ -269,6 +303,24 @@ describe("macOS platform detection", () => {
 		expect(result.buildpacks).toEqual({ version: "0.39.1", enabled: true });
 		expect(result.railpack).toEqual({ version: "0.15.4", enabled: true });
 		expect(result.dockerGroupMember).toBe(true);
+	});
+});
+
+describe("Linux platform validation", () => {
+	it("marks an allowlisted Linux distribution as supported", () => {
+		expect(validateLinuxOperatingSystem("debian", "13")).toBe("debian|13|true");
+	});
+
+	it("normalizes and supports a derivative handled by setup", () => {
+		expect(validateLinuxOperatingSystem("linuxmint", "22")).toBe(
+			"ubuntu|22|true",
+		);
+	});
+
+	it("rejects a Linux distribution outside the setup allowlist", () => {
+		expect(validateLinuxOperatingSystem("gentoo", "2.17")).toBe(
+			"gentoo|2.17|false",
+		);
 	});
 });
 

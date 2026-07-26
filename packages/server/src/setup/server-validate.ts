@@ -1,6 +1,11 @@
+import { quote } from "shell-quote";
 import { Client } from "ssh2";
 import { findServerById } from "../services/server";
 import { withRemoteCommandEnvironment } from "../utils/process/execAsync";
+import {
+	normalizeOperatingSystemType,
+	supportedLinuxOperatingSystemCasePattern,
+} from "./operating-system";
 
 export const validateDocker = () => `
   dockerVersion="0.0.0"
@@ -118,7 +123,11 @@ export const validateDockerGroup = () => `
   fi
 `;
 
-export const validateOperatingSystem = (isBuildServer: boolean) => `
+export const validateOperatingSystem = (
+	isBuildServer: boolean,
+	operatingSystemReleaseFile = "/etc/os-release",
+) => `
+  operatingSystemReleaseFile=${quote([operatingSystemReleaseFile])}
   operatingSystemKernel=$(uname -s)
   operatingSystemArchitecture=$(uname -m)
   if [ "$operatingSystemKernel" = "Darwin" ]; then
@@ -129,10 +138,18 @@ export const validateOperatingSystem = (isBuildServer: boolean) => `
     if [ "$operatingSystemMajorVersion" -ge 13 ] && [ "${isBuildServer ? "true" : "false"}" = "true" ]; then
       operatingSystemSupported=true
     fi
-  elif [ -f /etc/os-release ]; then
-    operatingSystemType=$(grep -w "ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
-    operatingSystemVersion=$(grep -w "VERSION_ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
-    operatingSystemSupported=true
+  elif [ -f "$operatingSystemReleaseFile" ]; then
+    operatingSystemType=$(grep -w "ID" "$operatingSystemReleaseFile" | cut -d "=" -f 2 | tr -d '"')
+    if [ "$operatingSystemType" = "arch" ] || [ "$operatingSystemType" = "archarm" ]; then
+      operatingSystemVersion="rolling"
+    else
+      operatingSystemVersion=$(grep -w "VERSION_ID" "$operatingSystemReleaseFile" | cut -d "=" -f 2 | tr -d '"')
+    fi
+    ${normalizeOperatingSystemType("operatingSystemType")}
+    operatingSystemSupported=false
+    case "$operatingSystemType" in
+      ${supportedLinuxOperatingSystemCasePattern()}) operatingSystemSupported=true ;;
+    esac
   else
     operatingSystemType="unknown"
     operatingSystemVersion="unknown"

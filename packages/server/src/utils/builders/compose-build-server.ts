@@ -36,6 +36,11 @@ export interface ValidatedComposeBuild {
 	routedServices: string[];
 }
 
+export interface ComposeBuildServerPlatformContext {
+	buildPlatform: string;
+	runtimePlatform: string;
+}
+
 export interface ComposeBuildServerDomain {
 	host: string;
 	https: boolean;
@@ -378,6 +383,65 @@ const imageTag = (image: string) => {
 	return lastColon > lastSlash ? image.slice(lastColon + 1) : null;
 };
 
+const normalizeArchitecture = (architecture: string) => {
+	switch (architecture.toLowerCase()) {
+		case "x86_64":
+		case "x86-64":
+		case "amd64":
+			return "amd64";
+		case "aarch64":
+		case "arm64":
+		case "arm64v8":
+			return "arm64";
+		default:
+			return architecture.toLowerCase();
+	}
+};
+
+export const normalizeDockerPlatform = (platform: string) => {
+	const parts = platform.trim().toLowerCase().split("/");
+	if (parts.length === 1 && parts[0]) {
+		return `linux/${normalizeArchitecture(parts[0])}`;
+	}
+	if (parts.length >= 2 && parts[0] && parts[1]) {
+		return `${parts[0]}/${normalizeArchitecture(parts[1])}`;
+	}
+	throw new Error(`Invalid Docker platform "${platform}"`);
+};
+
+const validateBuildPlatforms = (
+	buildEntries: Array<
+		[string, NonNullable<ComposeSpecification["services"]>[string]]
+	>,
+	platforms: ComposeBuildServerPlatformContext | undefined,
+) => {
+	if (!platforms) return;
+
+	const buildPlatform = normalizeDockerPlatform(platforms.buildPlatform);
+	const runtimePlatform = normalizeDockerPlatform(platforms.runtimePlatform);
+	if (buildPlatform === runtimePlatform) return;
+
+	for (const [serviceName, service] of buildEntries) {
+		const servicePlatform =
+			typeof service.platform === "string"
+				? normalizeDockerPlatform(service.platform)
+				: null;
+		const buildPlatforms =
+			service.build && typeof service.build === "object"
+				? (service.build.platforms || []).map(normalizeDockerPlatform)
+				: [];
+		const targetsRuntime =
+			servicePlatform === runtimePlatform ||
+			(servicePlatform === null && buildPlatforms.includes(runtimePlatform));
+
+		if (!targetsRuntime) {
+			throw new Error(
+				`Buildable service "${serviceName}" would default to Build Server platform "${buildPlatform}", but the runtime server uses "${runtimePlatform}". Add platform: ${runtimePlatform} to this service (or include "${runtimePlatform}" in build.platforms for a multi-platform image).`,
+			);
+		}
+	}
+};
+
 const belongsToRegistry = (
 	image: string,
 	registry: Pick<Registry, "registryUrl" | "imagePrefix" | "username">,
@@ -648,6 +712,7 @@ export const validateComposeBuildServerSpecification = (
 	deploymentId: string,
 	mounts: DokployComposeMount[] = [],
 	domains: ComposeBuildServerDomain[] = [],
+	platforms?: ComposeBuildServerPlatformContext,
 ): ValidatedComposeBuild => {
 	const services = specification.services || {};
 	const zeroDowntime = readZeroDowntimeSettings(specification);
@@ -698,6 +763,7 @@ export const validateComposeBuildServerSpecification = (
 			"Compose Build Servers V1 require at least one service with build:",
 		);
 	}
+	validateBuildPlatforms(buildEntries, platforms);
 
 	const builtServices: string[] = [];
 	const builtImages: string[] = [];

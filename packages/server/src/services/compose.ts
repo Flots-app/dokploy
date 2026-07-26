@@ -52,6 +52,7 @@ import {
 	getWriteActivationJournalCommand,
 	getWriteReleaseMetadataCommand,
 	getWriteRuntimeReleaseStateCommand,
+	normalizeDockerPlatform,
 	validateComposeBuildServerSpecification,
 } from "@dokploy/server/utils/builders/compose-build-server";
 import { randomizeSpecificationFile } from "@dokploy/server/utils/docker/compose";
@@ -113,6 +114,29 @@ const appendDeploymentLog = async (
 const executeOnServer = async (serverId: string | null, command: string) => {
 	if (serverId) return await execAsyncRemote(serverId, command);
 	return await execAsync(command);
+};
+
+const inspectDockerPlatform = async (
+	serverId: string | null,
+	serverRole: "Build Server" | "runtime server",
+) => {
+	try {
+		const result = await executeOnServer(
+			serverId,
+			"docker info --format '{{.OSType}}/{{.Architecture}}'",
+		);
+		const platform = result.stdout.trim();
+		if (!platform) {
+			throw new Error("docker info returned an empty platform");
+		}
+		return normalizeDockerPlatform(platform);
+	} catch (error) {
+		throw new Error(
+			`Unable to determine the ${serverRole} Docker platform before the Compose build: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
 };
 
 const readRuntimeJson = async <T>(
@@ -766,12 +790,23 @@ const deployComposeWithBuildServer = async (
 			);
 		}
 
+		const [buildPlatform, runtimePlatform] = await Promise.all([
+			inspectDockerPlatform(buildServerId, "Build Server"),
+			inspectDockerPlatform(runtimeServerId, "runtime server"),
+		]);
+		await appendDeploymentLog(
+			buildServerId,
+			deployment.logPath,
+			`\nBuild Server Docker platform: ${buildPlatform}\nRuntime Docker platform: ${runtimePlatform}\n`,
+		);
+
 		validation = validateComposeBuildServerSpecification(
 			specification,
 			registry,
 			deployment.deploymentId,
 			compose.mounts,
 			compose.domains,
+			{ buildPlatform, runtimePlatform },
 		);
 
 		await appendDeploymentLog(

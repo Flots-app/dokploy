@@ -34,6 +34,7 @@ import {
 	getWaitTraefikRoutersCommand,
 	getWaitTraefikServicesCommand,
 	getWriteActivationJournalCommand,
+	normalizeDockerPlatform,
 	validateComposeBuildServerSpecification,
 } from "@dokploy/server/utils/builders/compose-build-server";
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
@@ -266,6 +267,93 @@ describe("Compose Build Server validation", () => {
 			"back-office-staging",
 		]);
 		expect(result.builtImages).toHaveLength(3);
+	});
+
+	it("normalizes Docker engine architecture aliases", () => {
+		expect(normalizeDockerPlatform("linux/x86_64")).toBe("linux/amd64");
+		expect(normalizeDockerPlatform("aarch64")).toBe("linux/arm64");
+	});
+
+	it("rejects an implicit Apple Silicon build for an x86_64 runtime", () => {
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				apiCompose({
+					build: ".",
+					image: `registry.example.com/flots/api:${deploymentId}`,
+				}),
+				registry,
+				deploymentId,
+				[],
+				[apiDomain()],
+				{
+					buildPlatform: "linux/aarch64",
+					runtimePlatform: "linux/x86_64",
+				},
+			),
+		).toThrow(
+			'Buildable service "api" would default to Build Server platform "linux/arm64", but the runtime server uses "linux/amd64". Add platform: linux/amd64',
+		);
+	});
+
+	it("accepts an explicit runtime platform on a cross-architecture build", () => {
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				apiCompose({
+					build: ".",
+					platform: "linux/amd64",
+					image: `registry.example.com/flots/api:${deploymentId}`,
+				}),
+				registry,
+				deploymentId,
+				[],
+				[apiDomain()],
+				{
+					buildPlatform: "linux/arm64",
+					runtimePlatform: "linux/amd64",
+				},
+			),
+		).not.toThrow();
+	});
+
+	it("accepts a multi-platform image that includes the runtime platform", () => {
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				apiCompose({
+					build: {
+						context: ".",
+						platforms: ["linux/arm64", "linux/amd64"],
+					},
+					image: `registry.example.com/flots/api:${deploymentId}`,
+				}),
+				registry,
+				deploymentId,
+				[],
+				[apiDomain()],
+				{
+					buildPlatform: "linux/arm64",
+					runtimePlatform: "linux/amd64",
+				},
+			),
+		).not.toThrow();
+	});
+
+	it("does not require platform when Docker engines have the same architecture", () => {
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				apiCompose({
+					build: ".",
+					image: `registry.example.com/flots/api:${deploymentId}`,
+				}),
+				registry,
+				deploymentId,
+				[],
+				[apiDomain()],
+				{
+					buildPlatform: "linux/aarch64",
+					runtimePlatform: "linux/arm64",
+				},
+			),
+		).not.toThrow();
 	});
 
 	it("requires at least one buildable service", () => {

@@ -25,6 +25,10 @@ import {
 	withRemoteCommandEnvironment,
 } from "../utils/process/execAsync";
 import { setupMonitoring } from "./monitoring-setup";
+import {
+	normalizeOperatingSystemType,
+	supportedLinuxOperatingSystemCasePattern,
+} from "./operating-system";
 
 const generateToken = () => {
 	const array = new Uint8Array(64);
@@ -207,30 +211,7 @@ else
 	fi
 fi
 
-# Check if the OS is manjaro, if so, change it to arch
-if [ "$OS_TYPE" = "manjaro" ] || [ "$OS_TYPE" = "manjaro-arm" ]; then
-	OS_TYPE="arch"
-fi
-
-# Check if the OS is Asahi Linux, if so, change it to fedora
-if [ "$OS_TYPE" = "fedora-asahi-remix" ]; then
-	OS_TYPE="fedora"
-fi
-
-# Check if the OS is popOS, if so, change it to ubuntu
-if [ "$OS_TYPE" = "pop" ]; then
-	OS_TYPE="ubuntu"
-fi
-
-# Check if the OS is linuxmint, if so, change it to ubuntu
-if [ "$OS_TYPE" = "linuxmint" ]; then
-	OS_TYPE="ubuntu"
-fi
-
-#Check if the OS is zorin, if so, change it to ubuntu
-if [ "$OS_TYPE" = "zorin" ]; then
-	OS_TYPE="ubuntu"
-fi
+${normalizeOperatingSystemType("OS_TYPE")}
 
 if [ "$OS_TYPE" != "macos" ] && [ "$OS_TYPE" != "arch" ] && [ "$OS_TYPE" != "archarm" ]; then
 	OS_VERSION=$(grep -w "VERSION_ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
@@ -241,7 +222,7 @@ if [ "$OS_TYPE" = 'amzn' ]; then
 fi
 
 case "$OS_TYPE" in
-arch | ubuntu | debian | raspbian | centos | fedora | rhel | ol | rocky | sles | opensuse-leap | opensuse-tumbleweed | almalinux | opencloudos | amzn | alpine | macos) ;;
+${supportedLinuxOperatingSystemCasePattern()} | macos) ;;
 *)
 	echo "This script supports macOS Build Servers and Debian, Redhat, Arch Linux, Alpine Linux, or SLES based operating systems. ❌" >&2
 	exit 1
