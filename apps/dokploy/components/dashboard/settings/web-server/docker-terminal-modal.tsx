@@ -41,6 +41,7 @@ interface Props {
 	serverId?: string;
 	appType?: "stack" | "docker-compose";
 	serviceId?: string;
+	composeId?: string;
 }
 
 export const DockerTerminalModal = ({
@@ -49,11 +50,13 @@ export const DockerTerminalModal = ({
 	serverId,
 	appType,
 	serviceId,
+	composeId,
 }: Props) => {
 	const { data, isPending } = api.docker.getContainersByAppNameMatch.useQuery(
 		{
 			appName,
 			appType,
+			composeId,
 			serverId,
 		},
 		{
@@ -83,9 +86,7 @@ export const DockerTerminalModal = ({
 	};
 
 	useEffect(() => {
-		if (data && data?.length > 0) {
-			setContainerId(data[0]?.containerId);
-		}
+		setContainerId(data?.[0]?.containerId);
 	}, [data]);
 
 	return (
@@ -129,12 +130,18 @@ export const DockerTerminalModal = ({
 						</SelectGroup>
 					</SelectContent>
 				</Select>
-				<Terminal
-					serverId={serverId || ""}
-					id="terminal"
-					containerId={containerId || "select-a-container"}
-					serviceId={serviceId}
-				/>
+				{containerId ? (
+					<Terminal
+						serverId={serverId || ""}
+						id="terminal"
+						containerId={containerId}
+						serviceId={serviceId}
+					/>
+				) : (
+					<div className="flex min-h-40 items-center justify-center rounded border text-muted-foreground">
+						Select a container to open a terminal
+					</div>
+				)}
 				<Dialog open={confirmDialogOpen} onOpenChange={setConfirmDialogOpen}>
 					<DialogContent onEscapeKeyDown={(event) => event.preventDefault()}>
 						<DialogHeader>

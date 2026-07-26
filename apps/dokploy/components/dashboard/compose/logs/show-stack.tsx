@@ -170,7 +170,7 @@ export const ShowDockerLogsStack = ({
 					)}
 				<DockerLogs
 					serverId={serverId || ""}
-					containerId={containerId || "select-a-container"}
+					containerId={containerId}
 					runType={option}
 					serviceId={serviceId}
 				/>

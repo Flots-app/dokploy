@@ -4,7 +4,9 @@ import {
 	containerRestart,
 	containerStart,
 	containerStop,
+	findComposeById,
 	findServerById,
+	getActiveComposeRuntimeContainerSelector,
 	getConfig,
 	getContainers,
 	getContainersByAppLabel,
@@ -193,10 +195,30 @@ export const dockerRouter = createTRPCRouter({
 			z.object({
 				appType: z.enum(["stack", "docker-compose"]).optional(),
 				appName: z.string().min(1).regex(containerIdRegex, "Invalid app name."),
+				composeId: z.string().min(1).optional(),
 				serverId: z.string().optional(),
 			}),
 		)
 		.query(async ({ input, ctx }) => {
+			if (input.composeId) {
+				const compose = await findComposeById(input.composeId);
+				if (
+					compose.environment.project.organizationId !==
+					ctx.session?.activeOrganizationId
+				) {
+					throw new TRPCError({ code: "UNAUTHORIZED" });
+				}
+				const runtimeSelector =
+					compose.composeType === "docker-compose"
+						? await getActiveComposeRuntimeContainerSelector(compose)
+						: null;
+				return await getContainersByAppNameMatch(
+					compose.appName,
+					compose.composeType,
+					compose.serverId || undefined,
+					runtimeSelector,
+				);
+			}
 			if (input.serverId) {
 				const server = await findServerById(input.serverId);
 				if (server.organizationId !== ctx.session?.activeOrganizationId) {

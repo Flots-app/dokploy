@@ -3,6 +3,7 @@ import type { BackupSchedule } from "@dokploy/server/services/backup";
 import type { Destination } from "@dokploy/server/services/destination";
 import { scheduledJobs, scheduleJob } from "node-schedule";
 import { quote } from "shell-quote";
+import type { ComposeRuntimeContainerSelector } from "../docker/utils";
 import { keepLatestNBackups } from ".";
 import { runComposeBackup } from "./compose";
 import { runLibsqlBackup } from "./libsql";
@@ -138,14 +139,34 @@ export const getComposeContainerCommand = (
 	appName: string,
 	serviceName: string,
 	composeType: "stack" | "docker-compose" | undefined,
+	runtimeSelector?: ComposeRuntimeContainerSelector | null,
 ) => {
+	const filter = (value: string) => `--filter ${quote([value])}`;
 	if (composeType === "stack") {
-		return `docker ps -q --filter "status=running" --filter "label=com.docker.stack.namespace=${appName}" --filter "label=com.docker.swarm.service.name=${appName}_${serviceName}" | head -n 1`;
+		return `docker ps -q ${filter("status=running")} ${filter(
+			`label=com.docker.stack.namespace=${appName}`,
+		)} ${filter(
+			`label=com.docker.swarm.service.name=${appName}_${serviceName}`,
+		)} | head -n 1`;
 	}
-	return `docker ps -q --filter "status=running" --filter "label=com.docker.compose.project=${appName}" --filter "label=com.docker.compose.service=${serviceName}" | head -n 1`;
+	if (runtimeSelector) {
+		return `docker ps -q ${filter("status=running")} ${filter(
+			`label=com.dokploy.compose-id=${runtimeSelector.composeId}`,
+		)} ${filter(
+			`label=com.dokploy.deployment-id=${runtimeSelector.deploymentId}`,
+		)} ${filter(
+			`label=com.docker.compose.service=${serviceName}`,
+		)} | head -n 1`;
+	}
+	return `docker ps -q ${filter("status=running")} ${filter(
+		`label=com.docker.compose.project=${appName}`,
+	)} ${filter(`label=com.docker.compose.service=${serviceName}`)} | head -n 1`;
 };
 
-const getContainerSearchCommand = (backup: BackupSchedule) => {
+const getContainerSearchCommand = (
+	backup: BackupSchedule,
+	runtimeSelector?: ComposeRuntimeContainerSelector | null,
+) => {
 	const {
 		backupType,
 		postgres,
@@ -172,6 +193,7 @@ const getContainerSearchCommand = (backup: BackupSchedule) => {
 			appName || "",
 			serviceName || "",
 			composeType,
+			runtimeSelector,
 		);
 	}
 };
@@ -261,8 +283,9 @@ export const getBackupCommand = (
 	backup: BackupSchedule,
 	rcloneCommand: string,
 	logPath: string,
+	runtimeSelector?: ComposeRuntimeContainerSelector | null,
 ) => {
-	const containerSearch = getContainerSearchCommand(backup);
+	const containerSearch = getContainerSearchCommand(backup, runtimeSelector);
 	const backupCommand = generateBackupCommand(backup);
 
 	logger.info(

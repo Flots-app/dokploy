@@ -27,17 +27,20 @@ interface Props {
 	appName: string;
 	serverId?: string;
 	appType: "stack" | "docker-compose";
+	composeId?: string;
 }
 
 export const ComposeFreeMonitoring = ({
 	appName,
 	appType = "stack",
 	serverId,
+	composeId,
 }: Props) => {
 	const { data, isPending } = api.docker.getContainersByAppNameMatch.useQuery(
 		{
 			appName: appName,
 			appType,
+			composeId,
 			serverId,
 		},
 		{
@@ -55,10 +58,8 @@ export const ComposeFreeMonitoring = ({
 		api.docker.restartContainer.useMutation();
 
 	useEffect(() => {
-		if (data && data?.length > 0) {
-			setContainerAppName(data[0]?.name);
-			setContainerId(data[0]?.containerId);
-		}
+		setContainerAppName(data?.[0]?.name);
+		setContainerId(data?.[0]?.containerId);
 	}, [data]);
 
 	return (
@@ -112,7 +113,7 @@ export const ComposeFreeMonitoring = ({
 						onClick={async () => {
 							if (!containerId) return;
 							toast.success(`Restarting container ${containerAppName}`);
-							await restart({ containerId }).then(() => {
+							await restart({ containerId, serverId }).then(() => {
 								toast.success("Container restarted");
 							});
 						}}
@@ -123,6 +124,8 @@ export const ComposeFreeMonitoring = ({
 				<ContainerFreeMonitoring
 					appName={containerAppName || ""}
 					appType={appType}
+					serverId={serverId}
+					serviceId={composeId}
 				/>
 			</CardContent>
 		</>

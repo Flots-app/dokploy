@@ -181,7 +181,7 @@ export const ShowDockerLogs = ({ appName, serverId, serviceId }: Props) => {
 					)}
 				<DockerLogs
 					serverId={serverId || ""}
-					containerId={containerId || "select-a-container"}
+					containerId={containerId}
 					runType={option}
 					serviceId={serviceId}
 				/>

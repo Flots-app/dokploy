@@ -44,22 +44,22 @@ export const ShowDockerLogsCompose = ({
 	serverId,
 	serviceId,
 }: Props) => {
-	const { data, isPending } = api.docker.getContainersByAppNameMatch.useQuery(
-		{
-			appName,
-			appType,
-			serverId,
-		},
-		{
-			enabled: !!appName,
-		},
-	);
+	const { data, error, isPending } =
+		api.docker.getContainersByAppNameMatch.useQuery(
+			{
+				appName,
+				appType,
+				composeId: serviceId,
+				serverId,
+			},
+			{
+				enabled: !!appName,
+			},
+		);
 	const [containerId, setContainerId] = useState<string | undefined>();
 
 	useEffect(() => {
-		if (data && data?.length > 0) {
-			setContainerId(data[0]?.containerId);
-		}
+		setContainerId(data?.[0]?.containerId);
 	}, [data]);
 
 	return (
@@ -72,6 +72,7 @@ export const ShowDockerLogsCompose = ({
 			</CardHeader>
 
 			<CardContent className="flex flex-col gap-4">
+				{error ? <p className="text-destructive">{error.message}</p> : null}
 				<Label>Select a container to view logs</Label>
 				<Select onValueChange={setContainerId} value={containerId}>
 					<SelectTrigger>
@@ -104,7 +105,7 @@ export const ShowDockerLogsCompose = ({
 				</Select>
 				<DockerLogs
 					serverId={serverId || ""}
-					containerId={containerId || "select-a-container"}
+					containerId={containerId}
 					runType="native"
 					serviceId={serviceId}
 				/>

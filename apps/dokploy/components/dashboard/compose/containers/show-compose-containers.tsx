@@ -64,11 +64,12 @@ export const ShowComposeContainers = ({
 	serverId,
 	serviceId,
 }: Props) => {
-	const { data, isPending, refetch } =
+	const { data, error, isPending, refetch } =
 		api.docker.getContainersByAppNameMatch.useQuery(
 			{
 				appName,
 				appType,
+				composeId: serviceId,
 				serverId,
 			},
 			{
@@ -99,6 +100,10 @@ export const ShowComposeContainers = ({
 				{isPending ? (
 					<div className="flex items-center justify-center h-[20vh]">
 						<Loader2 className="animate-spin h-6 w-6 text-muted-foreground" />
+					</div>
+				) : error ? (
+					<div className="flex items-center justify-center h-[20vh]">
+						<span className="text-destructive">{error.message}</span>
 					</div>
 				) : !data || data.length === 0 ? (
 					<div className="flex items-center justify-center h-[20vh]">

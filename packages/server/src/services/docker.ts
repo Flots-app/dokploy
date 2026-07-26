@@ -3,6 +3,7 @@ import {
 	execAsyncRemote,
 } from "@dokploy/server/utils/process/execAsync";
 import { quote } from "shell-quote";
+import type { ComposeRuntimeContainerSelector } from "../utils/docker/utils";
 
 export const getContainers = async (serverId?: string | null) => {
 	try {
@@ -106,6 +107,7 @@ export const getContainersByAppNameMatch = async (
 	appName: string,
 	appType?: "stack" | "docker-compose",
 	serverId?: string,
+	runtimeSelector?: ComposeRuntimeContainerSelector | null,
 ) => {
 	try {
 		let result: string[] = [];
@@ -114,7 +116,7 @@ export const getContainersByAppNameMatch = async (
 
 		const command =
 			appType === "docker-compose"
-				? `${cmd} --filter='label=com.docker.compose.project=${appName}'`
+				? getDockerComposeContainersCommand(cmd, appName, runtimeSelector)
 				: `${cmd} | grep '^.*Name: ${appName}'`;
 		if (serverId) {
 			const { stdout, stderr } = await execAsyncRemote(serverId, command);
@@ -164,6 +166,22 @@ export const getContainersByAppNameMatch = async (
 	} catch {}
 
 	return [];
+};
+
+export const getDockerComposeContainersCommand = (
+	baseCommand: string,
+	appName: string,
+	runtimeSelector?: ComposeRuntimeContainerSelector | null,
+) => {
+	const filters = runtimeSelector
+		? [
+				`label=com.dokploy.compose-id=${runtimeSelector.composeId}`,
+				`label=com.dokploy.deployment-id=${runtimeSelector.deploymentId}`,
+			]
+		: [`label=com.docker.compose.project=${appName}`];
+	return `${baseCommand} ${filters
+		.map((filter) => `--filter=${quote([filter])}`)
+		.join(" ")}`;
 };
 
 export const getStackContainersByAppName = async (

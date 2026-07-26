@@ -20,7 +20,7 @@ import { TerminalLine } from "./terminal-line";
 import { getLogType, type LogLine, parseLogs } from "./utils";
 
 interface Props {
-	containerId: string;
+	containerId?: string;
 	serverId?: string | null;
 	runType: "swarm" | "native";
 	serviceId?: string;
@@ -49,12 +49,21 @@ export const priorities = [
 	},
 ];
 
-export const DockerLogsId: React.FC<Props> = ({
-	containerId,
-	serverId,
-	runType,
-	serviceId,
-}) => {
+export const DockerLogsId: React.FC<Props> = (props) => {
+	if (!props.containerId) {
+		return (
+			<div className="flex h-[720px] items-center justify-center rounded border text-muted-foreground">
+				Select a container to view logs
+			</div>
+		);
+	}
+
+	return <DockerLogsIdContent {...props} containerId={props.containerId} />;
+};
+
+const DockerLogsIdContent: React.FC<
+	Omit<Props, "containerId"> & { containerId: string }
+> = ({ containerId, serverId, runType, serviceId }) => {
 	const { data } = api.docker.getConfig.useQuery(
 		{
 			containerId,

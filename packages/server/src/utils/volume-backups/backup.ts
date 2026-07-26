@@ -5,9 +5,11 @@ import { findDestinationById } from "@dokploy/server/services/destination";
 import type { findVolumeBackupById } from "@dokploy/server/services/volume-backups";
 import {
 	getBackupTimestamp,
+	getComposeContainerCommand,
 	getS3Credentials,
 	normalizeS3Path,
 } from "../backups/utils";
+import { getActiveComposeRuntimeContainerSelector } from "../docker/utils";
 
 export const getVolumeServiceAppName = (
 	volumeBackup: Awaited<ReturnType<typeof findVolumeBackupById>>,
@@ -147,9 +149,21 @@ export const backupVolume = async (
 			echo "Starting compose to $ACTUAL_REPLICAS replicas"
 			docker service update --replicas=$ACTUAL_REPLICAS --with-registry-auth ${compose.appName}_${volumeBackup.serviceName}`;
 		} else {
+			const runtimeSelector =
+				await getActiveComposeRuntimeContainerSelector(compose);
+			const containerSearch = getComposeContainerCommand(
+				compose.appName,
+				volumeBackup.serviceName || "",
+				compose.composeType,
+				runtimeSelector,
+			);
 			stopCommand = `
 			echo "Stopping compose container"
-            ID=$(docker ps -q --filter "label=com.docker.compose.project=${compose.appName}" --filter "label=com.docker.compose.service=${volumeBackup.serviceName}")
+            ID=$(${containerSearch})
+            if [ -z "$ID" ]; then
+                echo "Compose container not found"
+                exit 1
+            fi
             docker stop $ID`;
 
 			startCommand = `

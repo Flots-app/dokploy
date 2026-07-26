@@ -256,12 +256,9 @@ const Service = (
 											{data?.sourceType !== "raw" && (
 												<TabsTrigger value="patches">Patches</TabsTrigger>
 											)}
-											{permissions?.monitoring.read &&
-												((data?.serverId && isCloud) || !data?.server) && (
-													<TabsTrigger value="monitoring">
-														Monitoring
-													</TabsTrigger>
-												)}
+											{permissions?.monitoring.read && (
+												<TabsTrigger value="monitoring">Monitoring</TabsTrigger>
+											)}
 											{permissions?.service.create && (
 												<TabsTrigger value="advanced">Advanced</TabsTrigger>
 											)}
@@ -328,6 +325,7 @@ const Service = (
 															serverId={data?.serverId || ""}
 															baseUrl={`${data?.serverId ? `http://${data?.server?.ipAddress}:${data?.server?.metricsConfig?.server?.port}` : "http://localhost:4500"}`}
 															appName={data?.appName || ""}
+															composeId={data?.composeId}
 															token={
 																data?.server?.metricsConfig?.server?.token || ""
 															}
@@ -352,6 +350,7 @@ const Service = (
 														{toggleMonitoring ? (
 															<ComposePaidMonitoring
 																appName={data?.appName || ""}
+																composeId={data?.composeId}
 																baseUrl={`http://${monitoring?.serverIp}:${monitoring?.metricsConfig?.server?.port}`}
 																token={
 																	monitoring?.metricsConfig?.server?.token || ""
@@ -363,6 +362,7 @@ const Service = (
 															<ComposeFreeMonitoring
 																serverId={data?.serverId || ""}
 																appName={data?.appName || ""}
+																composeId={data?.composeId}
 																appType={data?.composeType || "docker-compose"}
 															/>
 															{/* </div> */}
