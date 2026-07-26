@@ -3,6 +3,7 @@ import {
 	getComposeContainerCommand,
 	getServiceContainerCommand,
 } from "../backups/utils";
+import type { ComposeRuntimeContainerSelector } from "../docker/utils";
 
 // User-controlled values are passed to the container via `docker exec -e` and
 // read as "$VAR" inside a single-quoted inner script, so they never enter the
@@ -41,11 +42,17 @@ export const getComposeSearchCommand = (
 	appName: string,
 	type: "stack" | "docker-compose" | "database",
 	serviceName?: string,
+	runtimeSelector?: ComposeRuntimeContainerSelector | null,
 ) => {
 	if (type === "database") {
 		return getServiceContainerCommand(appName || "");
 	}
-	return getComposeContainerCommand(appName || "", serviceName || "", type);
+	return getComposeContainerCommand(
+		appName || "",
+		serviceName || "",
+		type,
+		runtimeSelector,
+	);
 };
 
 interface DatabaseCredentials {
@@ -104,6 +111,7 @@ interface RestoreOptions {
 	restoreType: "stack" | "docker-compose" | "database";
 	credentials: DatabaseCredentials;
 	serviceName?: string;
+	runtimeSelector?: ComposeRuntimeContainerSelector | null;
 	rcloneCommand: string;
 	backupFile?: string;
 }
@@ -114,6 +122,7 @@ export const getRestoreCommand = ({
 	restoreType,
 	credentials,
 	serviceName,
+	runtimeSelector,
 	rcloneCommand,
 	backupFile,
 }: RestoreOptions) => {
@@ -121,6 +130,7 @@ export const getRestoreCommand = ({
 		appName,
 		restoreType,
 		serviceName,
+		runtimeSelector,
 	);
 	const restoreCommand = generateRestoreCommand(type, credentials);
 	let cmd = `CONTAINER_ID=$(${containerSearch})`;

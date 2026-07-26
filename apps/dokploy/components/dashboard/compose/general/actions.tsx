@@ -217,6 +217,7 @@ export const ComposeActions = ({ composeId }: Props) => {
 				appName={data?.appName || ""}
 				serverId={data?.serverId || ""}
 				appType={data?.composeType || "docker-compose"}
+				composeId={data?.composeId}
 				serviceId={data?.composeId}
 			>
 				<Button

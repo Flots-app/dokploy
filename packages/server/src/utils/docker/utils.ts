@@ -23,6 +23,88 @@ interface RegistryAuth {
 	registryUrl: string;
 }
 
+export interface ComposeRuntimeContainerSelector {
+	composeId: string;
+	deploymentId: string;
+}
+
+export const getComposeContainerLabels = (
+	appName: string,
+	composeType: Compose["composeType"],
+	serviceName: string,
+	runtimeSelector?: ComposeRuntimeContainerSelector | null,
+) => {
+	if (composeType === "stack") {
+		return [
+			`com.docker.stack.namespace=${appName}`,
+			`com.docker.swarm.service.name=${appName}_${serviceName}`,
+		];
+	}
+	return [
+		...(runtimeSelector
+			? [
+					`com.dokploy.compose-id=${runtimeSelector.composeId}`,
+					`com.dokploy.deployment-id=${runtimeSelector.deploymentId}`,
+				]
+			: [`com.docker.compose.project=${appName}`]),
+		`com.docker.compose.service=${serviceName}`,
+	];
+};
+
+export const parseActiveComposeRuntimeContainerSelector = (
+	value: string,
+	composeId: string,
+	activeStatePath: string,
+): ComposeRuntimeContainerSelector | null => {
+	const serialized = value.trim();
+	if (!serialized) return null;
+
+	let state: unknown;
+	try {
+		state = JSON.parse(serialized);
+	} catch {
+		throw new Error(`Invalid Dokploy runtime state in ${activeStatePath}`);
+	}
+	if (
+		typeof state !== "object" ||
+		state === null ||
+		!("composeId" in state) ||
+		!("deploymentId" in state) ||
+		typeof state.composeId !== "string" ||
+		typeof state.deploymentId !== "string" ||
+		state.composeId !== composeId ||
+		state.deploymentId.trim().length === 0
+	) {
+		throw new Error(`Invalid Dokploy runtime state in ${activeStatePath}`);
+	}
+
+	return {
+		composeId: state.composeId,
+		deploymentId: state.deploymentId,
+	};
+};
+
+export const getActiveComposeRuntimeContainerSelector = async (
+	compose: Pick<Compose, "appName" | "composeId" | "serverId">,
+): Promise<ComposeRuntimeContainerSelector | null> => {
+	const activeStatePath = path.join(
+		paths(!!compose.serverId).COMPOSE_PATH,
+		compose.appName,
+		"active-release.json",
+	);
+	const command = `if [ -f ${quote([activeStatePath])} ]; then cat ${quote([
+		activeStatePath,
+	])}; fi`;
+	const { stdout } = compose.serverId
+		? await execAsyncRemote(compose.serverId, command)
+		: await execAsync(command);
+	return parseActiveComposeRuntimeContainerSelector(
+		stdout,
+		compose.composeId,
+		activeStatePath,
+	);
+};
+
 export const pullImage = async (
 	dockerImage: string,
 	onData?: (data: any) => void,
@@ -755,17 +837,16 @@ export const getComposeContainer = async (
 ) => {
 	try {
 		const { appName, composeType, serverId } = compose;
-		// 1. Determine the correct labels based on composeType
-		const labels: string[] = [];
-		if (composeType === "stack") {
-			// Labels for Docker Swarm stack services
-			labels.push(`com.docker.stack.namespace=${appName}`);
-			labels.push(`com.docker.swarm.service.name=${appName}_${serviceName}`);
-		} else {
-			// Labels for Docker Compose projects (default)
-			labels.push(`com.docker.compose.project=${appName}`);
-			labels.push(`com.docker.compose.service=${serviceName}`);
-		}
+		const activeRelease =
+			composeType === "docker-compose"
+				? await getActiveComposeRuntimeContainerSelector(compose)
+				: null;
+		const labels = getComposeContainerLabels(
+			appName,
+			composeType,
+			serviceName,
+			activeRelease,
+		);
 		const filter = {
 			status: ["running"],
 			label: labels,

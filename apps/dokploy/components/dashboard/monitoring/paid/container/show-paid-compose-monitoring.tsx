@@ -28,6 +28,7 @@ interface Props {
 	appName: string;
 	serverId?: string;
 	appType: "stack" | "docker-compose";
+	composeId?: string;
 	baseUrl: string;
 	token: string;
 }
@@ -36,6 +37,7 @@ export const ComposePaidMonitoring = ({
 	appName,
 	appType = "stack",
 	serverId,
+	composeId,
 	baseUrl,
 	token,
 }: Props) => {
@@ -43,6 +45,7 @@ export const ComposePaidMonitoring = ({
 		{
 			appName: appName,
 			appType,
+			composeId,
 			serverId,
 		},
 		{
@@ -50,9 +53,9 @@ export const ComposePaidMonitoring = ({
 		},
 	);
 
-	const [containerAppName, setContainerAppName] = useState<string | undefined>(
-		"",
-	);
+	const [containerAppName, setContainerAppName] = useState<
+		string | undefined
+	>();
 
 	const [containerId, setContainerId] = useState<string | undefined>();
 
@@ -60,10 +63,8 @@ export const ComposePaidMonitoring = ({
 		api.docker.restartContainer.useMutation();
 
 	useEffect(() => {
-		if (data && data?.length > 0) {
-			setContainerAppName(data[0]?.name);
-			setContainerId(data[0]?.containerId);
-		}
+		setContainerAppName(data?.[0]?.name);
+		setContainerId(data?.[0]?.containerId);
 	}, [data]);
 
 	return (
@@ -118,7 +119,7 @@ export const ComposePaidMonitoring = ({
 							onClick={async () => {
 								if (!containerId) return;
 								toast.success(`Restarting container ${containerAppName}`);
-								await restart({ containerId }).then(() => {
+								await restart({ containerId, serverId }).then(() => {
 									toast.success("Container restarted");
 								});
 							}}

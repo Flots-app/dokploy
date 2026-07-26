@@ -4,6 +4,7 @@ import type { Destination } from "@dokploy/server/services/destination";
 import { quote } from "shell-quote";
 import type { z } from "zod";
 import { getS3Credentials } from "../backups/utils";
+import { getActiveComposeRuntimeContainerSelector } from "../docker/utils";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
 import { getRestoreCommand } from "./utils";
 
@@ -32,6 +33,10 @@ export const restoreComposeBackup = async (
 		if (backupInput.metadata?.mongo) {
 			rcloneCommand = `rclone copy ${rcloneFlags.join(" ")} ${quote([backupPath])}`;
 		}
+		const runtimeSelector =
+			composeType === "docker-compose"
+				? await getActiveComposeRuntimeContainerSelector(compose)
+				: null;
 
 		let credentials: DatabaseCredentials = {};
 
@@ -73,6 +78,7 @@ export const restoreComposeBackup = async (
 				...credentials,
 			},
 			restoreType: composeType,
+			runtimeSelector,
 			rcloneCommand,
 			backupFile: backupInput.backupFile,
 		});

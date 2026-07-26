@@ -2,8 +2,10 @@ import type http from "node:http";
 import {
 	docker,
 	execAsync,
+	execAsyncRemote,
 	getHostSystemStats,
 	getLastAdvancedStatsFile,
+	getRemoteDocker,
 	IS_CLOUD,
 	recordAdvancedStats,
 	validateRequest,
@@ -46,6 +48,7 @@ export const setupDockerStatsMonitoringSocketServer = (
 			| "stack"
 			| "docker-compose";
 		const serviceId = url.searchParams.get("serviceId");
+		const serverId = url.searchParams.get("serverId");
 		const { user, session } = await validateRequest(req);
 
 		if (!appName) {
@@ -58,7 +61,7 @@ export const setupDockerStatsMonitoringSocketServer = (
 			return;
 		}
 
-		if (!(await canAccessDockerOverWss(user, session, null, serviceId))) {
+		if (!(await canAccessDockerOverWss(user, session, serverId, serviceId))) {
 			ws.close(4003, "Not authorized");
 			return;
 		}
@@ -92,7 +95,10 @@ export const setupDockerStatsMonitoringSocketServer = (
 					}),
 				};
 
-				const containers = await docker.listContainers({
+				const dockerClient = serverId
+					? await getRemoteDocker(serverId)
+					: docker;
+				const containers = await dockerClient.listContainers({
 					filters: JSON.stringify(filter),
 				});
 
@@ -101,9 +107,10 @@ export const setupDockerStatsMonitoringSocketServer = (
 					ws.close(4000, "Container not running");
 					return;
 				}
-				const { stdout, stderr } = await execAsync(
-					`docker stats ${container.Id} --no-stream --format \'{"BlockIO":"{{.BlockIO}}","CPUPerc":"{{.CPUPerc}}","Container":"{{.Container}}","ID":"{{.ID}}","MemPerc":"{{.MemPerc}}","MemUsage":"{{.MemUsage}}","Name":"{{.Name}}","NetIO":"{{.NetIO}}"}\'`,
-				);
+				const command = `docker stats ${container.Id} --no-stream --format \'{"BlockIO":"{{.BlockIO}}","CPUPerc":"{{.CPUPerc}}","Container":"{{.Container}}","ID":"{{.ID}}","MemPerc":"{{.MemPerc}}","MemUsage":"{{.MemUsage}}","Name":"{{.Name}}","NetIO":"{{.NetIO}}"}\'`;
+				const { stdout, stderr } = serverId
+					? await execAsyncRemote(serverId, command)
+					: await execAsync(command);
 				if (stderr) {
 					console.error("Docker stats error:", stderr);
 					return;

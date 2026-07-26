@@ -7,6 +7,7 @@ import {
 import { findDestinationById } from "@dokploy/server/services/destination";
 import { findEnvironmentById } from "@dokploy/server/services/environment";
 import { findProjectById } from "@dokploy/server/services/project";
+import { getActiveComposeRuntimeContainerSelector } from "../docker/utils";
 import { sendDatabaseBackupNotifications } from "../notifications/database-backup";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
 import {
@@ -38,11 +39,16 @@ export const runComposeBackup = async (
 		const rcloneFlags = getS3Credentials(destination);
 		const rcloneDestination = `:s3:${destination.bucket}/${bucketDestination}`;
 		const rcloneCommand = `rclone rcat ${rcloneFlags.join(" ")} "${rcloneDestination}"`;
+		const runtimeSelector =
+			compose.composeType === "docker-compose"
+				? await getActiveComposeRuntimeContainerSelector(compose)
+				: null;
 
 		const backupCommand = getBackupCommand(
 			backup,
 			rcloneCommand,
 			deployment.logPath,
+			runtimeSelector,
 		);
 		if (compose.serverId) {
 			await execAsyncRemote(compose.serverId, backupCommand);
