@@ -270,8 +270,19 @@ export const serverRouter = createTRPCRouter({
 				}
 				const response = await serverValidate(input.serverId);
 				return response as unknown as {
+					operatingSystem: {
+						type: string;
+						version: string;
+						architecture: string;
+						supported: boolean;
+					};
 					docker: {
 						enabled: boolean;
+						installed: boolean;
+						engineEnabled: boolean;
+						composeEnabled: boolean;
+						buildxEnabled: boolean;
+						runtime: string;
 						version: string;
 					};
 					rclone: {

@@ -1,12 +1,27 @@
 import { Client } from "ssh2";
 import { findServerById } from "../services/server";
+import { withRemoteCommandEnvironment } from "../utils/process/execAsync";
 
 export const validateDocker = () => `
+  dockerVersion="0.0.0"
+  dockerInstalled=false
+  dockerEngineEnabled=false
+  dockerComposeEnabled=false
+  dockerBuildxEnabled=false
   if command_exists docker; then
-     echo "$(docker --version | awk '{print $3}' | sed 's/,//') true"
-  else
-    echo "0.0.0 false"
+    dockerInstalled=true
+    dockerVersion="$(docker --version | awk '{print $3}' | sed 's/,//')"
+    if docker info >/dev/null 2>&1; then
+      dockerEngineEnabled=true
+    fi
+    if docker compose version >/dev/null 2>&1; then
+      dockerComposeEnabled=true
+    fi
+    if docker buildx version >/dev/null 2>&1; then
+      dockerBuildxEnabled=true
+    fi
   fi
+  echo "$dockerVersion $dockerInstalled $dockerEngineEnabled $dockerComposeEnabled $dockerBuildxEnabled"
 `;
 
 export const validateRClone = () => `
@@ -90,11 +105,83 @@ export const validateSudoAccess = () => `
 `;
 
 export const validateDockerGroup = () => `
-  if groups | grep -qw docker; then
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if docker info >/dev/null 2>&1; then
+      echo true
+    else
+      echo false
+    fi
+  elif groups | grep -qw docker; then
     echo true
   else
     echo false
   fi
+`;
+
+export const validateOperatingSystem = (isBuildServer: boolean) => `
+  operatingSystemKernel=$(uname -s)
+  operatingSystemArchitecture=$(uname -m)
+  if [ "$operatingSystemKernel" = "Darwin" ]; then
+    operatingSystemType="macos"
+    operatingSystemVersion=$(sw_vers -productVersion)
+    operatingSystemMajorVersion=$(echo "$operatingSystemVersion" | cut -d "." -f 1)
+    operatingSystemSupported=false
+    if [ "$operatingSystemMajorVersion" -ge 13 ] && [ "${isBuildServer ? "true" : "false"}" = "true" ]; then
+      operatingSystemSupported=true
+    fi
+  elif [ -f /etc/os-release ]; then
+    operatingSystemType=$(grep -w "ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
+    operatingSystemVersion=$(grep -w "VERSION_ID" /etc/os-release | cut -d "=" -f 2 | tr -d '"')
+    operatingSystemSupported=true
+  else
+    operatingSystemType="unknown"
+    operatingSystemVersion="unknown"
+    operatingSystemSupported=false
+  fi
+`;
+
+export const serverValidationCommand = (isBuildServer: boolean) => `
+  command_exists() {
+    command -v "$@" > /dev/null 2>&1
+  }
+
+  ${validateOperatingSystem(isBuildServer)}
+  dockerVersionEnabled=$(${validateDocker()})
+  rcloneVersionEnabled=$(${validateRClone()})
+  nixpacksVersionEnabled=$(${validateNixpacks()})
+  buildpacksVersionEnabled=$(${validateBuildpacks()})
+  railpackVersionEnabled=$(${validateRailpack()})
+  dockerVersion=$(echo $dockerVersionEnabled | awk '{print $1}')
+  dockerInstalled=$(echo $dockerVersionEnabled | awk '{print $2}')
+  dockerEngineEnabled=$(echo $dockerVersionEnabled | awk '{print $3}')
+  dockerComposeEnabled=$(echo $dockerVersionEnabled | awk '{print $4}')
+  dockerBuildxEnabled=$(echo $dockerVersionEnabled | awk '{print $5}')
+  dockerRuntime="native"
+  if [ "$operatingSystemType" = "macos" ] && command_exists colima; then
+    dockerRuntime="colima"
+  fi
+
+  rcloneVersion=$(echo $rcloneVersionEnabled | awk '{print $1}')
+  rcloneEnabled=$(echo $rcloneVersionEnabled | awk '{print $2}')
+
+  nixpacksVersion=$(echo $nixpacksVersionEnabled | awk '{print $1}')
+  nixpacksEnabled=$(echo $nixpacksVersionEnabled | awk '{print $2}')
+
+  railpackVersion=$(echo $railpackVersionEnabled | awk '{print $1}')
+  railpackEnabled=$(echo $railpackVersionEnabled | awk '{print $2}')
+
+  buildpacksVersion=$(echo $buildpacksVersionEnabled | awk '{print $1}')
+  buildpacksEnabled=$(echo $buildpacksVersionEnabled | awk '{print $2}')
+
+  isDokployNetworkInstalled=$(${validateDokployNetwork()})
+  isSwarmInstalled=$(${validateSwarm()})
+  isMainDirectoryInstalled=$(${validateMainDirectory()})
+
+  sudoAccessResult=$(${validateSudoAccess()})
+  privilegeMode=$(echo $sudoAccessResult | awk '{print $1}')
+  isDockerGroupMember=$(${validateDockerGroup()})
+
+  echo "{\\"operatingSystem\\": {\\"type\\": \\"$operatingSystemType\\", \\"version\\": \\"$operatingSystemVersion\\", \\"architecture\\": \\"$operatingSystemArchitecture\\", \\"supported\\": $operatingSystemSupported}, \\"docker\\": {\\"version\\": \\"$dockerVersion\\", \\"enabled\\": $dockerEngineEnabled, \\"installed\\": $dockerInstalled, \\"engineEnabled\\": $dockerEngineEnabled, \\"composeEnabled\\": $dockerComposeEnabled, \\"buildxEnabled\\": $dockerBuildxEnabled, \\"runtime\\": \\"$dockerRuntime\\"}, \\"rclone\\": {\\"version\\": \\"$rcloneVersion\\", \\"enabled\\": $rcloneEnabled}, \\"nixpacks\\": {\\"version\\": \\"$nixpacksVersion\\", \\"enabled\\": $nixpacksEnabled}, \\"buildpacks\\": {\\"version\\": \\"$buildpacksVersion\\", \\"enabled\\": $buildpacksEnabled}, \\"railpack\\": {\\"version\\": \\"$railpackVersion\\", \\"enabled\\": $railpackEnabled}, \\"isDokployNetworkInstalled\\": $isDokployNetworkInstalled, \\"isSwarmInstalled\\": $isSwarmInstalled, \\"isMainDirectoryInstalled\\": $isMainDirectoryInstalled, \\"privilegeMode\\": \\"$privilegeMode\\", \\"dockerGroupMember\\": $isDockerGroupMember}"
 `;
 
 export const serverValidate = async (serverId: string) => {
@@ -103,70 +190,39 @@ export const serverValidate = async (serverId: string) => {
 	if (!server.sshKeyId) {
 		throw new Error("No SSH Key found");
 	}
+	const isBuildServer = server.serverType === "build";
 
 	return new Promise<string>((resolve, reject) => {
 		client
 			.once("ready", () => {
-				const bashCommand = `
-          command_exists() {
-            command -v "$@" > /dev/null 2>&1
-          }
-
-          dockerVersionEnabled=$(${validateDocker()})
-          rcloneVersionEnabled=$(${validateRClone()})
-          nixpacksVersionEnabled=$(${validateNixpacks()})
-          buildpacksVersionEnabled=$(${validateBuildpacks()})
-          railpackVersionEnabled=$(${validateRailpack()})
-          dockerVersion=$(echo $dockerVersionEnabled | awk '{print $1}')
-          dockerEnabled=$(echo $dockerVersionEnabled | awk '{print $2}')
-
-          rcloneVersion=$(echo $rcloneVersionEnabled | awk '{print $1}')
-          rcloneEnabled=$(echo $rcloneVersionEnabled | awk '{print $2}')
-
-          nixpacksVersion=$(echo $nixpacksVersionEnabled | awk '{print $1}')
-          nixpacksEnabled=$(echo $nixpacksVersionEnabled | awk '{print $2}')
-
-          railpackVersion=$(echo $railpackVersionEnabled | awk '{print $1}')
-          railpackEnabled=$(echo $railpackVersionEnabled | awk '{print $2}')
-
-          buildpacksVersion=$(echo $buildpacksVersionEnabled | awk '{print $1}')
-          buildpacksEnabled=$(echo $buildpacksVersionEnabled | awk '{print $2}')
-
-          isDokployNetworkInstalled=$(${validateDokployNetwork()})
-          isSwarmInstalled=$(${validateSwarm()})
-          isMainDirectoryInstalled=$(${validateMainDirectory()})
-
-          sudoAccessResult=$(${validateSudoAccess()})
-          privilegeMode=$(echo $sudoAccessResult | awk '{print $1}')
-          isDockerGroupMember=$(${validateDockerGroup()})
-
-  echo "{\\"docker\\": {\\"version\\": \\"$dockerVersion\\", \\"enabled\\": $dockerEnabled}, \\"rclone\\": {\\"version\\": \\"$rcloneVersion\\", \\"enabled\\": $rcloneEnabled}, \\"nixpacks\\": {\\"version\\": \\"$nixpacksVersion\\", \\"enabled\\": $nixpacksEnabled}, \\"buildpacks\\": {\\"version\\": \\"$buildpacksVersion\\", \\"enabled\\": $buildpacksEnabled}, \\"railpack\\": {\\"version\\": \\"$railpackVersion\\", \\"enabled\\": $railpackEnabled}, \\"isDokployNetworkInstalled\\": $isDokployNetworkInstalled, \\"isSwarmInstalled\\": $isSwarmInstalled, \\"isMainDirectoryInstalled\\": $isMainDirectoryInstalled, \\"privilegeMode\\": \\"$privilegeMode\\", \\"dockerGroupMember\\": $isDockerGroupMember}"
-        `;
-				client.exec(bashCommand, (err, stream) => {
-					if (err) {
-						reject(err);
-						return;
-					}
-					let output = "";
-					stream
-						.on("close", () => {
-							client.end();
-							try {
-								const result = JSON.parse(output.trim());
-								resolve(result);
-							} catch (parseError) {
-								reject(
-									new Error(
-										`Failed to parse output: ${parseError instanceof Error ? parseError.message : parseError}`,
-									),
-								);
-							}
-						})
-						.on("data", (data: string) => {
-							output += data;
-						})
-						.stderr.on("data", (_data) => {});
-				});
+				client.exec(
+					withRemoteCommandEnvironment(serverValidationCommand(isBuildServer)),
+					(err, stream) => {
+						if (err) {
+							reject(err);
+							return;
+						}
+						let output = "";
+						stream
+							.on("close", () => {
+								client.end();
+								try {
+									const result = JSON.parse(output.trim());
+									resolve(result);
+								} catch (parseError) {
+									reject(
+										new Error(
+											`Failed to parse output: ${parseError instanceof Error ? parseError.message : parseError}`,
+										),
+									);
+								}
+							})
+							.on("data", (data: string) => {
+								output += data;
+							})
+							.stderr.on("data", (_data) => {});
+					},
+				);
 			})
 			.on("error", (err) => {
 				client.end();

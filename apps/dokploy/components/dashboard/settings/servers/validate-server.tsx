@@ -32,6 +32,7 @@ export const ValidateServer = ({ serverId }: Props) => {
 		},
 	);
 	const isBuildServer = server?.serverType === "build";
+	const isMacOS = data?.operatingSystem?.type === "macos";
 	const _utils = api.useUtils();
 	return (
 		<CardContent className="p-0">
@@ -86,12 +87,48 @@ export const ValidateServer = ({ serverId }: Props) => {
 									</p>
 									<div className="grid gap-2.5">
 										<StatusRow
-											label="Docker Installed"
-											isEnabled={data?.docker?.enabled}
+											label="Operating System"
+											isEnabled={data?.operatingSystem?.supported}
 											description={
-												data?.docker?.enabled
+												data?.operatingSystem
+													? `${data.operatingSystem.type} ${data.operatingSystem.version} (${data.operatingSystem.architecture})`
+													: undefined
+											}
+										/>
+										<StatusRow
+											label="Docker Installed"
+											isEnabled={data?.docker?.installed}
+											description={
+												data?.docker?.installed
 													? `Installed: ${data?.docker?.version}`
 													: undefined
+											}
+										/>
+										<StatusRow
+											label="Docker Engine Available"
+											isEnabled={data?.docker?.engineEnabled}
+											description={
+												data?.docker?.engineEnabled
+													? `Runtime: ${data?.docker?.runtime}`
+													: "Docker CLI cannot reach the engine"
+											}
+										/>
+										<StatusRow
+											label="Docker Compose Available"
+											isEnabled={data?.docker?.composeEnabled}
+											description={
+												data?.docker?.composeEnabled
+													? "Compose plugin is available"
+													: "Compose plugin is unavailable"
+											}
+										/>
+										<StatusRow
+											label="Docker Buildx Available"
+											isEnabled={data?.docker?.buildxEnabled}
+											description={
+												data?.docker?.buildxEnabled
+													? "Buildx plugin is available"
+													: "Buildx plugin is unavailable"
 											}
 										/>
 										{!isBuildServer && (
@@ -178,12 +215,16 @@ export const ValidateServer = ({ serverId }: Props) => {
 											}
 										/>
 										<StatusRow
-											label="Docker Group"
+											label={isMacOS ? "Colima Docker Access" : "Docker Group"}
 											isEnabled={data?.dockerGroupMember}
 											description={
-												data?.dockerGroupMember
-													? "User is in docker group"
-													: "User is not in docker group"
+												isMacOS
+													? data?.dockerGroupMember
+														? "SSH user can access the Colima Docker engine"
+														: "SSH user cannot access the Colima Docker engine"
+													: data?.dockerGroupMember
+														? "User is in docker group"
+														: "User is not in docker group"
 											}
 										/>
 									</div>
