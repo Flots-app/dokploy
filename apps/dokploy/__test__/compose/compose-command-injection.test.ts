@@ -28,7 +28,7 @@ const runsSafely = (command: string) => {
 
 const PAYLOADS = [
 	`$(touch ${MARK})`,
-	"`touch " + MARK + "`",
+	`\`touch ${MARK}\``,
 	`x; touch ${MARK}`,
 	`x | touch ${MARK}`,
 ];

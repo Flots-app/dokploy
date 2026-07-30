@@ -30,6 +30,12 @@ WORKDIR /app
 
 # Set production
 ENV NODE_ENV=production
+ARG DOKPLOY_RELEASE_REPOSITORY=Dokploy/dokploy
+ARG DOKPLOY_IMAGE_REPOSITORY=dokploy/dokploy
+ARG RELEASE_TAG=latest
+ENV DOKPLOY_RELEASE_REPOSITORY="${DOKPLOY_RELEASE_REPOSITORY}"
+ENV DOKPLOY_IMAGE_REPOSITORY="${DOKPLOY_IMAGE_REPOSITORY}"
+ENV RELEASE_TAG="${RELEASE_TAG}"
 
 RUN apt-get update && apt-get install -y curl unzip zip apache2-utils iproute2 rsync git-lfs && git lfs install && rm -rf /var/lib/apt/lists/*
 

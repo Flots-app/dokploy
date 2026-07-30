@@ -1,5 +1,5 @@
-# Plumber v0.4.12 policy for GitHub Actions.
-# Source: https://github.com/getplumber/plumber/blob/v0.4.12/.plumber.yaml
+# Plumber v0.4.23 policy for GitHub Actions.
+# Source: https://github.com/getplumber/plumber/blob/v0.4.23/.plumber.yaml
 version: "2.0"
 
 github:
@@ -16,8 +16,6 @@ github:
       trustSameOrgActions: false
       minimumStars: 0
       trustedGithubActions:
-        - autofix-ci/action
-        - biomejs/setup-biome
         - docker/build-push-action
         - docker/login-action
         - docker/setup-buildx-action
