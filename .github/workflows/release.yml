@@ -177,13 +177,28 @@ jobs:
 
           docker buildx imagetools create \
             --tag "${IMAGE_NAME}:${VERSION}" \
-            --tag "${IMAGE_NAME}:latest" \
             --tag "${IMAGE_NAME}:${SHA_TAG}" \
             "${IMAGE_NAME}:${VERSION}-amd64" \
             "${IMAGE_NAME}:${VERSION}-arm64"
 
           raw_manifest="${RUNNER_TEMP}/manifest.json"
-          docker buildx imagetools inspect --raw "${IMAGE_NAME}:${VERSION}" > "$raw_manifest"
+          inspect_error="${RUNNER_TEMP}/manifest-inspect.err"
+          for attempt in $(seq 1 12); do
+            if docker buildx imagetools inspect \
+              --raw "${IMAGE_NAME}:${VERSION}" \
+              > "$raw_manifest" \
+              2> "$inspect_error"; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              cat "$inspect_error" >&2
+              echo "Published manifest did not become readable in time" >&2
+              exit 1
+            fi
+            echo "Waiting for the published manifest (attempt $attempt/12)"
+            sleep 5
+          done
+
           platforms="$(
             jq --raw-output \
               '[.manifests[].platform
@@ -200,10 +215,25 @@ jobs:
             exit 1
           fi
 
-          digest="$(
-            docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}" \
-              | awk '$1 == "Digest:" { print $2; exit }'
-          )"
+          digest=""
+          for attempt in $(seq 1 12); do
+            digest="$(
+              docker buildx imagetools inspect \
+                --format '{{.Manifest.Digest}}' \
+                "${IMAGE_NAME}:${VERSION}" \
+                2> "$inspect_error" || true
+            )"
+            if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              cat "$inspect_error" >&2
+              echo "Published manifest digest did not become readable in time" >&2
+              exit 1
+            fi
+            echo "Waiting for the published manifest digest (attempt $attempt/12)"
+            sleep 5
+          done
           if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "Could not resolve the published manifest digest" >&2
             exit 1
@@ -249,6 +279,37 @@ jobs:
               echo "Published image attestation could not be verified" >&2
               exit 1
             fi
+            sleep 5
+          done
+
+      - name: Promote validated image to latest
+        env:
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}@${DIGEST}"
+
+          latest_digest=""
+          inspect_error="${RUNNER_TEMP}/latest-inspect.err"
+          for attempt in $(seq 1 12); do
+            latest_digest="$(
+              docker buildx imagetools inspect \
+                --format '{{.Manifest.Digest}}' \
+                "${IMAGE_NAME}:latest" \
+                2> "$inspect_error" || true
+            )"
+            if [ "$latest_digest" = "$DIGEST" ]; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              cat "$inspect_error" >&2
+              echo "latest does not reference the validated release digest" >&2
+              exit 1
+            fi
+            echo "Waiting for latest promotion (attempt $attempt/12)"
             sleep 5
           done
 
