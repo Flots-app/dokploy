@@ -17,6 +17,7 @@ export const UpdateServerButton = () => {
 	const [updateData, setUpdateData] = useState<IUpdateData>({
 		latestVersion: null,
 		updateAvailable: false,
+		releaseUrl: null,
 	});
 	const { data: isCloud } = api.settings.isCloud.useQuery();
 	const { mutateAsync: getUpdateData } =

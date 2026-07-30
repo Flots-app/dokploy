@@ -52,6 +52,9 @@ export const UpdateServer = ({
 	const [latestVersion, setLatestVersion] = useState(
 		updateData?.latestVersion ?? "",
 	);
+	const [releaseUrl, setReleaseUrl] = useState(
+		updateData?.releaseUrl ?? "https://github.com/Dokploy/dokploy/releases",
+	);
 	const [isOpenInternal, setIsOpenInternal] = useState(false);
 
 	const handleCheckUpdates = async () => {
@@ -61,6 +64,9 @@ export const UpdateServer = ({
 			setHasCheckedUpdate(true);
 			setIsUpdateAvailable(updateData.updateAvailable);
 			setLatestVersion(versionToUpdate);
+			setReleaseUrl(
+				updateData.releaseUrl ?? "https://github.com/Dokploy/dokploy/releases",
+			);
 
 			if (updateData.updateAvailable) {
 				toast.success(versionToUpdate, {
@@ -224,8 +230,8 @@ export const UpdateServer = ({
 							<div className="text-center space-y-2">
 								<h3 className="text-lg font-medium">Checking for updates...</h3>
 								<p className="text text-muted-foreground">
-									Please wait while we pull the latest version information from
-									Docker Hub.
+									Please wait while we check the configured GitHub release
+									source.
 								</p>
 							</div>
 						</div>
@@ -239,7 +245,7 @@ export const UpdateServer = ({
 							<div className="text-[#5B9DFF]">
 								We recommend reviewing the{" "}
 								<Link
-									href="https://github.com/Dokploy/dokploy/releases"
+									href={releaseUrl}
 									target="_blank"
 									className="text-white underline hover:text-zinc-200"
 								>

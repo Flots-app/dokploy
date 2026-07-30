@@ -16,6 +16,7 @@ vi.mock("@dokploy/server/db", () => {
 			returning: vi.fn().mockResolvedValue([{}] as any),
 			from: vi.fn(() => chain),
 			innerJoin: vi.fn(() => chain),
+			// biome-ignore lint/suspicious/noThenProperty: The query-builder test double must be awaitable.
 			then: (resolve: (v: any) => void) => {
 				resolve([]);
 			},

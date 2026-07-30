@@ -26,15 +26,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Enforce Plumber compliance
-        uses: getplumber/plumber@ef9864df81f444647d95889d98695434f6fa9732 # v0.4.12
+        uses: getplumber/plumber@59d586ada029ab9691105c5a6aa803ef04c00d07 # v0.4.23
         with:
-          version: v0.4.12
+          version: v0.4.23
           verify-attestation: true
           config-file: .plumber.yaml
           metadata-token: ${{ secrets.PLUMBER_METADATA_TOKEN }}

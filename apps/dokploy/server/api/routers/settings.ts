@@ -17,6 +17,7 @@ import {
 	findServerById,
 	getDockerDiskUsage,
 	getDokployImageTag,
+	getDokployServiceUpdateArgs,
 	getLogCleanupStatus,
 	getUpdateData,
 	getWebServerSettings,
@@ -593,15 +594,11 @@ export const settingsRouter = createTRPCRouter({
 		}
 
 		const data = await getUpdateData(packageInfo.version);
-		if (data.updateAvailable) {
-			void spawnAsync("docker", [
-				"service",
-				"update",
-				"--force",
-				"--image",
-				`dokploy/dokploy:${data.latestVersion}`,
-				"dokploy",
-			]);
+		if (data.updateAvailable && data.latestVersion) {
+			void spawnAsync(
+				"docker",
+				getDokployServiceUpdateArgs(data.latestVersion),
+			);
 			await audit(ctx, {
 				action: "update",
 				resourceType: "settings",

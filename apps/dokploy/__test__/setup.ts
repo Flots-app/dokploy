@@ -14,6 +14,7 @@ vi.mock("@dokploy/server/db", () => {
 	chain.returning = () => Promise.resolve([{}]);
 	chain.from = () => chain;
 	chain.innerJoin = () => chain;
+	// biome-ignore lint/suspicious/noThenProperty: The shared query-builder test double must be awaitable.
 	chain.then = (resolve: (value: unknown) => void) => {
 		resolve([]);
 	};
