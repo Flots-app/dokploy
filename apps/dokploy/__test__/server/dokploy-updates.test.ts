@@ -2,6 +2,7 @@ import {
 	getDokployImageRepository,
 	getDokployReleaseRepository,
 	getDokployReleaseUrl,
+	getDokployServiceUpdateArgs,
 	getDokployUpdateImage,
 	getStableUpdateData,
 } from "@dokploy/server";
@@ -31,6 +32,15 @@ describe("Dokploy update source", () => {
 		expect(getDokployUpdateImage("v0.29.14-flots.2")).toBe(
 			"ghcr.io/flots-app/dokploy:v0.29.14-flots.2",
 		);
+		expect(getDokployServiceUpdateArgs("v0.29.14-flots.2")).toEqual([
+			"service",
+			"update",
+			"--force",
+			"--with-registry-auth",
+			"--image",
+			"ghcr.io/flots-app/dokploy:v0.29.14-flots.2",
+			"dokploy",
+		]);
 	});
 
 	it("ignores an invalid GitHub repository configuration", () => {

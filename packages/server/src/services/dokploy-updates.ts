@@ -37,6 +37,16 @@ export const getDokployReleaseUrl = () =>
 export const getDokployUpdateImage = (version: string) =>
 	`${getDokployImageRepository()}:${version}`;
 
+export const getDokployServiceUpdateArgs = (version: string) => [
+	"service",
+	"update",
+	"--force",
+	"--with-registry-auth",
+	"--image",
+	getDokployUpdateImage(version),
+	"dokploy",
+];
+
 interface GithubRelease {
 	tag_name?: unknown;
 	html_url?: unknown;
