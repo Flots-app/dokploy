@@ -155,6 +155,7 @@ export const deploymentRouter = createTRPCRouter({
 				orderBy: desc(deployments.createdAt),
 				with: {
 					rollback: true,
+					buildServer: { columns: { serverId: true, name: true } },
 				},
 			});
 			return deploymentsList;

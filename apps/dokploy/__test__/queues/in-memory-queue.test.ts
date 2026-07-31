@@ -7,13 +7,18 @@ import {
 } from "../../server/queues/in-memory-queue";
 import type { DeploymentJob } from "../../server/queues/queue-types";
 
-const appJob = (applicationId: string, serverId?: string): DeploymentJob => ({
+const appJob = (
+	applicationId: string,
+	serverId?: string,
+	buildServerId?: string | null,
+): DeploymentJob => ({
 	applicationId,
 	titleLog: "deploy",
 	descriptionLog: "",
 	type: "deploy",
 	applicationType: "application",
 	serverId,
+	buildServerId,
 });
 
 const composeJob = (composeId: string, serverId?: string): DeploymentJob => ({
@@ -40,6 +45,15 @@ describe("getPartition / getGroup", () => {
 	it("partitions by serverId, falling back to the local partition", () => {
 		expect(getPartition(appJob("a"))).toBe(LOCAL_PARTITION);
 		expect(getPartition(appJob("a", "server-1"))).toBe("server-1");
+	});
+
+	it("partitions by the Build Server that runs the build", () => {
+		expect(getPartition(appJob("a", "server-1", "build-1"))).toBe("build-1");
+		// Building on the deploy server itself keeps that partition.
+		expect(getPartition(appJob("a", "server-1", null))).toBe("server-1");
+		expect(getPartition(appJob("a", undefined, "build-1"))).toBe("build-1");
+		// Compose has no per-deployment Build Server in the job.
+		expect(getPartition(composeJob("c", "server-1"))).toBe("server-1");
 	});
 
 	it("groups applications and compose by their id", () => {
@@ -201,6 +215,86 @@ describe("InMemoryQueue concurrency", () => {
 		tasks[0]!.release();
 		await flush();
 		expect(started).toEqual([1, 2]);
+	});
+
+	it("honors one Build Server's limit across several deploy servers", async () => {
+		const started: string[] = [];
+		const tasks = new Map<string, ReturnType<typeof deferred>>();
+
+		// The shared Build Server allows 1 at a time; each deploy server allows 2.
+		const queue = new InMemoryQueue({
+			resolveConcurrency: (partition) => (partition === "build-1" ? 1 : 2),
+			now,
+		});
+		queue.process(async (job) => {
+			const id = (job.data as any).applicationId;
+			started.push(id);
+			const d = deferred();
+			tasks.set(id, d);
+			await d.promise;
+		});
+		await queue.run();
+
+		// Two applications deployed from different servers, both building on
+		// build-1: the Build Server must not run both at once.
+		await queue.add(appJob("a", "deploy-1", "build-1"));
+		await queue.add(appJob("b", "deploy-2", "build-1"));
+		await flush();
+
+		expect(started).toEqual(["a"]);
+
+		tasks.get("a")!.release();
+		await flush();
+		expect(started).toEqual(["a", "b"]);
+	});
+
+	it("keeps Build Servers of one deploy server independent", async () => {
+		const started: string[] = [];
+		const tasks = new Map<string, ReturnType<typeof deferred>>();
+
+		const queue = new InMemoryQueue({ resolveConcurrency: () => 1, now });
+		queue.process(async (job) => {
+			const id = (job.data as any).applicationId;
+			started.push(id);
+			const d = deferred();
+			tasks.set(id, d);
+			await d.promise;
+		});
+		await queue.run();
+
+		// Same deploy server, two different Build Servers: no reason to couple them.
+		await queue.add(appJob("a", "deploy-1", "build-1"));
+		await queue.add(appJob("b", "deploy-1", "build-2"));
+		await flush();
+
+		expect(started.sort()).toEqual(["a", "b"]);
+	});
+
+	it("serializes one application even across Build Servers", async () => {
+		const started: string[] = [];
+		const tasks: Array<ReturnType<typeof deferred>> = [];
+
+		const queue = new InMemoryQueue({ resolveConcurrency: () => 5, now });
+		queue.process(async (job) => {
+			started.push((job.data as any).buildServerId);
+			const d = deferred();
+			tasks.push(d);
+			await d.promise;
+		});
+		await queue.run();
+
+		// Two deployments of the SAME app sent to different machines must not
+		// build in parallel: they share the code dir and the container name.
+		await queue.add(appJob("same", "deploy-1", "build-1"));
+		await queue.add(appJob("same", "deploy-1", "build-2"));
+		await flush();
+
+		expect(started).toEqual(["build-1"]);
+
+		tasks[0]!.release();
+		await flush();
+
+		expect(started).toEqual(["build-1", "build-2"]);
 	});
 
 	it("clamps concurrency below 1 up to 1 (license-disabled behaviour)", async () => {

@@ -11,6 +11,12 @@ import type {
 } from "@dokploy/server/utils/traefik/file-types";
 import { quote } from "shell-quote";
 import { stringify } from "yaml";
+import {
+	assertBuildServerRuntimeSelection,
+	assertBuildServerSelection,
+	type BuildServerRuntimeSelection,
+	type BuildServerSelection,
+} from "./build-server";
 
 export interface ComposeBuildServerSettings {
 	appName: string;
@@ -170,65 +176,14 @@ const getReleaseTraefikServiceName = (
 ) =>
 	`${safeName(appName).slice(0, 28)}-${domain.uniqueConfigKey}-zdt-${hash(deploymentId)}`;
 
-export interface ComposeBuildServerSelection {
-	organizationId: string;
-	accessibleServerIds: ReadonlySet<string>;
-	server:
-		| {
-				serverId: string;
-				organizationId: string;
-				serverStatus: "active" | "inactive";
-				serverType: "deploy" | "build";
-				sshKeyId?: string | null;
-		  }
-		| null
-		| undefined;
-	registry: { organizationId: string } | null | undefined;
-}
+export type ComposeBuildServerSelection = BuildServerSelection;
 
-export type ComposeBuildServerRuntimeSelection = Omit<
-	ComposeBuildServerSelection,
-	"accessibleServerIds"
->;
+export type ComposeBuildServerRuntimeSelection = BuildServerRuntimeSelection;
 
-export const assertComposeBuildServerRuntimeSelection = ({
-	organizationId,
-	server,
-	registry,
-}: ComposeBuildServerRuntimeSelection) => {
-	if (
-		!server ||
-		server.organizationId !== organizationId ||
-		server.serverStatus !== "active" ||
-		server.serverType !== "build" ||
-		!server.sshKeyId
-	) {
-		throw new Error(
-			"The selected server must be an active Build Server in this organization",
-		);
-	}
-	if (!registry || registry.organizationId !== organizationId) {
-		throw new Error(
-			"The selected registry must belong to the same organization",
-		);
-	}
-};
+export const assertComposeBuildServerRuntimeSelection =
+	assertBuildServerRuntimeSelection;
 
-export const assertComposeBuildServerSelection = ({
-	organizationId,
-	accessibleServerIds,
-	server,
-	registry,
-}: ComposeBuildServerSelection) => {
-	if (!server || !accessibleServerIds.has(server.serverId)) {
-		throw new Error("You are not authorized to access this build server");
-	}
-	assertComposeBuildServerRuntimeSelection({
-		organizationId,
-		server,
-		registry,
-	});
-};
+export const assertComposeBuildServerSelection = assertBuildServerSelection;
 
 const composeFile = (compose: ComposeBuildServerSettings) =>
 	compose.sourceType === "raw" ? "docker-compose.yml" : compose.composePath;

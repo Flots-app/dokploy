@@ -9,6 +9,7 @@ import {
 	cancelDeploymentSchema,
 	type DeployJob,
 	deployJobSchema,
+	getBuildTargetId,
 } from "./schema.js";
 import { fetchDeploymentJobs } from "./service.js";
 import { deploy } from "./utils.js";
@@ -27,7 +28,9 @@ export const deploymentFunction = inngest.createFunction(
 		name: "Deploy Application",
 		concurrency: [
 			{
-				key: "event.data.serverId",
+				// The machine running the build, not the deploy server: see
+				// getBuildTargetId, which the /deploy handler stamps on the event.
+				key: "event.data.buildTargetId",
 				limit: 1,
 			},
 		],
@@ -104,11 +107,12 @@ app.post("/deploy", zValidator("json", deployJobSchema), async (c) => {
 		// Send event to Inngest instead of adding to Redis queue
 		await inngest.send({
 			name: "deployment/requested",
-			data,
+			data: { ...data, buildTargetId: getBuildTargetId(data) },
 		});
 
 		logger.info("Deployment event sent to Inngest", {
 			serverId: data.serverId,
+			buildTargetId: getBuildTargetId(data),
 		});
 
 		return c.json(

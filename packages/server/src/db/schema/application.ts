@@ -386,17 +386,56 @@ const createSchema = createInsertSchema(applications, {
 		.optional(),
 });
 
-export const apiCreateApplication = createSchema.pick({
-	name: true,
-	appName: true,
-	description: true,
-	environmentId: true,
-	serverId: true,
-});
+/**
+ * A Build Server hands its image to the deploy server through a registry, so a
+ * new application enables both or neither.
+ */
+const buildServerSelection = {
+	buildServerId: z.string().min(1).nullable().optional(),
+	buildRegistryId: z.string().min(1).nullable().optional(),
+};
+
+const refineBuildServerSelection = <
+	Schema extends z.ZodType<{
+		buildServerId?: string | null;
+		buildRegistryId?: string | null;
+	}>,
+>(
+	schema: Schema,
+) =>
+	schema.refine(
+		(data) => Boolean(data.buildServerId) === Boolean(data.buildRegistryId),
+		{
+			message:
+				"Build Server and Build Registry must be selected or disabled together",
+			path: ["buildServerId"],
+		},
+	);
+
+export const apiCreateApplication = refineBuildServerSelection(
+	createSchema
+		.pick({
+			name: true,
+			appName: true,
+			description: true,
+			environmentId: true,
+			serverId: true,
+		})
+		.extend(buildServerSelection),
+);
 
 export const apiFindOneApplication = z.object({
 	applicationId: z.string().min(1),
 });
+
+/**
+ * A deployment may run on another Build Server than the one stored on the
+ * application. Leaving it out keeps the configured Build Server, `null` builds
+ * on the deploy server. The registry always stays the application's own.
+ */
+const deploymentBuildServer = {
+	buildServerId: z.string().min(1).nullable().optional(),
+};
 
 export const apiDeployApplication = createSchema
 	.pick({
@@ -406,6 +445,7 @@ export const apiDeployApplication = createSchema
 		applicationId: z.string().min(1),
 		title: z.string().optional(),
 		description: z.string().optional(),
+		...deploymentBuildServer,
 	});
 
 export const apiRedeployApplication = createSchema
@@ -416,6 +456,7 @@ export const apiRedeployApplication = createSchema
 		applicationId: z.string().min(1),
 		title: z.string().optional(),
 		description: z.string().optional(),
+		...deploymentBuildServer,
 	});
 
 export const apiReloadApplication = createSchema
