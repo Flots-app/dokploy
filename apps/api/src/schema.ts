@@ -36,6 +36,16 @@ export const deployJobSchema = z.discriminatedUnion("applicationType", [
 
 export type DeployJob = z.infer<typeof deployJobSchema>;
 
+/**
+ * Machine that actually runs the build: the Build Server picked for this
+ * deployment when there is one, otherwise the deploy server. Deployments are
+ * serialized against this machine, so one Build Server shared by several deploy
+ * servers still honours a single concurrency limit.
+ */
+export const getBuildTargetId = (job: DeployJob): string =>
+	(job.applicationType === "application" ? job.buildServerId : null) ??
+	job.serverId;
+
 export const cancelDeploymentSchema = z.discriminatedUnion("applicationType", [
 	z.object({
 		applicationId: z.string(),

@@ -33,15 +33,20 @@ export type BuildServerOverride = {
 	buildServerId?: string | null;
 };
 
-export const assertBuildServerAvailable = ({
-	organizationId,
-	server,
-}: Omit<BuildServerRuntimeSelection, "registry">) => {
+export const assertBuildServerAvailable = (
+	{ organizationId, server }: Omit<BuildServerRuntimeSelection, "registry">,
+	/**
+	 * Only a Build Server may be *picked*. A server already stored on a service
+	 * is checked for reachability alone, so a configuration predating the
+	 * `serverType` filter keeps deploying instead of breaking on the next build.
+	 */
+	{ requireBuildServerType = true } = {},
+) => {
 	if (
 		!server ||
 		server.organizationId !== organizationId ||
 		server.serverStatus !== "active" ||
-		server.serverType !== "build" ||
+		(requireBuildServerType && server.serverType !== "build") ||
 		!server.sshKeyId
 	) {
 		throw new Error(
@@ -88,6 +93,43 @@ export const assertBuildServerSelection = ({
 
 export const isBuildServerOverridden = (override?: BuildServerOverride) =>
 	override?.buildServerId !== undefined;
+
+export interface BuildServerDeploymentRecord {
+	createdAt: string;
+	status?: string | null;
+	buildServerId?: string | null;
+}
+
+const latestFirst = (deployments: BuildServerDeploymentRecord[]) =>
+	[...deployments].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+/**
+ * Machine holding the source code downloaded by the last build. A rebuild does
+ * not clone again, so this is the only machine that can rebuild the current
+ * checkout. `undefined` means the service never deployed, `null` means the last
+ * build ran on the deploy server.
+ */
+export const getSourceBuildServerId = (
+	deployments: BuildServerDeploymentRecord[],
+): string | null | undefined => {
+	const [latest] = latestFirst(deployments);
+	if (!latest) return undefined;
+	return latest.buildServerId || null;
+};
+
+/**
+ * Machine a running build must be killed on: the one the deployment in flight
+ * was sent to, falling back to the last one and finally to the deploy server.
+ */
+export const getRunningBuildServerId = (
+	deployments: BuildServerDeploymentRecord[],
+	deployServerId: string | null,
+): string | null => {
+	const ordered = latestFirst(deployments);
+	const target =
+		ordered.find((deployment) => deployment.status === "running") || ordered[0];
+	return target?.buildServerId || deployServerId;
+};
 
 /**
  * Resolves the Build Server used by a single deployment. An absent override

@@ -1,3 +1,4 @@
+import { getSourceBuildServerId } from "@dokploy/server/utils/builders/build-server";
 import { Server } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
@@ -40,11 +41,14 @@ interface Props {
 const NONE = "none";
 
 /**
- * Deploy confirmation that also picks the Build Server running this build. It
- * starts on the one configured in the advanced settings and never changes it,
- * so a one-off build somewhere else does not become the new default. The
- * registry stays the application's own, since that is what the deploy server
- * pulls from.
+ * Deploy confirmation that also picks the Build Server running this build.
+ *
+ * A deploy starts on the Build Server configured in the advanced settings; a
+ * rebuild starts on the machine that ran the last deployment, since that is the
+ * only one holding the downloaded source code. Neither writes the choice back,
+ * so a one-off build somewhere else never becomes the new default, and the
+ * registry stays the application's own — it is what the deploy server pulls
+ * from.
  */
 export const DeployDialog = ({
 	applicationId,
@@ -64,18 +68,37 @@ export const DeployDialog = ({
 	const { data: buildServers } = api.server.buildServers.useQuery();
 
 	const configuredBuildServerId = application?.buildServerId || NONE;
+	// A rebuild does not clone again, so the machine holding the source code is
+	// the one the last deployment ran on, not the configured default.
+	const sourceBuildServerId = application
+		? (getSourceBuildServerId(application.deployments) ??
+				application.buildServerId ??
+				null) ||
+			NONE
+		: NONE;
+	const defaultBuildServerId = reusesDownloadedSource
+		? sourceBuildServerId
+		: configuredBuildServerId;
 	const [buildServerId, setBuildServerId] = useState(NONE);
 
 	useEffect(() => {
 		if (!open) return;
-		setBuildServerId(configuredBuildServerId);
-	}, [open, configuredBuildServerId]);
+		setBuildServerId(defaultBuildServerId);
+	}, [open, defaultBuildServerId]);
 
 	const hasRegistry = Boolean(
 		application?.registryId || application?.buildRegistryId,
 	);
 	const missingRegistry = buildServerId !== NONE && !hasRegistry;
 	const isOverridden = buildServerId !== configuredBuildServerId;
+	const missingSource =
+		Boolean(reusesDownloadedSource) && buildServerId !== sourceBuildServerId;
+	const sourceBuildServerName =
+		sourceBuildServerId === NONE
+			? "the deploy server"
+			: buildServers?.find(
+					(buildServer) => buildServer.serverId === sourceBuildServerId,
+				)?.name;
 
 	const handleConfirm = async () => {
 		setIsSubmitting(true);
@@ -149,11 +172,13 @@ export const DeployDialog = ({
 						</AlertBlock>
 					) : null}
 
-					{isOverridden && reusesDownloadedSource ? (
+					{missingSource ? (
 						<AlertBlock type="warning">
-							This action reuses the source code already downloaded by the
-							previous build, which only exists on the Build Server that ran it.
-							Deploy instead to download the code on another one.
+							The last build ran on{" "}
+							<strong>{sourceBuildServerName ?? "another machine"}</strong>,
+							which is where the downloaded source code lives. A rebuild does
+							not clone again, so building here would reuse a stale checkout or
+							none at all — run a Deploy instead.
 						</AlertBlock>
 					) : null}
 

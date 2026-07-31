@@ -11,6 +11,7 @@ import {
 	getAccessibleServerIds,
 	getApplicationStats,
 	getContainerLogs,
+	getRunningBuildServerId,
 	getWebServerSettings,
 	IS_CLOUD,
 	mechanizeDockerContainer,
@@ -863,7 +864,12 @@ export const applicationRouter = createTRPCRouter({
 				deployment: ["cancel"],
 			});
 			const application = await findApplicationById(input.applicationId);
-			await killDockerBuild("application", application.serverId);
+			// The build runs on the Build Server the deployment was sent to, which
+			// is not necessarily the one configured on the application today.
+			await killDockerBuild(
+				"application",
+				getRunningBuildServerId(application.deployments, application.serverId),
+			);
 			await audit(ctx, {
 				action: "stop",
 				resourceType: "application",

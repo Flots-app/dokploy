@@ -198,20 +198,24 @@ export const resolveApplicationBuildServer = async (
 		override,
 	);
 
-	if (buildServerId === application.buildServerId) {
-		return application;
-	}
-
 	if (!buildServerId) {
-		return { ...application, buildServerId: null };
+		return buildServerId === application.buildServerId
+			? application
+			: { ...application, buildServerId: null };
 	}
 
-	assertBuildServerAvailable({
-		organizationId: application.environment.project.organizationId,
-		server: await findServerById(buildServerId),
-	});
+	// Checked on every deployment, not only on an override: a Build Server can
+	// go inactive or lose its SSH key between two builds.
+	const isStored = buildServerId === application.buildServerId;
+	assertBuildServerAvailable(
+		{
+			organizationId: application.environment.project.organizationId,
+			server: await findServerById(buildServerId),
+		},
+		{ requireBuildServerType: !isStored },
+	);
 
-	return { ...application, buildServerId };
+	return isStored ? application : { ...application, buildServerId };
 };
 
 export const deployApplication = async ({

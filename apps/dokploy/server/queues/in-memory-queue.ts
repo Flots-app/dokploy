@@ -6,13 +6,17 @@ import type { DeploymentJob } from "./queue-types";
  * Replaces BullMQ/Redis for deployments. The model is per-group FIFO with a
  * configurable concurrency per partition (server):
  *
- * - Jobs are partitioned by `serverId` (the local web server uses the
- *   `LOCAL_PARTITION` key). Each partition runs up to `concurrency` jobs at
- *   the same time, so two different applications can build concurrently.
- * - Within a partition, jobs that belong to the same group (same application
- *   or compose) never run in parallel — they are serialized FIFO. This avoids
- *   two builds of the same service stepping on each other (same code dir,
- *   same container name, etc).
+ * - Jobs are partitioned by the machine that actually runs the build: the
+ *   Build Server when the deployment picked one, otherwise the deploy server
+ *   (the local web server uses the `LOCAL_PARTITION` key). Each partition runs
+ *   up to `concurrency` jobs at the same time, so two different applications
+ *   can build concurrently while one Build Server shared by several deploy
+ *   servers still honours its own limit.
+ * - Jobs that belong to the same group (same application or compose) never run
+ *   in parallel — they are serialized FIFO across every partition, since two
+ *   deployments of one service can now be sent to different machines. This
+ *   avoids two builds of the same service stepping on each other (same code
+ *   dir, same container name, etc).
  *
  * The concurrency is resolved lazily per partition through `resolveConcurrency`
  * so it can be gated by the enterprise license at run time (a non-licensed
@@ -40,9 +44,12 @@ export interface InMemoryJob {
 
 type Processor = (job: InMemoryJob) => Promise<void>;
 
-/** Resolve the partition key (serverId) a job belongs to. */
-export const getPartition = (data: DeploymentJob): string =>
-	data.serverId ?? LOCAL_PARTITION;
+/** Resolve the partition key (the machine running the build) a job belongs to. */
+export const getPartition = (data: DeploymentJob): string => {
+	const buildServerId =
+		data.applicationType === "application" ? data.buildServerId : null;
+	return buildServerId ?? data.serverId ?? LOCAL_PARTITION;
+};
 
 /** Resolve the FIFO group a job belongs to (the service being deployed). */
 export const getGroup = (data: DeploymentJob): string => {
@@ -67,8 +74,6 @@ interface InternalJob {
 
 interface Partition {
 	waiting: InternalJob[];
-	/** Groups currently running in this partition. */
-	activeGroups: Set<string>;
 	active: InternalJob[];
 }
 
@@ -85,6 +90,8 @@ export interface InMemoryQueueOptions {
 
 export class InMemoryQueue {
 	private partitions = new Map<string, Partition>();
+	/** Groups currently running, across every partition. */
+	private activeGroups = new Set<string>();
 	private processor: Processor | null = null;
 	private running = false;
 	private seq = 0;
@@ -99,7 +106,7 @@ export class InMemoryQueue {
 	private getPartitionState(key: string): Partition {
 		let partition = this.partitions.get(key);
 		if (!partition) {
-			partition = { waiting: [], activeGroups: new Set(), active: [] };
+			partition = { waiting: [], active: [] };
 			this.partitions.set(key, partition);
 		}
 		return partition;
@@ -225,9 +232,9 @@ export class InMemoryQueue {
 		const concurrency = Math.max(1, await this.resolveConcurrency(key));
 
 		while (partition.active.length < concurrency) {
-			// First waiting job whose group is not already running.
+			// First waiting job whose group is not already running anywhere.
 			const index = partition.waiting.findIndex(
-				(job) => !partition.activeGroups.has(job.group),
+				(job) => !this.activeGroups.has(job.group),
 			);
 			if (index === -1) break;
 
@@ -235,7 +242,7 @@ export class InMemoryQueue {
 			if (!job) break;
 			job.state = "active";
 			job.processedOn = this.now();
-			partition.activeGroups.add(job.group);
+			this.activeGroups.add(job.group);
 			partition.active.push(job);
 
 			void this.runJob(job);
@@ -253,10 +260,11 @@ export class InMemoryQueue {
 			const partition = this.partitions.get(job.partition);
 			if (partition) {
 				partition.active = partition.active.filter((j) => j.id !== job.id);
-				partition.activeGroups.delete(job.group);
 			}
-			// A slot (and possibly the group) freed up — try to schedule more.
-			void this.drainPartition(job.partition);
+			this.activeGroups.delete(job.group);
+			// A slot freed up, and the group it held may unblock a job waiting in
+			// another partition, so every partition gets a scheduling tick.
+			this.schedule();
 		}
 	}
 }

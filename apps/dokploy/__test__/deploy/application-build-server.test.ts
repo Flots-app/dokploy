@@ -6,6 +6,8 @@ import {
 import {
 	assertBuildServerAvailable,
 	assertBuildServerSelection,
+	getRunningBuildServerId,
+	getSourceBuildServerId,
 	isBuildServerOverridden,
 	resolveBuildServerOverride,
 } from "@dokploy/server/utils/builders/build-server";
@@ -70,6 +72,67 @@ describe("Application Build Server selection", () => {
 	});
 });
 
+describe("Build Server holding the downloaded source", () => {
+	const deployment = (
+		createdAt: string,
+		buildServerId: string | null,
+		status = "done",
+	) => ({ createdAt, buildServerId, status });
+
+	it("is unknown until the application has deployed once", () => {
+		expect(getSourceBuildServerId([])).toBeUndefined();
+	});
+
+	it("is the Build Server of the last deployment, not the configured one", () => {
+		// Configured default is A, but a one-off deployment ran on B: the
+		// checkout only exists on B, so a rebuild belongs there.
+		expect(
+			getSourceBuildServerId([
+				deployment("2026-01-01T00:00:00.000Z", "server-a"),
+				deployment("2026-01-02T00:00:00.000Z", "server-b"),
+			]),
+		).toBe("server-b");
+	});
+
+	it("is the deploy server when the last deployment built locally", () => {
+		expect(
+			getSourceBuildServerId([
+				deployment("2026-01-02T00:00:00.000Z", null),
+				deployment("2026-01-01T00:00:00.000Z", "server-a"),
+			]),
+		).toBeNull();
+	});
+
+	it("kills the build on the machine the running deployment was sent to", () => {
+		expect(
+			getRunningBuildServerId(
+				[
+					deployment("2026-01-01T00:00:00.000Z", "server-a"),
+					deployment("2026-01-02T00:00:00.000Z", "server-b", "running"),
+				],
+				"deploy-server",
+			),
+		).toBe("server-b");
+	});
+
+	it("falls back to the last deployment, then to the deploy server", () => {
+		expect(
+			getRunningBuildServerId(
+				[deployment("2026-01-02T00:00:00.000Z", "server-b")],
+				"deploy-server",
+			),
+		).toBe("server-b");
+		expect(
+			getRunningBuildServerId(
+				[deployment("2026-01-02T00:00:00.000Z", null, "running")],
+				"deploy-server",
+			),
+		).toBe("deploy-server");
+		expect(getRunningBuildServerId([], "deploy-server")).toBe("deploy-server");
+		expect(getRunningBuildServerId([], null)).toBeNull();
+	});
+});
+
 describe("Application Build Server authorization", () => {
 	const organizationId = "org-1";
 	const buildServer = {
@@ -113,6 +176,32 @@ describe("Application Build Server authorization", () => {
 		expect(() =>
 			assertBuildServerAvailable({ organizationId, server: undefined }),
 		).toThrow("active Build Server");
+	});
+
+	it("still rejects a stored Build Server that went inactive or lost its key", () => {
+		const stored = { requireBuildServerType: false };
+		expect(() =>
+			assertBuildServerAvailable(
+				{
+					organizationId,
+					server: { ...buildServer, serverStatus: "inactive" },
+				},
+				stored,
+			),
+		).toThrow("active Build Server");
+		expect(() =>
+			assertBuildServerAvailable(
+				{ organizationId, server: { ...buildServer, sshKeyId: null } },
+				stored,
+			),
+		).toThrow("active Build Server");
+		// A configuration predating the serverType filter keeps deploying.
+		expect(() =>
+			assertBuildServerAvailable(
+				{ organizationId, server: { ...buildServer, serverType: "deploy" } },
+				stored,
+			),
+		).not.toThrow();
 	});
 
 	it("rejects deploy servers, inactive servers and foreign registries", () => {
