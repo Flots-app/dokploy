@@ -6,8 +6,7 @@
 
 ## IN PROGRESS
 
-- [ ] Publish the reviewed implementation as a draft pull request against
-  `Flots-app/dokploy:canary`.
+- None.
 
 ## TO VERIFY
 
@@ -51,3 +50,6 @@
 - [x] Validated actual rclone v1.74.4 behavior against MinIO: upload, logical
   listing, restore, encrypted physical filenames/content, and no crypt secret in
   generated command strings.
+- [x] Published draft pull request
+  [Flots-app/dokploy#13](https://github.com/Flots-app/dokploy/pull/13) against
+  `canary`.
