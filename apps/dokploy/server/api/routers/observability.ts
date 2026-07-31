@@ -3,6 +3,7 @@ import {
 	disableManagedObservability,
 	exportObservabilityArtifacts,
 	findDatabaseDeployment,
+	getActiveDatabaseAlerts,
 	getCurrentMetricValue,
 	getDatabaseAlertHistory,
 	getDatabaseAlertStates,
@@ -282,6 +283,20 @@ export const observabilityRouter = createTRPCRouter({
 				serviceId: input.serviceId,
 			});
 		}),
+
+	activeAlerts: withPermission("monitoring", "read").query(async ({ ctx }) => {
+		const member = await findMemberByUserId(
+			ctx.user.id,
+			ctx.session.activeOrganizationId,
+		);
+		return getActiveDatabaseAlerts({
+			organizationId: ctx.session.activeOrganizationId,
+			allowedServiceIds:
+				member.role === "owner" || member.role === "admin"
+					? undefined
+					: member.accessedServices,
+		});
+	}),
 
 	exportArtifacts: withPermission("monitoring", "read")
 		.input(z.object({ serviceId: z.string().min(1) }))

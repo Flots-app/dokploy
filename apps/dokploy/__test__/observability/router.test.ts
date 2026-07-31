@@ -6,6 +6,7 @@ const server = vi.hoisted(() => ({
 	disableManagedObservability: vi.fn(),
 	exportObservabilityArtifacts: vi.fn(),
 	findDatabaseDeployment: vi.fn(),
+	getActiveDatabaseAlerts: vi.fn(),
 	getCurrentMetricValue: vi.fn(),
 	getDatabaseAlertHistory: vi.fn(),
 	getDatabaseAlertStates: vi.fn(),
@@ -118,6 +119,7 @@ describe("observability router authorization", () => {
 			contentType: "application/zip",
 			data: "archive",
 		});
+		server.getActiveDatabaseAlerts.mockResolvedValue([]);
 		databaseAlertRuleFindFirst.mockResolvedValue(undefined);
 	});
 
@@ -207,5 +209,27 @@ describe("observability router authorization", () => {
 			"org-1",
 			"postgres-1",
 		);
+	});
+
+	it("lists every organization alert for owners", async () => {
+		const caller = observabilityRouter.createCaller(context());
+		await expect(caller.activeAlerts()).resolves.toEqual([]);
+		expect(server.getActiveDatabaseAlerts).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			allowedServiceIds: undefined,
+		});
+	});
+
+	it("limits the global alert view to a member's accessible services", async () => {
+		permissions.findMemberByUserId.mockResolvedValue({
+			role: "member",
+			accessedServices: ["postgres-1", "redis-1"],
+		});
+		const caller = observabilityRouter.createCaller(context());
+		await expect(caller.activeAlerts()).resolves.toEqual([]);
+		expect(server.getActiveDatabaseAlerts).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			allowedServiceIds: ["postgres-1", "redis-1"],
+		});
 	});
 });
