@@ -10,6 +10,7 @@ import { useRouter } from "next/router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { toast } from "sonner";
 import { ShowBuildChooseForm } from "@/components/dashboard/application/build/show";
+import { DeployDialog } from "@/components/dashboard/application/general/deploy-dialog";
 import { ShowProviderForm } from "@/components/dashboard/application/general/generic/show";
 import { DialogAction } from "@/components/shared/dialog-action";
 import { Button } from "@/components/ui/button";
@@ -61,13 +62,15 @@ export const ShowGeneralApplication = ({ applicationId }: Props) => {
 				<CardContent className="grid grid-cols-2 lg:flex lg:flex-row lg:flex-wrap gap-4">
 					<TooltipProvider delayDuration={0} disableHoverableContent={false}>
 						{canDeploy && (
-							<DialogAction
+							<DeployDialog
+								applicationId={applicationId}
 								title="Deploy Application"
-								description="Are you sure you want to deploy this application?"
-								type="default"
-								onClick={async () => {
+								description="Downloads the source code and performs a complete build. Pick the server that runs this build."
+								confirmLabel="Deploy"
+								onConfirm={async (buildServer) => {
 									await deploy({
 										applicationId: applicationId,
+										...buildServer,
 									})
 										.then(() => {
 											toast.success("Application deployed successfully");
@@ -76,8 +79,12 @@ export const ShowGeneralApplication = ({ applicationId }: Props) => {
 												`/dashboard/project/${data?.environment.projectId}/environment/${data?.environmentId}/services/application/${applicationId}?tab=deployments`,
 											);
 										})
-										.catch(() => {
-											toast.error("Error deploying application");
+										.catch((error) => {
+											toast.error(
+												error instanceof Error
+													? error.message
+													: "Error deploying application",
+											);
 										});
 								}}
 							>
@@ -103,7 +110,7 @@ export const ShowGeneralApplication = ({ applicationId }: Props) => {
 										</TooltipPrimitive.Portal>
 									</Tooltip>
 								</Button>
-							</DialogAction>
+							</DeployDialog>
 						)}
 						{canDeploy && (
 							<DialogAction
@@ -146,20 +153,27 @@ export const ShowGeneralApplication = ({ applicationId }: Props) => {
 							</DialogAction>
 						)}
 						{canDeploy && (
-							<DialogAction
+							<DeployDialog
+								applicationId={applicationId}
 								title="Rebuild Application"
-								description="Are you sure you want to rebuild this application?"
-								type="default"
-								onClick={async () => {
+								description="Rebuilds the image from the source code already downloaded, without cloning it again."
+								confirmLabel="Rebuild"
+								reusesDownloadedSource
+								onConfirm={async (buildServer) => {
 									await redeploy({
 										applicationId: applicationId,
+										...buildServer,
 									})
 										.then(() => {
 											toast.success("Application rebuilt successfully");
 											refetch();
 										})
-										.catch(() => {
-											toast.error("Error rebuilding application");
+										.catch((error) => {
+											toast.error(
+												error instanceof Error
+													? error.message
+													: "Error rebuilding application",
+											);
 										});
 								}}
 							>
@@ -185,7 +199,7 @@ export const ShowGeneralApplication = ({ applicationId }: Props) => {
 										</TooltipPrimitive.Portal>
 									</Tooltip>
 								</Button>
-							</DialogAction>
+							</DeployDialog>
 						)}
 
 						{canDeploy && data?.applicationStatus === "idle" ? (

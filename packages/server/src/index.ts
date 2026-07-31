@@ -80,6 +80,7 @@ export * from "./utils/backups/mysql";
 export * from "./utils/backups/postgres";
 export * from "./utils/backups/utils";
 export * from "./utils/backups/web-server";
+export * from "./utils/builders/build-server";
 export * from "./utils/builders/compose";
 export * from "./utils/builders/compose-build-server";
 export * from "./utils/builders/docker-file";

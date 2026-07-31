@@ -45,21 +45,36 @@ import { slugify } from "@/lib/slug";
 import { api } from "@/utils/api";
 import { APP_NAME_MESSAGE, APP_NAME_REGEX } from "@/utils/schema";
 
-const AddTemplateSchema = z.object({
-	name: z.string().min(1, {
-		message: "Name is required",
-	}),
-	appName: z
-		.string()
-		.min(1, {
-			message: "App name is required",
-		})
-		.regex(APP_NAME_REGEX, {
-			message: APP_NAME_MESSAGE,
+const NONE = "none";
+
+const AddTemplateSchema = z
+	.object({
+		name: z.string().min(1, {
+			message: "Name is required",
 		}),
-	description: z.string().optional(),
-	serverId: z.string().optional(),
-});
+		appName: z
+			.string()
+			.min(1, {
+				message: "App name is required",
+			})
+			.regex(APP_NAME_REGEX, {
+				message: APP_NAME_MESSAGE,
+			}),
+		description: z.string().optional(),
+		serverId: z.string().optional(),
+		buildServerId: z.string().optional(),
+		buildRegistryId: z.string().optional(),
+	})
+	.refine(
+		(data) =>
+			(!data.buildServerId || data.buildServerId === NONE) ===
+			(!data.buildRegistryId || data.buildRegistryId === NONE),
+		{
+			message:
+				"Build Server and Build Registry must be selected or disabled together",
+			path: ["buildServerId"],
+		},
+	);
 
 type AddTemplate = z.infer<typeof AddTemplateSchema>;
 
@@ -77,8 +92,11 @@ export const AddApplication = ({ environmentId, projectName }: Props) => {
 	const [visible, setVisible] = useState(false);
 	const slug = slugify(projectName);
 	const { data: servers } = api.server.withSSHKey.useQuery();
+	const { data: buildServers } = api.server.buildServers.useQuery();
+	const { data: registries } = api.registry.all.useQuery();
 
 	const hasServers = servers && servers.length > 0;
+	const shouldShowBuildServerDropdown = Boolean(buildServers?.length);
 	// Show dropdown logic based on cloud environment
 	// Cloud: show only if there are remote servers (no Dokploy option)
 	// Self-hosted: show only if there are remote servers (Dokploy is default, hide if no remote servers)
@@ -102,6 +120,14 @@ export const AddApplication = ({ environmentId, projectName }: Props) => {
 			appName: data.appName,
 			description: data.description,
 			serverId: data.serverId === "dokploy" ? undefined : data.serverId,
+			buildServerId:
+				!data.buildServerId || data.buildServerId === NONE
+					? null
+					: data.buildServerId,
+			buildRegistryId:
+				!data.buildRegistryId || data.buildRegistryId === NONE
+					? null
+					: data.buildRegistryId,
 			environmentId,
 		})
 			.then(async () => {
@@ -241,6 +267,117 @@ export const AddApplication = ({ environmentId, projectName }: Props) => {
 									</FormItem>
 								)}
 							/>
+						)}
+						{shouldShowBuildServerDropdown && (
+							<>
+								<FormField
+									control={form.control}
+									name="buildServerId"
+									render={({ field }) => (
+										<FormItem>
+											<TooltipProvider delayDuration={0}>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<FormLabel className="break-all w-fit flex flex-row gap-1 items-center">
+															Build Server (Optional)
+															<HelpCircle className="size-4 text-muted-foreground" />
+														</FormLabel>
+													</TooltipTrigger>
+													<TooltipContent
+														className="z-999 w-[300px]"
+														align="start"
+														side="top"
+													>
+														<span>
+															Offloads the build to a dedicated server. The
+															image is pushed to the selected registry and
+															pulled by the deploy server.
+														</span>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+											<Select
+												onValueChange={(value) => {
+													field.onChange(value);
+													if (value === NONE) {
+														form.setValue("buildRegistryId", NONE);
+													}
+												}}
+												value={field.value || NONE}
+											>
+												<SelectTrigger>
+													<SelectValue placeholder="Select a build server" />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectGroup>
+														<SelectItem value={NONE}>None</SelectItem>
+														{buildServers?.map((buildServer) => (
+															<SelectItem
+																key={buildServer.serverId}
+																value={buildServer.serverId}
+															>
+																<span className="flex items-center gap-2 justify-between w-full">
+																	<span>{buildServer.name}</span>
+																	<span className="text-muted-foreground text-xs self-center">
+																		{buildServer.ipAddress}
+																	</span>
+																</span>
+															</SelectItem>
+														))}
+														<SelectLabel>
+															Build Servers ({buildServers?.length || 0})
+														</SelectLabel>
+													</SelectGroup>
+												</SelectContent>
+											</Select>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="buildRegistryId"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Build Registry</FormLabel>
+											<Select
+												onValueChange={(value) => {
+													field.onChange(value);
+													if (value === NONE) {
+														form.setValue("buildServerId", NONE);
+													}
+												}}
+												value={field.value || NONE}
+												disabled={
+													!form.watch("buildServerId") ||
+													form.watch("buildServerId") === NONE
+												}
+											>
+												<SelectTrigger>
+													<SelectValue placeholder="Select a registry" />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectGroup>
+														<SelectItem value={NONE}>None</SelectItem>
+														{registries?.map((registry) => (
+															<SelectItem
+																key={registry.registryId}
+																value={registry.registryId}
+															>
+																{registry.registryName}
+															</SelectItem>
+														))}
+														<SelectLabel>
+															Registries ({registries?.length || 0})
+														</SelectLabel>
+													</SelectGroup>
+												</SelectContent>
+											</Select>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							</>
 						)}
 						<FormField
 							control={form.control}

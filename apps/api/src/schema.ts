@@ -9,6 +9,9 @@ export const deployJobSchema = z.discriminatedUnion("applicationType", [
 		type: z.enum(["deploy", "redeploy"]),
 		applicationType: z.literal("application"),
 		serverId: z.string().min(1),
+		// Build Server chosen for this deployment. Absent keeps the one
+		// configured on the application, null builds on the deploy server.
+		buildServerId: z.string().min(1).nullable().optional(),
 	}),
 	z.object({
 		composeId: z.string(),

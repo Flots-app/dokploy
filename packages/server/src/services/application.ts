@@ -10,6 +10,11 @@ import {
 	getBuildCommand,
 	mechanizeDockerContainer,
 } from "@dokploy/server/utils/builders";
+import {
+	assertBuildServerAvailable,
+	type BuildServerOverride,
+	resolveBuildServerOverride,
+} from "@dokploy/server/utils/builders/build-server";
 import { sendBuildErrorNotifications } from "@dokploy/server/utils/notifications/build-error";
 import { sendBuildSuccessNotifications } from "@dokploy/server/utils/notifications/build-success";
 import {
@@ -51,6 +56,7 @@ import {
 	updatePreviewDeployment,
 } from "./preview-deployment";
 import { validUniqueServerAppName } from "./project";
+import { findServerById } from "./server";
 export type Application = typeof applications.$inferSelect;
 
 export const createApplication = async (
@@ -175,16 +181,54 @@ export const updateApplicationStatus = async (
 	return application;
 };
 
+/**
+ * Applies the Build Server chosen for a single deployment on top of the one
+ * stored on the application. Only the machine running the build moves: the
+ * registry the deploy server pulls from stays the application's own.
+ */
+export const resolveApplicationBuildServer = async (
+	application: Awaited<ReturnType<typeof findApplicationById>>,
+	override?: BuildServerOverride,
+) => {
+	const { buildServerId } = resolveBuildServerOverride(
+		{
+			buildServerId: application.buildServerId,
+			buildRegistryId: application.buildRegistryId,
+		},
+		override,
+	);
+
+	if (buildServerId === application.buildServerId) {
+		return application;
+	}
+
+	if (!buildServerId) {
+		return { ...application, buildServerId: null };
+	}
+
+	assertBuildServerAvailable({
+		organizationId: application.environment.project.organizationId,
+		server: await findServerById(buildServerId),
+	});
+
+	return { ...application, buildServerId };
+};
+
 export const deployApplication = async ({
 	applicationId,
 	titleLog = "Manual deployment",
 	descriptionLog = "",
+	buildServer,
 }: {
 	applicationId: string;
 	titleLog: string;
 	descriptionLog: string;
+	buildServer?: BuildServerOverride;
 }) => {
-	const application = await findApplicationById(applicationId);
+	const application = await resolveApplicationBuildServer(
+		await findApplicationById(applicationId),
+		buildServer,
+	);
 	const serverId = application.buildServerId || application.serverId;
 	const applicationEntity = {
 		...application,
@@ -196,6 +240,7 @@ export const deployApplication = async ({
 		applicationId: applicationId,
 		title: titleLog,
 		description: descriptionLog,
+		buildServerId: application.buildServerId,
 	});
 
 	try {
@@ -297,12 +342,17 @@ export const rebuildApplication = async ({
 	applicationId,
 	titleLog = "Rebuild deployment",
 	descriptionLog = "",
+	buildServer,
 }: {
 	applicationId: string;
 	titleLog: string;
 	descriptionLog: string;
+	buildServer?: BuildServerOverride;
 }) => {
-	const application = await findApplicationById(applicationId);
+	const application = await resolveApplicationBuildServer(
+		await findApplicationById(applicationId),
+		buildServer,
+	);
 	const serverId = application.buildServerId || application.serverId;
 	const buildLink = `${await getDokployUrl()}/dashboard/project/${application.environment.projectId}/environment/${application.environmentId}/services/application/${application.applicationId}?tab=deployments`;
 
@@ -310,6 +360,7 @@ export const rebuildApplication = async ({
 		applicationId: applicationId,
 		title: titleLog,
 		description: descriptionLog,
+		buildServerId: application.buildServerId,
 	});
 
 	try {

@@ -1,4 +1,7 @@
 import {
+	assertBuildServerAccessible,
+	assertBuildServerAvailable,
+	assertBuildServerSelection,
 	clearOldDeployments,
 	createApplication,
 	deleteAllMiddlewares,
@@ -33,9 +36,11 @@ import { db } from "@dokploy/server/db";
 import { canEditDeployGitSource } from "@dokploy/server/services/git-provider";
 import {
 	addNewService,
+	checkPermission,
 	checkServiceAccess,
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
+	type PermissionCtx,
 } from "@dokploy/server/services/permission";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
@@ -67,6 +72,8 @@ import {
 	applications,
 	environments,
 	projects,
+	registry,
+	server,
 } from "@/server/db/schema";
 import type { DeploymentJob } from "@/server/queues/queue-types";
 import {
@@ -75,6 +82,87 @@ import {
 	myQueue,
 } from "@/server/queues/queueSetup";
 import { cancelDeployment, deploy } from "@/server/utils/deploy";
+
+type BuildServerCtx = PermissionCtx & {
+	session: { userId: string; activeOrganizationId: string };
+};
+
+const toBuildServerError = (error: unknown) =>
+	new TRPCError({
+		code:
+			error instanceof Error && error.message.includes("authorized")
+				? "UNAUTHORIZED"
+				: "BAD_REQUEST",
+		message: error instanceof Error ? error.message : "Invalid Build Server",
+	});
+
+/**
+ * Validates the Build Server a deployment runs on. The registry is not part of
+ * the choice: the deployment keeps the one configured on the application.
+ */
+const checkDeploymentBuildServer = async (
+	ctx: BuildServerCtx,
+	organizationId: string,
+	buildServerId: string | null | undefined,
+) => {
+	if (!buildServerId) return;
+
+	await checkPermission(ctx, { server: ["read"] });
+
+	const accessibleIds = await getAccessibleServerIds(ctx.session);
+	const buildServer = await db.query.server.findFirst({
+		where: eq(server.serverId, buildServerId),
+	});
+
+	try {
+		assertBuildServerAccessible({
+			accessibleServerIds: accessibleIds,
+			server: buildServer,
+		});
+		assertBuildServerAvailable({ organizationId, server: buildServer });
+	} catch (error) {
+		throw toBuildServerError(error);
+	}
+};
+
+/**
+ * Validates the Build Server and the registry chosen when an application is
+ * created, which is the pair the very first deployment will use.
+ */
+const checkBuildServerSelection = async (
+	ctx: BuildServerCtx,
+	organizationId: string,
+	input: { buildServerId?: string | null; buildRegistryId?: string | null },
+) => {
+	if (!input.buildServerId || !input.buildRegistryId) return;
+
+	await checkPermission(ctx, {
+		server: ["read"],
+		registry: ["read"],
+	});
+
+	const accessibleIds = await getAccessibleServerIds(ctx.session);
+	const [buildServer, buildRegistry] = await Promise.all([
+		db.query.server.findFirst({
+			where: eq(server.serverId, input.buildServerId),
+		}),
+		db.query.registry.findFirst({
+			where: eq(registry.registryId, input.buildRegistryId),
+			columns: { password: false },
+		}),
+	]);
+
+	try {
+		assertBuildServerSelection({
+			organizationId,
+			accessibleServerIds: accessibleIds,
+			server: buildServer,
+			registry: buildRegistry,
+		});
+	} catch (error) {
+		throw toBuildServerError(error);
+	}
+};
 
 export const applicationRouter = createTRPCRouter({
 	create: protectedProcedure
@@ -113,6 +201,8 @@ export const applicationRouter = createTRPCRouter({
 						});
 					}
 				}
+
+				await checkBuildServerSelection(ctx, project.organizationId, input);
 
 				const newApplication = await createApplication(input);
 
@@ -325,6 +415,11 @@ export const applicationRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const application = await findApplicationById(input.applicationId);
+			await checkDeploymentBuildServer(
+				ctx,
+				application.environment.project.organizationId,
+				input.buildServerId,
+			);
 			const jobData: DeploymentJob = {
 				applicationId: input.applicationId,
 				titleLog: input.title || "Rebuild deployment",
@@ -333,6 +428,7 @@ export const applicationRouter = createTRPCRouter({
 				applicationType: "application",
 				server: !!application.serverId,
 				serverId: application.serverId ?? undefined,
+				buildServerId: input.buildServerId,
 			};
 
 			if (IS_CLOUD && application.serverId) {
@@ -693,6 +789,11 @@ export const applicationRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const application = await findApplicationById(input.applicationId);
+			await checkDeploymentBuildServer(
+				ctx,
+				application.environment.project.organizationId,
+				input.buildServerId,
+			);
 			const jobData: DeploymentJob = {
 				applicationId: input.applicationId,
 				titleLog: input.title || "Manual deployment",
@@ -701,6 +802,7 @@ export const applicationRouter = createTRPCRouter({
 				applicationType: "application",
 				server: !!application.serverId,
 				serverId: application.serverId ?? undefined,
+				buildServerId: input.buildServerId,
 			};
 			if (IS_CLOUD && application.serverId) {
 				deploy(jobData).catch((error) => {

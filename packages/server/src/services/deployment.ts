@@ -116,7 +116,13 @@ export const createDeployment = async (
 	deployment: Omit<
 		z.infer<typeof apiCreateDeployment>,
 		"deploymentId" | "createdAt" | "status" | "logPath"
-	>,
+	> & {
+		/**
+		 * Build Server used by this deployment. `undefined` keeps the one
+		 * configured on the application, `null` builds on the deploy server.
+		 */
+		buildServerId?: string | null;
+	},
 ) => {
 	const application = await findApplicationById(deployment.applicationId);
 	await removeLastTenDeployments(
@@ -125,7 +131,11 @@ export const createDeployment = async (
 		application.serverId,
 	);
 	try {
-		const serverId = application.buildServerId || application.serverId;
+		const buildServerId =
+			deployment.buildServerId === undefined
+				? application.buildServerId
+				: deployment.buildServerId;
+		const serverId = buildServerId || application.serverId;
 
 		const { LOGS_PATH } = paths(!!serverId);
 		const formattedDateTime = format(new Date(), "yyyy-MM-dd:HH:mm:ss");
@@ -158,8 +168,8 @@ export const createDeployment = async (
 				logPath: logFilePath,
 				description: deployment.description || "",
 				startedAt: new Date().toISOString(),
-				...(application.buildServerId && {
-					buildServerId: application.buildServerId,
+				...(buildServerId && {
+					buildServerId,
 				}),
 			})
 			.returning();

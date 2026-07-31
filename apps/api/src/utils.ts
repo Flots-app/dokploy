@@ -16,17 +16,20 @@ export const deploy = async (job: DeployJob) => {
 		if (job.applicationType === "application") {
 			await updateApplicationStatus(job.applicationId, "running");
 			if (job.server) {
+				const buildServer = { buildServerId: job.buildServerId };
 				if (job.type === "redeploy") {
 					await rebuildApplication({
 						applicationId: job.applicationId,
 						titleLog: job.titleLog || "Rebuild deployment",
 						descriptionLog: job.descriptionLog || "",
+						buildServer,
 					});
 				} else if (job.type === "deploy") {
 					await deployApplication({
 						applicationId: job.applicationId,
 						titleLog: job.titleLog || "Manual deployment",
 						descriptionLog: job.descriptionLog || "",
+						buildServer,
 					});
 				}
 			}

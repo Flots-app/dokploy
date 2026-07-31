@@ -7,6 +7,7 @@ import {
 	Loader2,
 	RefreshCcw,
 	RocketIcon,
+	Server,
 	Settings,
 	Trash2,
 } from "lucide-react";
@@ -363,6 +364,17 @@ export const ShowDeployments = ({
 													)}
 												</Badge>
 											)}
+											{"buildServer" in deployment &&
+											deployment.buildServer?.name ? (
+												<Badge
+													variant="outline"
+													className="text-[10px] gap-1 flex items-center normal-case"
+													title="Build Server used by this deployment"
+												>
+													<Server className="size-3" />
+													{deployment.buildServer.name}
+												</Badge>
+											) : null}
 										</div>
 
 										<div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">

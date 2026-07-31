@@ -20,17 +20,21 @@ export const processDeploymentJob = async (job: InMemoryJob) => {
 		if (job.data.applicationType === "application") {
 			await updateApplicationStatus(job.data.applicationId, "running");
 
+			const buildServer = { buildServerId: job.data.buildServerId };
+
 			if (job.data.type === "redeploy") {
 				await rebuildApplication({
 					applicationId: job.data.applicationId,
 					titleLog: job.data.titleLog,
 					descriptionLog: job.data.descriptionLog,
+					buildServer,
 				});
 			} else if (job.data.type === "deploy") {
 				await deployApplication({
 					applicationId: job.data.applicationId,
 					titleLog: job.data.titleLog,
 					descriptionLog: job.data.descriptionLog,
+					buildServer,
 				});
 			}
 		} else if (job.data.applicationType === "compose") {
