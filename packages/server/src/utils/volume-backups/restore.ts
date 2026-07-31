@@ -4,9 +4,9 @@ import {
 	findApplicationById,
 	findComposeById,
 	findDestinationById,
-	getS3Credentials,
 	paths,
 } from "../..";
+import { buildRcloneCommand, getRcloneRemotePath } from "../backups/utils";
 
 export const restoreVolume = async (
 	id: string,
@@ -19,29 +19,36 @@ export const restoreVolume = async (
 	const destination = await findDestinationById(destinationId);
 	const { VOLUME_BACKUPS_PATH } = paths(!!serverId);
 	const volumeBackupPath = path.join(VOLUME_BACKUPS_PATH, volumeName);
-	const rcloneFlags = getS3Credentials(destination);
-	const bucketPath = `:s3:${destination.bucket}`;
-	const backupPath = `${bucketPath}/${backupFileName}`;
+	const backupPath = getRcloneRemotePath(destination, backupFileName);
+	const localBackupFileName = path.basename(backupFileName);
+	if (!localBackupFileName || [".", ".."].includes(localBackupFileName)) {
+		throw new Error("Invalid volume backup filename");
+	}
 
 	// Command to download backup file from S3
-	const downloadCommand = `rclone copyto ${rcloneFlags.join(" ")} ${quote([backupPath])} ${quote([`${volumeBackupPath}/${backupFileName}`])}`;
+	const downloadCommand = buildRcloneCommand(destination, [
+		"copyto",
+		backupPath,
+		`${volumeBackupPath}/${localBackupFileName}`,
+	]);
 
 	// Base restore command that creates the volume and restores data
 	const baseRestoreCommand = `
 	set -e
 	echo "Volume name: ${volumeName}"
-	echo "Backup file name: ${backupFileName}"
-	echo "Volume backup path: ${volumeBackupPath}"
+	echo "Backup file name:" ${quote([localBackupFileName])}
+	echo "Volume backup path:" ${quote([volumeBackupPath])}
 	echo "Downloading backup from S3..."
-	mkdir -p ${volumeBackupPath}
+	mkdir -p ${quote([volumeBackupPath])}
 	${downloadCommand}
 	echo "Download completed ✅"
 	echo "Creating new volume and restoring data..."
 	docker run --rm \
-		-v ${volumeName}:/volume_data \
-		-v ${volumeBackupPath}:/backup \
+		-v ${quote([`${volumeName}:/volume_data`])} \
+		-v ${quote([`${volumeBackupPath}:/backup`])} \
+		-w /volume_data \
 		ubuntu \
-		bash -c "cd /volume_data && tar xvf /backup/${quote([backupFileName])} ."
+		tar xvf ${quote([`/backup/${localBackupFileName}`])} .
 	echo "Volume restore completed ✅"
 	`;
 

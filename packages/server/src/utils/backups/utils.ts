@@ -69,7 +69,17 @@ export const normalizeS3Path = (prefix: string) => {
 	return normalizedPrefix ? `${normalizedPrefix}/` : "";
 };
 
-export const getS3Credentials = (destination: Destination) => {
+export const getS3Credentials = (
+	destination: Pick<
+		Destination,
+		| "accessKey"
+		| "additionalFlags"
+		| "endpoint"
+		| "provider"
+		| "region"
+		| "secretAccessKey"
+	>,
+) => {
 	const { accessKey, secretAccessKey, region, endpoint, provider } =
 		destination;
 	const rcloneFlags = [
@@ -90,6 +100,106 @@ export const getS3Credentials = (destination: Destination) => {
 	}
 
 	return rcloneFlags;
+};
+
+export const RCLONE_ENCRYPTED_BACKUP_PREFIX = ".dokploy/encrypted/v1";
+
+type RcloneDestination = Pick<
+	Destination,
+	| "accessKey"
+	| "additionalFlags"
+	| "bucket"
+	| "encryptionDirectoryNames"
+	| "encryptionEnabled"
+	| "encryptionFilenameMode"
+	| "encryptionPassword"
+	| "encryptionPassword2"
+	| "endpoint"
+	| "provider"
+	| "region"
+	| "secretAccessKey"
+>;
+
+const assertEncryptedDestination: (
+	destination: RcloneDestination,
+) => asserts destination is RcloneDestination & {
+	encryptionPassword: string;
+} = (destination) => {
+	if (destination.encryptionEnabled && !destination.encryptionPassword) {
+		throw new Error("Encrypted destination is missing its encryption password");
+	}
+};
+
+/**
+ * Resolve a logical backup path through either the legacy S3 remote or the
+ * isolated, versioned crypt remote. Plaintext and encrypted objects never
+ * share a prefix, so existing destinations remain readable.
+ */
+export const getRcloneRemotePath = (
+	destination: RcloneDestination,
+	relativePath = "",
+) => {
+	assertEncryptedDestination(destination);
+	const normalizedPath = relativePath.replace(/^\/+/, "");
+	if (
+		/[\0\r\n]/.test(normalizedPath) ||
+		normalizedPath.split("/").some((segment) => segment === "..")
+	) {
+		throw new Error("Invalid backup path");
+	}
+
+	if (destination.encryptionEnabled) {
+		return `:crypt:${normalizedPath}`;
+	}
+
+	return `:s3:${destination.bucket}${normalizedPath ? `/${normalizedPath}` : ""}`;
+};
+
+export const getRcloneEnvironment = (destination: RcloneDestination) => {
+	assertEncryptedDestination(destination);
+	if (!destination.encryptionEnabled) return {};
+
+	const directoryNameEncryption =
+		destination.encryptionFilenameMode === "off"
+			? false
+			: destination.encryptionDirectoryNames;
+	const environment: Record<string, string> = {
+		RCLONE_CRYPT_REMOTE: `:s3:${destination.bucket}/${RCLONE_ENCRYPTED_BACKUP_PREFIX}`,
+		RCLONE_CRYPT_PASSWORD: destination.encryptionPassword,
+		RCLONE_CRYPT_FILENAME_ENCRYPTION: destination.encryptionFilenameMode,
+		RCLONE_CRYPT_DIRECTORY_NAME_ENCRYPTION: String(directoryNameEncryption),
+	};
+
+	if (destination.encryptionPassword2) {
+		environment.RCLONE_CRYPT_PASSWORD2 = destination.encryptionPassword2;
+	}
+
+	return environment;
+};
+
+export const getRcloneExecOptions = (destination: RcloneDestination) => ({
+	env: {
+		...process.env,
+		...getRcloneEnvironment(destination),
+	},
+});
+
+/**
+ * Build one shell-safe rclone invocation. Passwords are rclone-obscured before
+ * persistence. The caller must inject `getRcloneEnvironment(destination)` via
+ * the process environment; no crypt secret is included in this command.
+ */
+export const buildRcloneCommand = (
+	destination: RcloneDestination,
+	args: [string, ...string[]],
+) => {
+	const [subcommand, ...subcommandArgs] = args;
+	return [
+		"rclone",
+		subcommand,
+		...getS3Credentials(destination),
+		...subcommandArgs.map((argument) => quote([argument])),
+	].join(" ");
 };
 
 // User-controlled values (database name, user, password) are passed to the

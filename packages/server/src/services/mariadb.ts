@@ -72,6 +72,8 @@ export const findMariadbById = async (mariadbId: string) => {
 					destination: {
 						columns: {
 							accessKey: false,
+							encryptionPassword: false,
+							encryptionPassword2: false,
 							secretAccessKey: false,
 						},
 					},

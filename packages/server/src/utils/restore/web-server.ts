@@ -1,10 +1,15 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { IS_CLOUD, paths } from "@dokploy/server/constants";
 import type { Destination } from "@dokploy/server/services/destination";
 import { quote } from "shell-quote";
-import { getS3Credentials } from "../backups/utils";
+import { getSafeRcloneErrorMessage } from "../backups/redact";
+import {
+	buildRcloneCommand,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
+} from "../backups/utils";
 import { execAsync } from "../process/execAsync";
 
 export const restoreWebServerBackup = async (
@@ -16,9 +21,8 @@ export const restoreWebServerBackup = async (
 		return;
 	}
 	try {
-		const rcloneFlags = getS3Credentials(destination);
-		const bucketPath = `:s3:${destination.bucket}`;
-		const backupPath = `${bucketPath}/${backupFile}`;
+		const backupPath = getRcloneRemotePath(destination, backupFile);
+		const localBackupFile = basename(backupFile);
 		const { BASE_PATH } = paths();
 
 		// Create a temporary directory outside of BASE_PATH
@@ -36,7 +40,12 @@ export const restoreWebServerBackup = async (
 			// Download backup from S3
 			emit("Downloading backup from S3...");
 			await execAsync(
-				`rclone copyto ${rcloneFlags.join(" ")} ${quote([backupPath])} ${quote([`${tempDir}/${backupFile}`])}`,
+				buildRcloneCommand(destination, [
+					"copyto",
+					backupPath,
+					`${tempDir}/${localBackupFile}`,
+				]),
+				getRcloneExecOptions(destination),
 			);
 
 			// List files before extraction
@@ -47,7 +56,7 @@ export const restoreWebServerBackup = async (
 			// Extract backup
 			emit("Extracting backup...");
 			await execAsync(
-				`cd ${quote([tempDir])} && unzip ${quote([backupFile])} > /dev/null 2>&1`,
+				`cd ${quote([tempDir])} && unzip ${quote([localBackupFile])} > /dev/null 2>&1`,
 			);
 
 			// Restore filesystem first
@@ -143,14 +152,12 @@ export const restoreWebServerBackup = async (
 			await execAsync(`rm -rf ${tempDir}`);
 		}
 	} catch (error) {
-		console.error(error);
-		emit(
-			`Error: ${
-				error instanceof Error
-					? error.message
-					: "Error restoring web server backup"
-			}`,
+		const errorMessage = getSafeRcloneErrorMessage(
+			error,
+			"Error restoring web server backup",
 		);
-		throw error;
+		console.error(errorMessage);
+		emit(`Error: ${errorMessage}`);
+		throw new Error(errorMessage);
 	}
 };

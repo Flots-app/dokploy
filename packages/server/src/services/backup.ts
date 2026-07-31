@@ -37,6 +37,8 @@ export const findBackupById = async (backupId: string) => {
 			destination: {
 				columns: {
 					accessKey: false,
+					encryptionPassword: false,
+					encryptionPassword2: false,
 					secretAccessKey: false,
 				},
 			},
@@ -91,6 +93,8 @@ export const findBackupsByDbId = async (
 			destination: {
 				columns: {
 					accessKey: false,
+					encryptionPassword: false,
+					encryptionPassword2: false,
 					secretAccessKey: false,
 				},
 			},

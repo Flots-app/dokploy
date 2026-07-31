@@ -9,14 +9,23 @@ import type { z } from "zod";
 
 export type Destination = typeof destinations.$inferSelect;
 
+export const redactDestinationEncryptionSecrets = <T extends Destination>(
+	destination: T,
+) => ({
+	...destination,
+	encryptionPassword: null,
+	encryptionPassword2: null,
+});
+
 export const createDestination = async (
 	input: z.infer<typeof apiCreateDestination>,
 	organizationId: string,
 ) => {
+	const { serverId: _serverId, ...destination } = input;
 	const newDestination = await db
 		.insert(destinations)
 		.values({
-			...input,
+			...destination,
 			organizationId: organizationId,
 		})
 		.returning()

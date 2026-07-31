@@ -80,6 +80,8 @@ export const findPostgresById = async (postgresId: string) => {
 					destination: {
 						columns: {
 							accessKey: false,
+							encryptionPassword: false,
+							encryptionPassword2: false,
 							secretAccessKey: false,
 						},
 					},

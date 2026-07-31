@@ -12,7 +12,14 @@ import { cleanupAll } from "../docker/utils";
 import { sendDockerCleanupNotifications } from "../notifications/docker-cleanup";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
 import { redactRcloneCredentials } from "./redact";
-import { getS3Credentials, normalizeS3Path, scheduleBackup } from "./utils";
+import {
+	buildRcloneCommand,
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
+	normalizeS3Path,
+	scheduleBackup,
+} from "./utils";
 
 export const initCronJobs = async () => {
 	console.log("Setting up cron jobs....");
@@ -134,24 +141,41 @@ export const keepLatestNBackups = async (
 
 	try {
 		const destination = await findDestinationById(backup.destinationId);
-		const rcloneFlags = getS3Credentials(destination);
 		const appName = getServiceAppName(backup);
-		const backupFilesPath = `:s3:${destination.bucket}/${appName}/${normalizeS3Path(backup.prefix)}`;
+		const backupFilesPath = getRcloneRemotePath(
+			destination,
+			`${appName}/${normalizeS3Path(backup.prefix)}`,
+		);
 
 		// --include "*.bson.gz" or "*.sql.gz" or "*.zip" ensures nothing else other than the dokploy backup files are touched by rclone
-		const rcloneList = `rclone lsf ${rcloneFlags.join(" ")} --include "*${backup.databaseType === "web-server" ? ".zip" : ".{sql.gz,bson.gz}"}" ${backupFilesPath}`;
+		const rcloneList = buildRcloneCommand(destination, [
+			"lsf",
+			"--include",
+			`*${backup.databaseType === "web-server" ? ".zip" : ".{sql.gz,bson.gz}"}`,
+			backupFilesPath,
+		]);
 		// when we pipe the above command with this one, we only get the list of files we want to delete
-		const sortAndPickUnwantedBackups = `sort -r | tail -n +$((${backup.keepLatestCount}+1)) | xargs -I{}`;
-		// this command deletes the files
-		// to test the deletion before actually deleting we can add --dry-run before ${backupFilesPath}{}
-		const rcloneDelete = `rclone delete ${rcloneFlags.join(" ")} ${backupFilesPath}{}`;
+		const sortAndPickUnwantedBackups = `sort -r | tail -n +$((${backup.keepLatestCount}+1))`;
+		// Feed paths over stdin so encrypted environment assignments remain shell-safe.
+		const rcloneDelete = buildRcloneCommand(destination, [
+			"delete",
+			"--files-from",
+			"-",
+			backupFilesPath,
+		]);
 
-		const rcloneCommand = `${rcloneList} | ${sortAndPickUnwantedBackups} ${rcloneDelete}`;
+		const rcloneCommand = `${rcloneList} | ${sortAndPickUnwantedBackups} | ${rcloneDelete}`;
 
 		if (serverId) {
-			await execAsyncRemote(serverId, rcloneCommand);
+			await execAsyncRemote(
+				serverId,
+				rcloneCommand,
+				undefined,
+				undefined,
+				getRcloneEnvironment(destination),
+			);
 		} else {
-			await execAsync(rcloneCommand);
+			await execAsync(rcloneCommand, getRcloneExecOptions(destination));
 		}
 	} catch (error) {
 		console.error(redactRcloneCredentials(String(error)));
