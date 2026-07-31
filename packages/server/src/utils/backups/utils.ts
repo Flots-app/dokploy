@@ -177,7 +177,9 @@ export const getRcloneEnvironment = (destination: RcloneDestination) => {
 	return environment;
 };
 
-export const getRcloneExecOptions = (destination: RcloneDestination) => ({
+export const getRcloneExecOptions = (
+	destination: RcloneDestination,
+): { env: NodeJS.ProcessEnv } => ({
 	env: {
 		...process.env,
 		...getRcloneEnvironment(destination),
