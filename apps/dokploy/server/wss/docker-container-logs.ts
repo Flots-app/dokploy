@@ -1,11 +1,12 @@
+import { spawn } from "node:child_process";
 import type http from "node:http";
 import { findServerById, IS_CLOUD, validateRequest } from "@dokploy/server";
-import { spawn } from "node-pty";
 import { Client } from "ssh2";
 import { WebSocketServer } from "ws";
 import { canAccessDockerOverWss } from "./authorize";
 import {
-	getShell,
+	createLogSearchForwarder,
+	getDockerLogsArgs,
 	isValidContainerId,
 	isValidSearch,
 	isValidSince,
@@ -155,45 +156,44 @@ export const setupDockerContainerLogsWebSocketServer = (
 					ws.close();
 					return;
 				}
-				const shell = getShell();
-				const baseCommand = `docker ${runType === "swarm" ? "service" : "container"} logs --timestamps ${
-					runType === "swarm" ? "--raw" : ""
-				} --tail ${tail} ${
-					since === "all" ? "" : `--since ${since}`
-				} --follow ${containerId}`;
-				const command = search
-					? `${baseCommand} 2>&1 | grep -iF '${search}'`
-					: baseCommand;
-				const ptyProcess = spawn(shell, ["-c", command], {
-					name: "xterm-256color",
-					cwd: process.env.HOME,
-					env: process.env,
-					encoding: "utf8",
-					cols: 80,
-					rows: 30,
-				});
+				const logProcess = spawn(
+					"docker",
+					getDockerLogsArgs({ containerId, tail, since, runType }),
+					{
+						stdio: ["ignore", "pipe", "pipe"],
+						env: process.env,
+					},
+				);
+				const send = (data: string) => {
+					if (ws.readyState === ws.OPEN) {
+						ws.send(data);
+					}
+				};
+				const stdoutForwarder = createLogSearchForwarder(search, send);
+				const stderrForwarder = createLogSearchForwarder(search, send);
 
-				ptyProcess.onData((data) => {
-					ws.send(data);
+				logProcess.stdout.on("data", (data) => {
+					stdoutForwarder.write(data);
+				});
+				logProcess.stderr.on("data", (data) => {
+					stderrForwarder.write(data);
+				});
+				logProcess.once("error", (error) => {
+					send(`Unable to start Docker logs: ${error.message}`);
+					clearInterval(pingInterval);
+					ws.close();
+				});
+				logProcess.once("close", () => {
+					stdoutForwarder.flush();
+					stderrForwarder.flush();
+					clearInterval(pingInterval);
+					if (ws.readyState === ws.OPEN) {
+						ws.close();
+					}
 				});
 				ws.on("close", () => {
 					clearInterval(pingInterval);
-					ptyProcess.kill();
-				});
-				ws.on("message", (message) => {
-					try {
-						let command: string | Buffer[] | Buffer | ArrayBuffer;
-						if (Buffer.isBuffer(message)) {
-							command = message.toString("utf8");
-						} else {
-							command = message;
-						}
-						ptyProcess.write(command.toString());
-					} catch (error) {
-						// @ts-ignore
-						const errorMessage = error?.message as unknown as string;
-						ws.send(errorMessage);
-					}
+					logProcess.kill();
 				});
 			}
 		} catch (error) {

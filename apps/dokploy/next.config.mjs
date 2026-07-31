@@ -34,6 +34,21 @@ const nextConfig = {
 					},
 				],
 			},
+			{
+				// Grafana is embedded by Dokploy on the managed monitoring pages.
+				// Keep framing same-origin only while overriding the global denial.
+				source: "/api/observability/grafana/:path*",
+				headers: [
+					{
+						key: "X-Frame-Options",
+						value: "SAMEORIGIN",
+					},
+					{
+						key: "Content-Security-Policy",
+						value: "frame-ancestors 'self'",
+					},
+				],
+			},
 		];
 	},
 };

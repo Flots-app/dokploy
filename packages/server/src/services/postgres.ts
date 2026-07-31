@@ -13,6 +13,7 @@ import { TRPCError } from "@trpc/server";
 import { eq, getTableColumns } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
+import { queueObservabilityReconcile } from "../observability/service";
 import { validUniqueServerAppName } from "./project";
 
 export function getMountPath(dockerImage: string): string {
@@ -170,6 +171,7 @@ export const deployPostgres = async (
 		});
 
 		onData?.("Deployment completed successfully!");
+		void queueObservabilityReconcile(postgresId);
 	} catch (error) {
 		onData?.(`Error: ${error}`);
 		await updatePostgresById(postgresId, {

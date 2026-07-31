@@ -13,6 +13,8 @@ import {
 	getServiceContainerCommand,
 	getWebServerSettings,
 	IS_CLOUD,
+	queueObservabilityReconcile,
+	queueOrganizationObservabilityReconcile,
 	rebuildDatabase,
 	removeRedisById,
 	removeService,
@@ -347,6 +349,9 @@ export const redisRouter = createTRPCRouter({
 					await operation();
 				} catch (_) {}
 			}
+			void queueOrganizationObservabilityReconcile(
+				redis.environment.project.organizationId,
+			);
 
 			return redis;
 		}),
@@ -440,6 +445,7 @@ export const redisRouter = createTRPCRouter({
 					await execAsync(command, { shell: "/bin/bash" });
 				}
 			});
+			void queueObservabilityReconcile(redisId);
 
 			await audit(ctx, {
 				action: "update",

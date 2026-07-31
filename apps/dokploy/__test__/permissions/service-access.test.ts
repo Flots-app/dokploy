@@ -106,6 +106,29 @@ describe("checkServicePermissionAndAccess", () => {
 			}),
 		).rejects.toThrow("You don't have access to this service");
 	});
+
+	it("member can read monitoring only for an accessed service", async () => {
+		memberToReturn = mockMemberData("member", ["postgres-1"]);
+		await expect(
+			checkServicePermissionAndAccess(ctx, "postgres-1", {
+				monitoring: ["read"],
+			}),
+		).resolves.toBeUndefined();
+		await expect(
+			checkServicePermissionAndAccess(ctx, "postgres-2", {
+				monitoring: ["read"],
+			}),
+		).rejects.toThrow("You don't have access to this service");
+	});
+
+	it("member cannot mutate monitoring even for an accessed service", async () => {
+		memberToReturn = mockMemberData("member", ["postgres-1"]);
+		await expect(
+			checkServicePermissionAndAccess(ctx, "postgres-1", {
+				monitoring: ["update"],
+			}),
+		).rejects.toThrow();
+	});
 });
 
 describe("checkServiceAccess", () => {
