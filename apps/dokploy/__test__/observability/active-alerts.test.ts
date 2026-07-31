@@ -1,0 +1,73 @@
+import { selectUnresolvedDatabaseAlertEvents } from "@dokploy/server/observability/service";
+import { describe, expect, it } from "vitest";
+
+type Transition = {
+	databaseAlertEventId: string;
+	organizationId: string;
+	fingerprint: string;
+	status: "pending" | "firing" | "resolved";
+	startsAt: Date;
+	createdAt: Date;
+};
+
+const transition = ({
+	id,
+	organizationId = "org-1",
+	fingerprint = "fingerprint-1",
+	status,
+	startsAt = "2026-07-23T12:00:00.000Z",
+	createdAt = startsAt,
+}: {
+	id: string;
+	organizationId?: string;
+	fingerprint?: string;
+	status: Transition["status"];
+	startsAt?: string;
+	createdAt?: string;
+}): Transition => ({
+	databaseAlertEventId: id,
+	organizationId,
+	fingerprint,
+	status,
+	startsAt: new Date(startsAt),
+	createdAt: new Date(createdAt),
+});
+
+describe("selectUnresolvedDatabaseAlertEvents", () => {
+	it("keeps firing cycles without a matching resolution", () => {
+		const firstCycle = "2026-07-23T12:00:00.000Z";
+		const secondCycle = "2026-07-23T13:00:00.000Z";
+		const events = [
+			transition({ id: "firing-1", status: "firing", startsAt: firstCycle }),
+			transition({
+				id: "resolved-1",
+				status: "resolved",
+				startsAt: firstCycle,
+			}),
+			transition({ id: "firing-2", status: "firing", startsAt: secondCycle }),
+		];
+
+		expect(
+			selectUnresolvedDatabaseAlertEvents(events).map(
+				(event) => event.databaseAlertEventId,
+			),
+		).toEqual(["firing-2"]);
+	});
+
+	it("does not resolve another organization's matching fingerprint", () => {
+		const events = [
+			transition({ id: "org-1-firing", status: "firing" }),
+			transition({
+				id: "org-2-resolved",
+				organizationId: "org-2",
+				status: "resolved",
+			}),
+		];
+
+		expect(
+			selectUnresolvedDatabaseAlertEvents(events).map(
+				(event) => event.databaseAlertEventId,
+			),
+		).toEqual(["org-1-firing"]);
+	});
+});

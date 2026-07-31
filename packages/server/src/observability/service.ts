@@ -895,6 +895,24 @@ const databaseAlertCycleKey = (
 ) =>
 	`${event.organizationId}\u0000${event.fingerprint}\u0000${event.startsAt.toISOString()}`;
 
+export const selectUnresolvedDatabaseAlertEvents = <
+	T extends DatabaseAlertTransition,
+>(
+	events: readonly T[],
+) => {
+	const resolvedCycles = new Set(
+		events
+			.filter((event) => event.status === "resolved")
+			.map(databaseAlertCycleKey),
+	);
+
+	return events.filter(
+		(event) =>
+			event.status === "firing" &&
+			!resolvedCycles.has(databaseAlertCycleKey(event)),
+	);
+};
+
 export const selectPurgeableDatabaseAlertEventIds = <
 	T extends DatabaseAlertTransition,
 >(
@@ -915,6 +933,104 @@ export const selectPurgeableDatabaseAlertEventIds = <
 					resolvedCycles.has(databaseAlertCycleKey(event))),
 		)
 		.map((event) => event.databaseAlertEventId);
+};
+
+const payloadRecord = (value: unknown) =>
+	value && typeof value === "object"
+		? (value as Record<string, unknown>)
+		: undefined;
+
+const payloadString = (value: unknown) =>
+	typeof value === "string" && value.length > 0 ? value : undefined;
+
+const alertPayloadDetails = (payload: unknown) => {
+	const record = payloadRecord(payload);
+	const labels = payloadRecord(record?.labels);
+	const annotations = payloadRecord(record?.annotations);
+
+	return { labels, annotations };
+};
+
+export const getActiveDatabaseAlerts = async ({
+	organizationId,
+	allowedServiceIds,
+}: {
+	organizationId: string;
+	allowedServiceIds?: string[];
+}) => {
+	if (allowedServiceIds?.length === 0) {
+		return [];
+	}
+
+	const events = await db.query.databaseAlertEvents.findMany({
+		where: and(
+			eq(databaseAlertEvents.organizationId, organizationId),
+			inArray(databaseAlertEvents.status, ["firing", "resolved"]),
+			allowedServiceIds
+				? inArray(databaseAlertEvents.serviceId, allowedServiceIds)
+				: undefined,
+		),
+		orderBy: [desc(databaseAlertEvents.createdAt)],
+		with: { rule: true },
+	});
+	const activeEvents = selectUnresolvedDatabaseAlertEvents(events);
+	const databases = await findOrganizationDatabases(organizationId);
+	const databasesById = new Map(
+		databases.map((database) => [database.serviceId, database]),
+	);
+
+	return activeEvents.map((event) => {
+		const database = databasesById.get(event.serviceId);
+		const { labels, annotations } = alertPayloadDetails(event.payload);
+		const severityLabel = payloadString(labels?.severity);
+		const databaseTypeLabel = payloadString(labels?.database_type);
+		const severity =
+			event.rule?.severity ??
+			(severityLabel === "info" ||
+			severityLabel === "warning" ||
+			severityLabel === "critical"
+				? severityLabel
+				: "warning");
+		const databaseType =
+			database?.databaseType ??
+			event.rule?.databaseType ??
+			(databaseTypeLabel === "postgres" || databaseTypeLabel === "redis"
+				? databaseTypeLabel
+				: null);
+
+		return {
+			databaseAlertEventId: event.databaseAlertEventId,
+			databaseAlertRuleId: event.databaseAlertRuleId,
+			serviceId: event.serviceId,
+			fingerprint: event.fingerprint,
+			startsAt: event.startsAt,
+			createdAt: event.createdAt,
+			value: event.value,
+			name:
+				event.rule?.name ??
+				payloadString(annotations?.summary) ??
+				payloadString(labels?.alertname) ??
+				"Deleted alert rule",
+			description:
+				event.rule?.description ??
+				payloadString(annotations?.description) ??
+				"",
+			severity,
+			databaseType,
+			metricKey:
+				event.rule?.metricKey ?? payloadString(annotations?.metric_key) ?? null,
+			databaseName: database?.name ?? "Deleted database",
+			appName: database?.appName ?? null,
+			projectId:
+				database?.projectId ?? payloadString(labels?.project_id) ?? null,
+			projectName: database?.projectName ?? "Unknown project",
+			environmentId:
+				database?.environmentId ??
+				payloadString(labels?.environment_id) ??
+				null,
+			environmentName: database?.environmentName ?? "Unknown environment",
+		};
+	});
 };
 
 export const purgeExpiredDatabaseAlertHistory = async () => {
