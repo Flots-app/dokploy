@@ -49,6 +49,14 @@ export const destinations = pgTable(
 			"destination_encryption_filename_mode",
 			sql`${table.encryptionFilenameMode} IN ('standard', 'obfuscate', 'off')`,
 		),
+		check(
+			"destination_encryption_directory_name_mode",
+			sql`${table.encryptionFilenameMode} <> 'off' OR NOT ${table.encryptionDirectoryNames}`,
+		),
+		check(
+			"destination_encryption_disabled_secrets",
+			sql`${table.encryptionEnabled} OR (${table.encryptionPassword} IS NULL AND ${table.encryptionPassword2} IS NULL)`,
+		),
 	],
 );
 
@@ -126,6 +134,43 @@ export const apiCreateDestination = createSchema
 				code: "custom",
 				message: "The second password must differ from the primary password",
 				path: ["encryptionPassword2"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			[destination.encryptionPassword, destination.encryptionPassword2].some(
+				(password) => password && /[\0\r\n]/.test(password),
+			)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Encryption passwords cannot contain NUL or line breaks",
+				path: ["encryptionPassword"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.encryptionFilenameMode === "off" &&
+			destination.encryptionDirectoryNames
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message:
+					"Directory-name encryption must be disabled when filename encryption is off",
+				path: ["encryptionDirectoryNames"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.additionalFlags?.some((flag) =>
+				flag.toLowerCase().startsWith("--crypt-"),
+			)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message:
+					"Additional --crypt-* flags are not allowed for encrypted destinations",
+				path: ["additionalFlags"],
 			});
 		}
 	});

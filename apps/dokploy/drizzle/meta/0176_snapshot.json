@@ -3128,6 +3128,14 @@
         "destination_encryption_filename_mode": {
           "name": "destination_encryption_filename_mode",
           "value": "\"destination\".\"encryptionFilenameMode\" IN ('standard', 'obfuscate', 'off')"
+        },
+        "destination_encryption_directory_name_mode": {
+          "name": "destination_encryption_directory_name_mode",
+          "value": "\"destination\".\"encryptionFilenameMode\" <> 'off' OR NOT \"destination\".\"encryptionDirectoryNames\""
+        },
+        "destination_encryption_disabled_secrets": {
+          "name": "destination_encryption_disabled_secrets",
+          "value": "\"destination\".\"encryptionEnabled\" OR (\"destination\".\"encryptionPassword\" IS NULL AND \"destination\".\"encryptionPassword2\" IS NULL)"
         }
       },
       "isRLSEnabled": false

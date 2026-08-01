@@ -1,6 +1,6 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { IS_CLOUD, paths } from "@dokploy/server/constants";
 import type { Destination } from "@dokploy/server/services/destination";
 import { quote } from "shell-quote";
@@ -9,6 +9,7 @@ import {
 	buildRcloneCommand,
 	getRcloneExecOptions,
 	getRcloneRemotePath,
+	getSafeBackupFilename,
 } from "../backups/utils";
 import { execAsync } from "../process/execAsync";
 
@@ -21,8 +22,8 @@ export const restoreWebServerBackup = async (
 		return;
 	}
 	try {
+		const localBackupFile = getSafeBackupFilename(backupFile);
 		const backupPath = getRcloneRemotePath(destination, backupFile);
-		const localBackupFile = basename(backupFile);
 		const { BASE_PATH } = paths();
 
 		// Create a temporary directory outside of BASE_PATH

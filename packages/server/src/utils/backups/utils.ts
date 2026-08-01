@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { logger } from "@dokploy/server/lib/logger";
 import type { BackupSchedule } from "@dokploy/server/services/backup";
 import type { Destination } from "@dokploy/server/services/destination";
@@ -69,6 +70,14 @@ export const normalizeS3Path = (prefix: string) => {
 	return normalizedPrefix ? `${normalizedPrefix}/` : "";
 };
 
+export const getSafeBackupFilename = (backupFile: string) => {
+	const filename = basename(backupFile);
+	if (!filename || [".", ".."].includes(filename)) {
+		throw new Error("Invalid backup filename");
+	}
+	return filename;
+};
+
 export const getS3Credentials = (
 	destination: Pick<
 		Destination,
@@ -109,6 +118,7 @@ type RcloneDestination = Pick<
 	| "accessKey"
 	| "additionalFlags"
 	| "bucket"
+	| "destinationId"
 	| "encryptionDirectoryNames"
 	| "encryptionEnabled"
 	| "encryptionFilenameMode"
@@ -119,6 +129,12 @@ type RcloneDestination = Pick<
 	| "region"
 	| "secretAccessKey"
 >;
+
+const assertSafeEncryptedDestinationId = (destinationId: string) => {
+	if (!/^[A-Za-z0-9_-]+$/.test(destinationId)) {
+		throw new Error("Invalid encrypted destination ID");
+	}
+};
 
 const assertEncryptedDestination: (
 	destination: RcloneDestination,
@@ -141,8 +157,14 @@ export const getRcloneRemotePath = (
 ) => {
 	assertEncryptedDestination(destination);
 	const normalizedPath = relativePath.replace(/^\/+/, "");
+	const containsAsciiControlCharacter = [...normalizedPath].some(
+		(character) => {
+			const codePoint = character.codePointAt(0) ?? 0;
+			return codePoint <= 31 || codePoint === 127;
+		},
+	);
 	if (
-		/[\0\r\n]/.test(normalizedPath) ||
+		containsAsciiControlCharacter ||
 		normalizedPath.split("/").some((segment) => segment === "..")
 	) {
 		throw new Error("Invalid backup path");
@@ -158,21 +180,26 @@ export const getRcloneRemotePath = (
 export const getRcloneEnvironment = (destination: RcloneDestination) => {
 	assertEncryptedDestination(destination);
 	if (!destination.encryptionEnabled) return {};
+	assertSafeEncryptedDestinationId(destination.destinationId);
 
 	const directoryNameEncryption =
 		destination.encryptionFilenameMode === "off"
 			? false
 			: destination.encryptionDirectoryNames;
 	const environment: Record<string, string> = {
-		RCLONE_CRYPT_REMOTE: `:s3:${destination.bucket}/${RCLONE_ENCRYPTED_BACKUP_PREFIX}`,
+		RCLONE_CRYPT_REMOTE: `:s3:${destination.bucket}/${RCLONE_ENCRYPTED_BACKUP_PREFIX}/${destination.destinationId}`,
 		RCLONE_CRYPT_PASSWORD: destination.encryptionPassword,
+		RCLONE_CRYPT_PASSWORD2: destination.encryptionPassword2 ?? "",
 		RCLONE_CRYPT_FILENAME_ENCRYPTION: destination.encryptionFilenameMode,
 		RCLONE_CRYPT_DIRECTORY_NAME_ENCRYPTION: String(directoryNameEncryption),
+		RCLONE_CRYPT_FILENAME_ENCODING: "base32",
+		RCLONE_CRYPT_SUFFIX: ".bin",
+		RCLONE_CRYPT_NO_DATA_ENCRYPTION: "false",
+		RCLONE_CRYPT_PASS_BAD_BLOCKS: "false",
+		RCLONE_CRYPT_SERVER_SIDE_ACROSS_CONFIGS: "false",
+		RCLONE_CRYPT_SHOW_MAPPING: "false",
+		RCLONE_CRYPT_STRICT_NAMES: "true",
 	};
-
-	if (destination.encryptionPassword2) {
-		environment.RCLONE_CRYPT_PASSWORD2 = destination.encryptionPassword2;
-	}
 
 	return environment;
 };
@@ -195,13 +222,64 @@ export const buildRcloneCommand = (
 	destination: RcloneDestination,
 	args: [string, ...string[]],
 ) => {
+	if (
+		destination.encryptionEnabled &&
+		destination.additionalFlags?.some((flag) =>
+			flag.toLowerCase().startsWith("--crypt-"),
+		)
+	) {
+		throw new Error(
+			"Additional --crypt-* flags are not allowed for encrypted destinations",
+		);
+	}
 	const [subcommand, ...subcommandArgs] = args;
 	return [
 		"rclone",
 		subcommand,
 		...getS3Credentials(destination),
+		...(subcommand === "copyto" ? ["--error-on-no-transfer"] : []),
 		...subcommandArgs.map((argument) => quote([argument])),
 	].join(" ");
+};
+
+export const buildRcloneRetentionCommand = (
+	destination: RcloneDestination,
+	backupFilesPath: string,
+	includePattern: string,
+	keepLatestCount: number,
+) => {
+	if (!Number.isSafeInteger(keepLatestCount) || keepLatestCount <= 0) {
+		throw new Error("Backup retention count must be a positive safe integer");
+	}
+
+	const listCommand = buildRcloneCommand(destination, [
+		"lsf",
+		"--include",
+		includePattern,
+		backupFilesPath,
+	]);
+	const deleteCommand = buildRcloneCommand(destination, [
+		"delete",
+		"--files-from",
+		"-",
+		backupFilesPath,
+	]);
+	const verifyReadableCommand = buildRcloneCommand(destination, [
+		"cat",
+		"--include",
+		includePattern,
+		"--head",
+		"1",
+		backupFilesPath,
+	]);
+	const pipeline = [
+		`listed_files=$(${listCommand}) || exit $?`,
+		'[ -n "$listed_files" ] || { echo "No backup files found for retention" >&2; exit 1; }',
+		`${verifyReadableCommand} >/dev/null || exit $?`,
+		`printf '%s\n' "$listed_files" | sort -r | tail -n +${keepLatestCount + 1} | ${deleteCommand}`,
+	].join("; ");
+
+	return `bash -o pipefail -c ${quote([pipeline])}`;
 };
 
 // User-controlled values (database name, user, password) are passed to the

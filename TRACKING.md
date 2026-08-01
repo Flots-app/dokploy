@@ -2,11 +2,13 @@
 
 ## TODO
 
-- None.
+- [ ] Push the edge-case fixes and confirm every GitHub Actions job on draft PR
+  #13 with Node 24.4.0 and the Linux CI environment.
 
 ## IN PROGRESS
 
-- None.
+- [ ] Commit and publish the verified edge-case fixes, then monitor CI to a
+  terminal result.
 
 ## TO VERIFY
 
@@ -53,3 +55,38 @@
 - [x] Published draft pull request
   [Flots-app/dokploy#13](https://github.com/Flots-app/dokploy/pull/13) against
   `canary`.
+- [x] Expanded focused coverage to 43 passing tests for crypt modes,
+  per-destination namespaces, inherited environment isolation, path and local
+  filename boundaries, retention command safety, schema rules, service
+  redaction, storage immutability, and SSH stdin environment transfer.
+- [x] Fixed update-response disclosure of the reversible obscured crypt
+  passwords.
+- [x] Isolated encrypted object roots by immutable `destinationId` so two
+  destinations sharing one bucket but using different keys cannot mix data.
+- [x] Froze encrypted storage identity (provider, bucket, region, endpoint, and
+  additional flags) while preserving display-name edits and S3 credential
+  rotation.
+- [x] Explicitly pinned every security-relevant crypt environment option,
+  cleared an inherited optional `password2`, enabled strict name handling, and
+  rejected additional `--crypt-*` overrides.
+- [x] Reproduced that rclone `copyto` exits successfully when its source is
+  absent; added `--error-on-no-transfer` to every upload/download `copyto` and
+  verified the resulting exit code 9 against MinIO.
+- [x] Made retention fail closed: positive safe-integer validation, Bash
+  `pipefail`, a required non-empty listing, an authenticated one-byte read, and
+  stdin file deletion restricted to Dokploy backup extensions.
+- [x] Added database checks for disabled-destination secret absence and the
+  filename/directory mode invariant; migration generation reports no schema
+  drift.
+- [x] Passed the real rclone/MinIO edge matrix for all three filename modes,
+  directory modes, special-character passwords, password2 present/absent,
+  binary and zero-byte payloads, wrong keys, deliberate ciphertext corruption,
+  destination isolation, and plaintext legacy coexistence.
+- [x] Passed real encrypted retention for database and volume patterns,
+  keep-latest ordering, unrelated-file preservation, and wrong-key failures
+  with both encrypted and plaintext filenames.
+- [x] Passed Biome over all 907 files, all workspace typechecks, server build,
+  production server bundle, full Next.js production build, and migration
+  consistency. The current non-real suite passes 748/749 tests; the sole local
+  failure is an unrelated Compose cancellation test timing out at 5 seconds on
+  Node 22 and is delegated to the Node 24/Linux CI run.

@@ -6,7 +6,11 @@ import {
 	findDestinationById,
 	paths,
 } from "../..";
-import { buildRcloneCommand, getRcloneRemotePath } from "../backups/utils";
+import {
+	buildRcloneCommand,
+	getRcloneRemotePath,
+	getSafeBackupFilename,
+} from "../backups/utils";
 
 export const restoreVolume = async (
 	id: string,
@@ -20,10 +24,7 @@ export const restoreVolume = async (
 	const { VOLUME_BACKUPS_PATH } = paths(!!serverId);
 	const volumeBackupPath = path.join(VOLUME_BACKUPS_PATH, volumeName);
 	const backupPath = getRcloneRemotePath(destination, backupFileName);
-	const localBackupFileName = path.basename(backupFileName);
-	if (!localBackupFileName || [".", ".."].includes(localBackupFileName)) {
-		throw new Error("Invalid volume backup filename");
-	}
+	const localBackupFileName = getSafeBackupFilename(backupFileName);
 
 	// Command to download backup file from S3
 	const downloadCommand = buildRcloneCommand(destination, [
@@ -40,6 +41,7 @@ export const restoreVolume = async (
 	echo "Volume backup path:" ${quote([volumeBackupPath])}
 	echo "Downloading backup from S3..."
 	mkdir -p ${quote([volumeBackupPath])}
+	rm -f ${quote([`${volumeBackupPath}/${localBackupFileName}`])}
 	${downloadCommand}
 	echo "Download completed ✅"
 	echo "Creating new volume and restoring data..."

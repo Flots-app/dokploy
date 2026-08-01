@@ -17,6 +17,41 @@ export const redactDestinationEncryptionSecrets = <T extends Destination>(
 	encryptionPassword2: null,
 });
 
+type DestinationStorageIdentity = Pick<
+	Destination,
+	"additionalFlags" | "bucket" | "endpoint" | "provider" | "region"
+>;
+
+export const assertEncryptedDestinationStorageUnchanged = (
+	current: DestinationStorageIdentity & Pick<Destination, "encryptionEnabled">,
+	next: DestinationStorageIdentity,
+) => {
+	if (!current.encryptionEnabled) return;
+
+	const fields = [
+		"provider",
+		"bucket",
+		"region",
+		"endpoint",
+		"additionalFlags",
+	] as const;
+	const changedFields = fields.filter((field) => {
+		if (field === "additionalFlags") {
+			return (
+				JSON.stringify(current.additionalFlags ?? []) !==
+				JSON.stringify(next.additionalFlags ?? [])
+			);
+		}
+		return (current[field] ?? "") !== (next[field] ?? "");
+	});
+
+	if (changedFields.length > 0) {
+		throw new Error(
+			`Encrypted destination storage settings are immutable: ${changedFields.join(", ")}`,
+		);
+	}
+};
+
 export const createDestination = async (
 	input: z.infer<typeof apiCreateDestination>,
 	organizationId: string,

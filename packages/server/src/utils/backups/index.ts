@@ -13,7 +13,7 @@ import { sendDockerCleanupNotifications } from "../notifications/docker-cleanup"
 import { execAsync, execAsyncRemote } from "../process/execAsync";
 import { redactRcloneCredentials } from "./redact";
 import {
-	buildRcloneCommand,
+	buildRcloneRetentionCommand,
 	getRcloneEnvironment,
 	getRcloneExecOptions,
 	getRcloneRemotePath,
@@ -147,24 +147,14 @@ export const keepLatestNBackups = async (
 			`${appName}/${normalizeS3Path(backup.prefix)}`,
 		);
 
-		// --include "*.bson.gz" or "*.sql.gz" or "*.zip" ensures nothing else other than the dokploy backup files are touched by rclone
-		const rcloneList = buildRcloneCommand(destination, [
-			"lsf",
-			"--include",
+		// Restrict deletion to Dokploy backup extensions and fail if any pipeline
+		// stage fails (for example, listing with a wrong crypt password).
+		const rcloneCommand = buildRcloneRetentionCommand(
+			destination,
+			backupFilesPath,
 			`*${backup.databaseType === "web-server" ? ".zip" : ".{sql.gz,bson.gz}"}`,
-			backupFilesPath,
-		]);
-		// when we pipe the above command with this one, we only get the list of files we want to delete
-		const sortAndPickUnwantedBackups = `sort -r | tail -n +$((${backup.keepLatestCount}+1))`;
-		// Feed paths over stdin so encrypted environment assignments remain shell-safe.
-		const rcloneDelete = buildRcloneCommand(destination, [
-			"delete",
-			"--files-from",
-			"-",
-			backupFilesPath,
-		]);
-
-		const rcloneCommand = `${rcloneList} | ${sortAndPickUnwantedBackups} | ${rcloneDelete}`;
+			backup.keepLatestCount,
+		);
 
 		if (serverId) {
 			await execAsyncRemote(

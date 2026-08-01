@@ -13,7 +13,7 @@ import {
 import { scheduledJobs, scheduleJob } from "node-schedule";
 import { getSafeRcloneErrorMessage } from "../backups/redact";
 import {
-	buildRcloneCommand,
+	buildRcloneRetentionCommand,
 	getRcloneEnvironment,
 	getRcloneExecOptions,
 	getRcloneRemotePath,
@@ -96,20 +96,12 @@ const cleanupOldVolumeBackups = async (
 			destination,
 			`${s3AppName}/${normalizeS3Path(prefix || "")}`,
 		);
-		const listCommand = buildRcloneCommand(destination, [
-			"lsf",
-			"--include",
+		const fullCommand = buildRcloneRetentionCommand(
+			destination,
+			backupFilesPath,
 			`${volumeName}-*.tar`,
-			backupFilesPath,
-		]);
-		const sortAndPick = `sort -r | tail -n +$((${keepLatestCount}+1))`;
-		const deleteCommand = buildRcloneCommand(destination, [
-			"delete",
-			"--files-from",
-			"-",
-			backupFilesPath,
-		]);
-		const fullCommand = `${listCommand} | ${sortAndPick} | ${deleteCommand}`;
+			keepLatestCount,
+		);
 
 		if (serverId) {
 			await execAsyncRemote(

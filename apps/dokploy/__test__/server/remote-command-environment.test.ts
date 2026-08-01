@@ -29,4 +29,22 @@ describe("remote command environment", () => {
 			prepareRemoteCommand("true", { SAFE_NAME: "first\nsecond" }),
 		).toThrow("contains a newline");
 	});
+
+	it("preserves empty and shell-sensitive values exclusively through stdin", () => {
+		const prepared = prepareRemoteCommand("printf done", {
+			EMPTY_VALUE: "",
+			SENSITIVE_VALUE: "a 'quoted' $value \\ path",
+		});
+
+		expect(prepared.command).not.toContain("a 'quoted'");
+		expect(prepared.command).not.toContain("$value");
+		expect(prepared.input).toBe("\na 'quoted' $value \\ path\n");
+	});
+
+	it("leaves commands and existing input unchanged without environment", () => {
+		const prepared = prepareRemoteCommand("rclone version", {}, "payload");
+
+		expect(prepared.command).toContain("rclone version");
+		expect(prepared.input).toBe("payload");
+	});
 });

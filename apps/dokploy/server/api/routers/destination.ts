@@ -1,4 +1,5 @@
 import {
+	assertEncryptedDestinationStorageUnchanged,
 	buildRcloneCommand,
 	createDestination,
 	execAsync,
@@ -74,6 +75,10 @@ export const destinationRouter = createTRPCRouter({
 						serverId,
 						encryptionPassword,
 						encryptionPassword2,
+						encryptionDirectoryNames:
+							input.encryptionFilenameMode === "off"
+								? false
+								: input.encryptionDirectoryNames,
 					},
 					ctx.session.activeOrganizationId,
 				);
@@ -105,6 +110,7 @@ export const destinationRouter = createTRPCRouter({
 				}
 				const destination = {
 					...input,
+					destinationId: "connection-test",
 					encryptionPassword: input.encryptionEnabled
 						? await obscureRclonePassword(
 								input.encryptionPassword || "",
@@ -208,6 +214,7 @@ export const destinationRouter = createTRPCRouter({
 						message: "You are not allowed to update this destination",
 					});
 				}
+				assertEncryptedDestinationStorageUnchanged(destination, input);
 				const result = await updateDestinationById(input.destinationId, {
 					...input,
 					organizationId: ctx.session.activeOrganizationId,
@@ -218,7 +225,7 @@ export const destinationRouter = createTRPCRouter({
 					resourceId: input.destinationId,
 					resourceName: input.name,
 				});
-				return result;
+				return result ? redactDestinationEncryptionSecrets(result) : undefined;
 			} catch (error) {
 				throw new TRPCError({
 					code: "BAD_REQUEST",

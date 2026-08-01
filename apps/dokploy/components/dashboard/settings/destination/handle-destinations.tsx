@@ -100,6 +100,31 @@ const addDestination = z
 				path: ["encryptionPassword2"],
 			});
 		}
+		if (
+			destination.encryptionEnabled &&
+			[destination.encryptionPassword, destination.encryptionPassword2].some(
+				(password) => password && /[\0\r\n]/.test(password),
+			)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Passwords cannot contain NUL or line breaks",
+				path: ["encryptionPassword"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.additionalFlags?.some((flag) =>
+				flag.value.toLowerCase().startsWith("--crypt-"),
+			)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message:
+					"Additional --crypt-* flags are not allowed for encrypted destinations",
+				path: ["additionalFlags"],
+			});
+		}
 	});
 
 type AddDestination = z.infer<typeof addDestination>;
@@ -169,6 +194,9 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 	});
 	const encryptionEnabled = form.watch("encryptionEnabled");
 	const encryptionFilenameMode = form.watch("encryptionFilenameMode");
+	const storageLocked = Boolean(
+		destinationId && destination?.encryptionEnabled,
+	);
 
 	useEffect(() => {
 		if (destination) {
@@ -225,7 +253,10 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 					encryptionPassword: data.encryptionPassword,
 					encryptionPassword2: data.encryptionPassword2,
 					encryptionFilenameMode: data.encryptionFilenameMode,
-					encryptionDirectoryNames: data.encryptionDirectoryNames,
+					encryptionDirectoryNames:
+						data.encryptionFilenameMode === "off"
+							? false
+							: data.encryptionDirectoryNames,
 				});
 
 		await mutation
@@ -303,7 +334,10 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 				? undefined
 				: form.getValues("encryptionPassword2"),
 			encryptionFilenameMode: form.getValues("encryptionFilenameMode"),
-			encryptionDirectoryNames: form.getValues("encryptionDirectoryNames"),
+			encryptionDirectoryNames:
+				form.getValues("encryptionFilenameMode") === "off"
+					? false
+					: form.getValues("encryptionDirectoryNames"),
 		})
 			.then(() => {
 				toast.success("Connection Success");
@@ -320,6 +354,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 			<DialogTrigger className="" asChild>
 				{destinationId ? (
 					<Button
+						aria-label="Edit destination"
 						variant="ghost"
 						size="icon"
 						className="group hover:bg-blue-500/10 "
@@ -380,6 +415,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 										<FormLabel>Provider</FormLabel>
 										<FormControl>
 											<Select
+												disabled={storageLocked}
 												onValueChange={field.onChange}
 												defaultValue={field.value}
 												value={field.value}
@@ -446,7 +482,11 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 										<FormLabel>Bucket</FormLabel>
 									</div>
 									<FormControl>
-										<Input placeholder={"dokploy-bucket"} {...field} />
+										<Input
+											disabled={storageLocked}
+											placeholder={"dokploy-bucket"}
+											{...field}
+										/>
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -461,7 +501,11 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 										<FormLabel>Region</FormLabel>
 									</div>
 									<FormControl>
-										<Input placeholder={"us-east-1"} {...field} />
+										<Input
+											disabled={storageLocked}
+											placeholder={"us-east-1"}
+											{...field}
+										/>
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -475,6 +519,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 									<FormLabel>Endpoint</FormLabel>
 									<FormControl>
 										<Input
+											disabled={storageLocked}
 											placeholder={"https://us.bucket.aws/s3"}
 											{...field}
 										/>
@@ -510,7 +555,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 							{destinationId ? (
 								<div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
 									{destination?.encryptionEnabled
-										? "Encryption is enabled. Its password and filename settings are immutable so existing backups cannot be orphaned."
+										? "Encryption and storage-location settings are immutable so existing backups cannot be orphaned. S3 credentials and the display name can still be rotated."
 										: "This destination remains plaintext. Create a new encrypted destination to keep legacy and encrypted backup namespaces separate."}
 								</div>
 							) : (
@@ -554,6 +599,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 																/>
 															</FormControl>
 															<Button
+																aria-label="Generate primary encryption password"
 																type="button"
 																variant="outline"
 																size="icon"
@@ -594,6 +640,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 																/>
 															</FormControl>
 															<Button
+																aria-label="Generate second encryption password"
 																type="button"
 																variant="outline"
 																size="icon"
@@ -624,7 +671,15 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 													<FormItem>
 														<FormLabel>Filename encryption</FormLabel>
 														<Select
-															onValueChange={field.onChange}
+															onValueChange={(value) => {
+																field.onChange(value);
+																if (value === "off") {
+																	form.setValue(
+																		"encryptionDirectoryNames",
+																		false,
+																	);
+																}
+															}}
 															value={field.value}
 														>
 															<FormControl>
@@ -681,6 +736,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 							<div className="flex items-center justify-between">
 								<FormLabel>Additional Flags (Optional)</FormLabel>
 								<Button
+									disabled={storageLocked}
 									type="button"
 									variant="ghost"
 									size="sm"
@@ -700,11 +756,14 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 											<div className="flex items-center gap-2">
 												<FormControl>
 													<Input
+														disabled={storageLocked}
 														placeholder="--s3-sign-accept-encoding=false"
 														{...field}
 													/>
 												</FormControl>
 												<Button
+													aria-label="Remove additional flag"
+													disabled={storageLocked}
 													type="button"
 													variant="ghost"
 													size="icon"
