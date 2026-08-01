@@ -2,13 +2,11 @@
 
 ## TODO
 
-- [ ] Push the edge-case fixes and confirm every GitHub Actions job on draft PR
-  #13 with Node 24.4.0 and the Linux CI environment.
+- None.
 
 ## IN PROGRESS
 
-- [ ] Commit and publish the verified edge-case fixes, then monitor CI to a
-  terminal result.
+- None.
 
 ## TO VERIFY
 
@@ -90,3 +88,6 @@
   consistency. The current non-real suite passes 748/749 tests; the sole local
   failure is an unrelated Compose cancellation test timing out at 5 seconds on
   Node 22 and is delegated to the Node 24/Linux CI run.
+- [x] Published hardening commit `207811d9a` and passed every required check on
+  draft PR #13 under Node 24/Linux: Plumber compliance, quality, typecheck,
+  complete test suite, and production build.
