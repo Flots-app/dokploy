@@ -789,9 +789,12 @@ describe("Compose Build Server commands", () => {
 			settings: validation.zeroDowntime,
 		});
 		expect(
-			release.config.http?.services?.[release.domainServices["1"]!]
-				?.loadBalancer?.healthCheck,
-		).toMatchObject({ interval: "10s", timeout: "5s" });
+			release.config.http?.services?.[release.domainServices["1"]!],
+		).toMatchObject({
+			loadBalancer: {
+				healthCheck: { interval: "10s", timeout: "5s" },
+			},
+		});
 		expect(
 			release.config.http?.routers?.[`${release.domainServices["1"]}-probe`]
 				?.rule,
