@@ -100,7 +100,11 @@ following resources in the same organization.
 
 Build Server mode cannot be enabled or deployed until at least one Dokploy
 Domain exists. The Compose `x-dokploy.zero-downtime.healthchecks` entries define
-readiness paths; they do not create Dokploy Domain database records.
+readiness paths; they do not create Dokploy Domain database records. Traefik
+probes each path every 10 seconds with a 5-second timeout by default. Services
+with different latency needs can override these values per entry with
+`interval-seconds` and `timeout-seconds`; the timeout must not exceed the
+interval.
 
 ### Legacy fallback cases
 

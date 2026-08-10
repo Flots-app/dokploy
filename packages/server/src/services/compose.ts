@@ -808,6 +808,13 @@ const deployComposeWithBuildServer = async (
 			compose.domains,
 			{ buildPlatform, runtimePlatform },
 		);
+		const validatedHealthchecks = validation.zeroDowntime.healthchecks;
+		const maxTraefikHealthcheckIntervalSeconds = Math.max(
+			...validation.routedServices.map(
+				(serviceName) =>
+					validatedHealthchecks[serviceName]?.intervalSeconds || 10,
+			),
+		);
 
 		await appendDeploymentLog(
 			buildServerId,
@@ -1112,6 +1119,7 @@ const deployComposeWithBuildServer = async (
 			)} && ${getObserveTraefikServicesCommand(
 				Object.values(traefikRelease.domainServices),
 				validation.zeroDowntime.stabilizationSeconds,
+				maxTraefikHealthcheckIntervalSeconds + 2,
 			)}`,
 		);
 

@@ -58,6 +58,8 @@ export interface ComposeBuildServerDomain {
 
 export interface ComposeZeroDowntimeHealthcheck {
 	path: string;
+	intervalSeconds: number;
+	timeoutSeconds: number;
 }
 
 export interface ComposeZeroDowntimeSettings {
@@ -117,6 +119,13 @@ const ZERO_DOWNTIME_EXTENSION = "x-dokploy";
 const DEFAULT_READINESS_TIMEOUT_SECONDS = 120;
 const DEFAULT_STABILIZATION_SECONDS = 30;
 const DEFAULT_DRAIN_SECONDS = 30;
+const DEFAULT_TRAEFIK_HEALTHCHECK_INTERVAL_SECONDS = 10;
+const DEFAULT_TRAEFIK_HEALTHCHECK_TIMEOUT_SECONDS = 5;
+// Traefik keeps the last probe result until the next interval. Allow one full
+// default interval plus a small scheduling margin before declaring a release
+// persistently unhealthy.
+const MAX_STABILIZATION_UNHEALTHY_SAMPLES =
+	DEFAULT_TRAEFIK_HEALTHCHECK_INTERVAL_SECONDS + 2;
 const MAX_TIMEOUT_SECONDS = 900;
 const TRAEFIK_ROUTER_PRIORITY = 1_000_000;
 
@@ -568,13 +577,29 @@ const readZeroDowntimeSettings = (
 				`Zero-downtime healthcheck for service "${serviceName}" must define path`,
 			);
 		}
-		const path = (healthcheck as Record<string, unknown>).path;
+		const healthcheckConfig = healthcheck as Record<string, unknown>;
+		const path = healthcheckConfig.path;
 		if (typeof path !== "string" || !path.startsWith("/")) {
 			throw new Error(
 				`Zero-downtime healthcheck for service "${serviceName}" must use an absolute path`,
 			);
 		}
-		healthchecks[serviceName] = { path };
+		const intervalSeconds = boundedSeconds(
+			healthcheckConfig["interval-seconds"],
+			`healthchecks.${serviceName}.interval-seconds`,
+			DEFAULT_TRAEFIK_HEALTHCHECK_INTERVAL_SECONDS,
+		);
+		const timeoutSeconds = boundedSeconds(
+			healthcheckConfig["timeout-seconds"],
+			`healthchecks.${serviceName}.timeout-seconds`,
+			DEFAULT_TRAEFIK_HEALTHCHECK_TIMEOUT_SECONDS,
+		);
+		if (timeoutSeconds > intervalSeconds) {
+			throw new Error(
+				`Zero-downtime healthcheck for service "${serviceName}" must use timeout-seconds less than or equal to interval-seconds`,
+			);
+		}
+		healthchecks[serviceName] = { path, intervalSeconds, timeoutSeconds };
 	}
 
 	const rawSharedVolumes = config["shared-volumes"] ?? [];
@@ -1002,8 +1027,8 @@ export const createComposeReleaseTraefikServiceConfig = ({
 				passHostHeader: true,
 				healthCheck: {
 					path: settings.healthchecks[serviceName]?.path || "/",
-					interval: "1s",
-					timeout: "1s",
+					interval: `${settings.healthchecks[serviceName]?.intervalSeconds || DEFAULT_TRAEFIK_HEALTHCHECK_INTERVAL_SECONDS}s`,
+					timeout: `${settings.healthchecks[serviceName]?.timeoutSeconds || DEFAULT_TRAEFIK_HEALTHCHECK_TIMEOUT_SECONDS}s`,
 					hostname: domain.host,
 				},
 			},
@@ -1254,17 +1279,31 @@ const traefikApiCommand = (
 		`http://127.0.0.1:8080/api/http/${resource}/${name}@${provider}`,
 	])} 2>/dev/null`;
 
-export const getWaitTraefikServicesCommand = (
-	serviceNames: string[],
-	timeoutSeconds: number,
-) => {
-	const checks = serviceNames
+const getTraefikServiceChecks = (serviceNames: string[]) =>
+	serviceNames
 		.map(
 			(serviceName) =>
 				`body="$(${traefikApiCommand("services", serviceName)})" && echo "$body" | grep -q '"UP"'`,
 		)
 		.join(" && ");
-	return `set -e; ${traefikContainerCommand} deadline=$(( $(date +%s) + ${timeoutSeconds} )); while true; do if ${checks || "true"}; then break; fi; if [ "$(date +%s)" -ge "$deadline" ]; then echo "Traefik did not mark the candidate services UP within ${timeoutSeconds}s" >&2; exit 1; fi; sleep 1; done`;
+
+const getTraefikServiceDiagnostics = (serviceNames: string[]) =>
+	serviceNames
+		.map(
+			(serviceName) =>
+				`body="$(${traefikApiCommand("services", serviceName)} || true)"; printf '%s %s\\n' ${quote(
+					[`Traefik service ${serviceName}:`],
+				)} "\${body:-unavailable}" >&2`,
+		)
+		.join("; ");
+
+export const getWaitTraefikServicesCommand = (
+	serviceNames: string[],
+	timeoutSeconds: number,
+) => {
+	const checks = getTraefikServiceChecks(serviceNames);
+	const diagnostics = getTraefikServiceDiagnostics(serviceNames);
+	return `set -e; ${traefikContainerCommand} deadline=$(( $(date +%s) + ${timeoutSeconds} )); while true; do if ${checks || "true"}; then break; fi; if [ "$(date +%s)" -ge "$deadline" ]; then echo "Traefik did not mark all candidate services UP within ${timeoutSeconds}s" >&2; ${diagnostics || "true"}; exit 1; fi; sleep 1; done`;
 };
 
 export const getWaitTraefikRoutersCommand = (
@@ -1307,15 +1346,12 @@ export const getRestoreLegacyTraefikRoutersCommand = (
 export const getObserveTraefikServicesCommand = (
 	serviceNames: string[],
 	seconds: number,
+	maxUnhealthySamples = MAX_STABILIZATION_UNHEALTHY_SAMPLES,
 ) => {
 	if (seconds <= 0) return "true";
-	const checks = serviceNames
-		.map(
-			(serviceName) =>
-				`body="$(${traefikApiCommand("services", serviceName)})" && echo "$body" | grep -q '"UP"'`,
-		)
-		.join(" && ");
-	return `set -e; ${traefikContainerCommand} remaining=${seconds}; while [ "$remaining" -gt 0 ]; do ${checks || "true"} || { echo "Candidate service became unhealthy during stabilization" >&2; exit 1; }; sleep 1; remaining=$((remaining - 1)); done`;
+	const checks = getTraefikServiceChecks(serviceNames);
+	const diagnostics = getTraefikServiceDiagnostics(serviceNames);
+	return `set -e; ${traefikContainerCommand} remaining=${seconds}; unhealthy_samples=0; while [ "$remaining" -gt 0 ]; do if ${checks || "true"}; then unhealthy_samples=0; else unhealthy_samples=$((unhealthy_samples + 1)); echo "Candidate service health was unavailable during stabilization ($unhealthy_samples/${maxUnhealthySamples + 1})" >&2; if [ "$unhealthy_samples" -gt ${maxUnhealthySamples} ]; then echo "Candidate services remained unhealthy during stabilization" >&2; ${diagnostics || "true"}; exit 1; fi; fi; sleep 1; remaining=$((remaining - 1)); done; if [ "$unhealthy_samples" -gt 0 ]; then echo "Candidate services did not finish stabilization healthy" >&2; ${diagnostics || "true"}; exit 1; fi`;
 };
 
 export const getWriteReleaseMetadataCommand = (
