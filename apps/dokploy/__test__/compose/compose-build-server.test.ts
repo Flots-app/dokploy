@@ -514,6 +514,59 @@ describe("Compose Build Server validation", () => {
 		).toThrow("enabled Compose healthcheck");
 	});
 
+	it("uses production-safe Traefik probe timings and validates overrides", () => {
+		const defaults = validateComposeBuildServerSpecification(
+			apiCompose({
+				build: ".",
+				image: `registry.example.com/flots/api:${deploymentId}`,
+			}),
+			registry,
+			deploymentId,
+			[],
+			[apiDomain()],
+		);
+		expect(defaults.zeroDowntime.healthchecks.api).toEqual({
+			path: "/health",
+			intervalSeconds: 10,
+			timeoutSeconds: 5,
+		});
+
+		const custom = apiCompose({
+			build: ".",
+			image: `registry.example.com/flots/api:${deploymentId}`,
+		});
+		const extension = custom["x-dokploy"] as Record<string, unknown>;
+		const zeroDowntime = extension["zero-downtime"] as Record<string, unknown>;
+		zeroDowntime.healthchecks = {
+			api: { path: "/health", "interval-seconds": 15, "timeout-seconds": 8 },
+		};
+		const validation = validateComposeBuildServerSpecification(
+			custom,
+			registry,
+			deploymentId,
+			[],
+			[apiDomain()],
+		);
+		expect(validation.zeroDowntime.healthchecks.api).toEqual({
+			path: "/health",
+			intervalSeconds: 15,
+			timeoutSeconds: 8,
+		});
+
+		zeroDowntime.healthchecks = {
+			api: { path: "/health", "interval-seconds": 4, "timeout-seconds": 5 },
+		};
+		expect(() =>
+			validateComposeBuildServerSpecification(
+				custom,
+				registry,
+				deploymentId,
+				[],
+				[apiDomain()],
+			),
+		).toThrow("timeout-seconds less than or equal to interval-seconds");
+	});
+
 	it("only allows explicitly safe external shared volumes", () => {
 		const specification = apiCompose(
 			{
@@ -736,6 +789,13 @@ describe("Compose Build Server commands", () => {
 			settings: validation.zeroDowntime,
 		});
 		expect(
+			release.config.http?.services?.[release.domainServices["1"]!],
+		).toMatchObject({
+			loadBalancer: {
+				healthCheck: { interval: "10s", timeout: "5s" },
+			},
+		});
+		expect(
 			release.config.http?.routers?.[`${release.domainServices["1"]}-probe`]
 				?.rule,
 		).toContain(".dokploy.invalid`)");
@@ -948,5 +1008,23 @@ describe("Compose Build Server commands", () => {
 			});
 			expect(result.status, result.stderr).toBe(0);
 		}
+	});
+
+	it("tolerates short Traefik health transitions and logs per-service state", () => {
+		const wait = getWaitTraefikServicesCommand(
+			["candidate-backend", "candidate-frontend"],
+			120,
+		);
+		expect(wait).toContain("Traefik service candidate-backend:");
+		expect(wait).toContain("Traefik service candidate-frontend:");
+
+		const observe = getObserveTraefikServicesCommand(["candidate-backend"], 30);
+		expect(observe).toContain("unhealthy_samples=0");
+		expect(observe).toContain('$unhealthy_samples" -gt 12');
+		expect(observe).toContain("Candidate services remained unhealthy");
+		expect(observe).toContain("did not finish stabilization healthy");
+		expect(
+			getObserveTraefikServicesCommand(["candidate-backend"], 30, 17),
+		).toContain('$unhealthy_samples" -gt 17');
 	});
 });
