@@ -6,8 +6,7 @@
 
 ## IN PROGRESS
 
-- [ ] Publish the React Doctor import cleanup after rebasing on the latest
-  `canary`, then verify every required GitHub check on the final head.
+- None.
 
 ## TO VERIFY
 
@@ -135,3 +134,6 @@
   scan with zero findings.
 - [x] Revalidated the post-rebase fix with Biome across 907 files, 48 focused
   tests, the server production build, and all four workspace typechecks.
+- [x] Published React Doctor cleanup commit `fdad52d6c` and passed every gate on
+  the rebased PR: React Doctor (85/100, zero findings), Plumber compliance,
+  quality, typecheck, complete test suite, and production build.
