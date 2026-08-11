@@ -12,6 +12,7 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
+import { queueObservabilityReconcile } from "../observability/service";
 import { validUniqueServerAppName } from "./project";
 
 export type Redis = typeof redis.$inferSelect;
@@ -123,6 +124,7 @@ export const deployRedis = async (
 			applicationStatus: "done",
 		});
 		onData?.("Deployment completed successfully!");
+		void queueObservabilityReconcile(redisId);
 	} catch (error) {
 		onData?.(`Error: ${error}`);
 		await updateRedisById(redisId, {

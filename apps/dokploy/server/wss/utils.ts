@@ -37,13 +37,75 @@ export const isValidSince = (since: string): boolean => {
 
 /**
  * Validates the `search` parameter for log filtering.
- * Search is concatenated into shell commands (SSH path: double quotes; local path: single quotes).
+ * Remote log search is concatenated into an SSH shell command.
  * Only allow alphanumeric, space, dot, underscore, hyphen to prevent $, `, ', " from enabling command injection.
  * Max length 500.
  */
 export const isValidSearch = (search: string): boolean => {
 	// Space only (not \s) to reject \n, \r, \t and other control chars
 	return /^[a-zA-Z0-9 ._-]{0,500}$/.test(search);
+};
+
+export const getDockerLogsArgs = ({
+	containerId,
+	tail,
+	since,
+	runType,
+}: {
+	containerId: string;
+	tail: string;
+	since: string;
+	runType: string | null;
+}) => {
+	const isSwarm = runType === "swarm";
+
+	return [
+		isSwarm ? "service" : "container",
+		"logs",
+		"--timestamps",
+		...(isSwarm ? ["--raw"] : []),
+		"--tail",
+		tail,
+		...(since === "all" ? [] : ["--since", since]),
+		"--follow",
+		containerId,
+	];
+};
+
+export const createLogSearchForwarder = (
+	search: string,
+	forward: (data: string) => void,
+) => {
+	const needle = search.toLowerCase();
+	let pending = "";
+
+	return {
+		write(chunk: string | Buffer) {
+			const text = chunk.toString();
+			if (!needle) {
+				forward(text);
+				return;
+			}
+
+			const lines = `${pending}${text}`.split("\n");
+			pending = lines.pop() ?? "";
+			for (const line of lines) {
+				if (line.toLowerCase().includes(needle)) {
+					forward(`${line}\n`);
+				}
+			}
+		},
+		flush() {
+			const remainder = pending;
+			pending = "";
+			if (remainder === "") {
+				return;
+			}
+			if (remainder.toLowerCase().includes(needle)) {
+				forward(remainder);
+			}
+		},
+	};
 };
 
 /**

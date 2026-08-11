@@ -1,5 +1,12 @@
 import { relations } from "drizzle-orm";
-import { bigint, integer, json, pgTable, text } from "drizzle-orm/pg-core";
+import {
+	bigint,
+	boolean,
+	integer,
+	json,
+	pgTable,
+	text,
+} from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -61,6 +68,7 @@ export const redis = pgTable("redis", {
 	applicationStatus: applicationStatus("applicationStatus")
 		.notNull()
 		.default("idle"),
+	monitoringEnabled: boolean("monitoringEnabled").notNull().default(true),
 	healthCheckSwarm: json("healthCheckSwarm").$type<HealthCheckSwarm>(),
 	restartPolicySwarm: json("restartPolicySwarm").$type<RestartPolicySwarm>(),
 	placementSwarm: json("placementSwarm").$type<PlacementSwarm>(),
@@ -115,6 +123,7 @@ const createSchema = createInsertSchema(redis, {
 	cpuLimit: z.string().optional(),
 	environmentId: z.string(),
 	applicationStatus: z.enum(["idle", "running", "done", "error"]),
+	monitoringEnabled: z.boolean(),
 	externalPort: z.number(),
 	description: z.string().optional(),
 	serverId: z.string().optional(),

@@ -164,6 +164,35 @@ describe("static roles validate free-tier resources", () => {
 	});
 });
 
+describe("managed monitoring actions", () => {
+	it.each(["read", "create", "update", "delete"] as const)(
+		"owner can monitoring.%s",
+		async (action) => {
+			memberToReturn = mockMemberData("owner");
+			await expect(
+				checkPermission(ctx, { monitoring: [action] }),
+			).resolves.toBeUndefined();
+		},
+	);
+
+	it("member keeps monitoring.read", async () => {
+		memberToReturn = mockMemberData("member");
+		await expect(
+			checkPermission(ctx, { monitoring: ["read"] }),
+		).resolves.toBeUndefined();
+	});
+
+	it.each(["create", "update", "delete"] as const)(
+		"member cannot monitoring.%s",
+		async (action) => {
+			memberToReturn = mockMemberData("member");
+			await expect(
+				checkPermission(ctx, { monitoring: [action] }),
+			).rejects.toThrow();
+		},
+	);
+});
+
 describe("legacy boolean overrides for member", () => {
 	it("member passes project.create with canCreateProjects=true", async () => {
 		memberToReturn = mockMemberData("member", { canCreateProjects: true });

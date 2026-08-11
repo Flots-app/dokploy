@@ -46,7 +46,7 @@ export const statements = {
 	notification: ["read", "create", "update", "delete"],
 	tag: ["read", "create", "update", "delete"],
 	logs: ["read"],
-	monitoring: ["read"],
+	monitoring: ["read", "create", "update", "delete"],
 	auditLog: ["read"],
 } as const;
 
@@ -111,7 +111,7 @@ export const ownerRole = ac.newRole({
 	notification: ["read", "create", "update", "delete"],
 	tag: ["read", "create", "update", "delete"],
 	logs: ["read"],
-	monitoring: ["read"],
+	monitoring: ["read", "create", "update", "delete"],
 	auditLog: ["read"],
 });
 
@@ -148,7 +148,7 @@ export const adminRole = ac.newRole({
 	notification: ["read", "create", "update", "delete"],
 	tag: ["read", "create", "update", "delete"],
 	logs: ["read"],
-	monitoring: ["read"],
+	monitoring: ["read", "create", "update", "delete"],
 	auditLog: ["read"],
 });
 
