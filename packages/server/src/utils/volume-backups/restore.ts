@@ -1,11 +1,9 @@
 import path from "node:path";
+import { paths } from "@dokploy/server/constants";
+import { findApplicationById } from "@dokploy/server/services/application";
+import { findComposeById } from "@dokploy/server/services/compose";
+import { findDestinationById } from "@dokploy/server/services/destination";
 import { quote } from "shell-quote";
-import {
-	findApplicationById,
-	findComposeById,
-	findDestinationById,
-	paths,
-} from "../..";
 import {
 	buildRcloneCommand,
 	getRcloneRemotePath,

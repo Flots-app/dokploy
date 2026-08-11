@@ -6,7 +6,7 @@ import {
 	type createVolumeBackupSchema,
 	type updateVolumeBackupSchema,
 	volumeBackups,
-} from "../db/schema";
+} from "../db/schema/volume-backups";
 
 export const findVolumeBackupById = async (volumeBackupId: string) => {
 	const volumeBackup = await db.query.volumeBackups.findFirst({

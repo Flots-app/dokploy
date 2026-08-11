@@ -6,7 +6,8 @@
 
 ## IN PROGRESS
 
-- None.
+- [ ] Publish the React Doctor import cleanup after rebasing on the latest
+  `canary`, then verify every required GitHub check on the final head.
 
 ## TO VERIFY
 
@@ -127,3 +128,10 @@
 - [x] Passed every required GitHub check after publication under Node 24/Linux:
   Plumber compliance, quality, typecheck, complete test suite, and production
   build.
+- [x] Rebased the seven encryption commits without conflicts onto `canary`
+  commit `dd2cee10b`, which introduced the React Doctor PR gate.
+- [x] Reproduced React Doctor 0.9.11 locally, replaced its two reported barrel
+  imports with direct module imports, and reached a clean 41-file changed-scope
+  scan with zero findings.
+- [x] Revalidated the post-rebase fix with Biome across 907 files, 48 focused
+  tests, the server production build, and all four workspace typechecks.
