@@ -128,6 +128,7 @@ export const ShowBackups = ({
 							databaseType={databaseType}
 							backupType={backupType}
 							serverId={"serverId" in postgres ? postgres.serverId : undefined}
+							backups={postgres.backups}
 						/>
 					</div>
 				)}
@@ -170,6 +171,7 @@ export const ShowBackups = ({
 										serverId={
 											"serverId" in postgres ? postgres.serverId : undefined
 										}
+										backups={postgres.backups}
 									/>
 								</div>
 							</div>

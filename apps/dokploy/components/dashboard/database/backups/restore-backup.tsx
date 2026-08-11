@@ -60,10 +60,12 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getBackupSearchPath } from "@/lib/backup-path";
 import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
 import type { ServiceType } from "../../application/advanced/show-resources";
 import { type LogLine, parseLogs } from "../../docker/logs/utils";
+import { type BackupSource, BackupSourceSelect } from "./backup-source-select";
 
 type DatabaseType =
 	| Exclude<ServiceType, "application" | "redis">
@@ -74,7 +76,10 @@ interface Props {
 	databaseType?: DatabaseType;
 	serverId?: string | null;
 	backupType?: "database" | "compose";
+	backups?: BackupSource[];
 }
+
+const EMPTY_BACKUPS: BackupSource[] = [];
 
 const RestoreBackupSchema = z
 	.object({
@@ -200,10 +205,12 @@ export const RestoreBackup = ({
 	databaseType,
 	serverId,
 	backupType = "database",
+	backups = EMPTY_BACKUPS,
 }: Props) => {
 	const [isOpen, setIsOpen] = useState(false);
 	const [search, setSearch] = useState("");
 	const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
+	const [selectedBackupId, setSelectedBackupId] = useState("");
 
 	const { data: destinations = [] } = api.destination.all.useQuery();
 
@@ -234,8 +241,41 @@ export const RestoreBackup = ({
 	}, 350);
 
 	const handleSearchChange = (value: string) => {
+		setSelectedBackupId("");
 		setSearch(value);
 		debouncedSetSearch(value);
+	};
+
+	const clearBackupSource = () => {
+		setSelectedBackupId("");
+		setSearch("");
+		setDebouncedSearchTerm("");
+		form.setValue("backupFile", "");
+	};
+
+	const selectBackupSource = (backup: BackupSource) => {
+		const searchPath = `${getBackupSearchPath(backup.appName, backup.prefix)}/`;
+		setSelectedBackupId(backup.backupId);
+		form.setValue("destinationId", backup.destinationId);
+		form.setValue("backupFile", "");
+		setSearch(searchPath);
+		setDebouncedSearchTerm(searchPath);
+	};
+
+	const selectedBackup = backups.find(
+		(backup) => backup.backupId === selectedBackupId,
+	);
+
+	const handleOpenChange = (open: boolean) => {
+		setIsOpen(open);
+		if (!open) {
+			setSelectedBackupId("");
+			return;
+		}
+
+		if (backups.length === 1 && backups[0]) {
+			selectBackupSource(backups[0]);
+		}
 	};
 
 	const { data: files = [], isPending } = api.backup.listBackupFiles.useQuery(
@@ -309,7 +349,7 @@ export const RestoreBackup = ({
 	);
 
 	return (
-		<Dialog open={isOpen} onOpenChange={setIsOpen}>
+		<Dialog open={isOpen} onOpenChange={handleOpenChange}>
 			<DialogTrigger asChild>
 				<Button variant="outline">
 					<RotateCcw className="mr-2 size-4" />
@@ -333,6 +373,15 @@ export const RestoreBackup = ({
 						onSubmit={form.handleSubmit(onSubmit)}
 						className="grid w-full gap-4"
 					>
+						{backups.length > 0 && (
+							<BackupSourceSelect
+								backups={backups}
+								selectedBackupId={selectedBackupId}
+								onSelect={selectBackupSource}
+								onManualBrowse={clearBackupSource}
+							/>
+						)}
+
 						<FormField
 							control={form.control}
 							name="destinationId"
@@ -372,6 +421,12 @@ export const RestoreBackup = ({
 																value={destination.destinationId}
 																key={destination.destinationId}
 																onSelect={() => {
+																	if (
+																		selectedBackup?.destinationId !==
+																		destination.destinationId
+																	) {
+																		clearBackupSource();
+																	}
 																	form.setValue(
 																		"destinationId",
 																		destination.destinationId,
