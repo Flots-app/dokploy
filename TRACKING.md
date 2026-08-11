@@ -2,22 +2,16 @@
 
 ## TODO
 
-- [ ] Release `v0.29.14-flots.5`, deploy it, and verify the cumulative directory
-  size plus restore-source prefixes against production R2.
 - [ ] Run the external-infrastructure smoke test recorded under **TO VERIFY**
   when a disposable remote Dokploy server and production S3 credentials are
   available.
 
 ## IN PROGRESS
 
-- Publish and validate the `v0.29.14-flots.5` release, then deploy it to the
-  production Dokploy instance.
+- None — the backup-size and restore-source UX release is deployed and verified.
 
 ## TO VERIFY
 
-- [ ] On production R2, confirm the existing Dokploy directory reports its
-  cumulative size and that `/dokploy`, `/intraday`, `/daily`, and `/monthly`
-  open directly from the restore-source selector.
 - [ ] Run one backup/restore smoke test on a real remote Dokploy server and a
   production S3 provider during review; this needs external infrastructure and
   credentials that are not available in this workspace.
@@ -31,6 +25,20 @@
 
 ## DONE
 
+- [x] Published stable release
+  [v0.29.14-flots.5](https://github.com/Flots-app/dokploy/releases/tag/v0.29.14-flots.5)
+  from `canary`; the release workflow built, pushed, attested, and verified
+  Linux amd64/arm64 images before promoting the multi-architecture manifest.
+- [x] Deployed `v0.29.14-flots.5` to `https://dokploy.flots.app` after the
+  PostgreSQL, Redis, and Traefik preflight passed; the dashboard recovered with
+  10 running, 0 errored, and 2 idle services.
+- [x] Verified the production encrypted R2 listing: the Dokploy backup file and
+  its generated root directory both display a logical cumulative size of
+  `1.25 GB` instead of `0 Bytes`.
+- [x] Verified the production restore UX identifies `/dokploy`, `/intraday`,
+  `/daily`, and `/monthly` by storage prefix and destination, shows each
+  schedule/retention, and opens the exact configured path without restoring or
+  changing any backup.
 - [x] Published and merged
   [Flots-app/dokploy#18](https://github.com/Flots-app/dokploy/pull/18) into
   `canary`; Plumber compliance, quality, typecheck, complete tests, production
