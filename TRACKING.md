@@ -2,7 +2,9 @@
 
 ## TODO
 
-- None.
+- [ ] Run the external-infrastructure smoke test recorded under **TO VERIFY**
+  when a disposable remote Dokploy server and production S3 credentials are
+  available.
 
 ## IN PROGRESS
 
@@ -13,9 +15,74 @@
 - [ ] Run one backup/restore smoke test on a real remote Dokploy server and a
   production S3 provider during review; this needs external infrastructure and
   credentials that are not available in this workspace.
+- [ ] Exercise the browser's WebSocket restore-subscription transport on a
+  production-like deployment. The local campaign inspected that UI flow but
+  invoked the exact backend restore function directly for deterministic
+  verification.
+- [ ] Repeat the Docker lab under the repository's required Node 24.4 runtime.
+  The local server used Node 22.15; the branch's complete GitHub CI already
+  passes under Node 24/Linux.
 
 ## DONE
 
+- [x] Built a disposable Docker Compose lab with Dokploy PostgreSQL/Redis,
+  MinIO, and a Docker-labeled PostgreSQL 17 source service; ran the real Dokploy
+  development server and database migrations against it.
+- [x] Downloaded the official macOS rclone v1.75.0 archive and verified its
+  published SHA-256 (`35e8f2a666ce789b29111db0dd843ddabc0d59c6b609d07bcaae5d1a07cba6f8`)
+  before placing the binary on the lab server's `PATH`.
+- [x] Created Dokploy-managed and customer-managed destinations through the
+  running UI, passed both connection tests, verified password-type customer-key
+  inputs and ownership badges, and exercised creation/list/update APIs.
+- [x] Verified API redaction and database persistence: both crypt passwords are
+  always `null` in destination responses, both are distinct AES-GCM `enc:v1:`
+  values at rest, and supplied customer plaintext fragments do not appear in
+  the database.
+- [x] Ran a real PostgreSQL backup through Dokploy's Docker discovery,
+  `pg_dump`, gzip, rclone crypt, and MinIO path for a fixture containing ASCII,
+  Unicode, emoji, quotes, shell metacharacters, multiline text, NULL/empty
+  values, binary bytes, a zero byte, large fields, and an empty table.
+- [x] Restored managed- and customer-key backups through Dokploy's real backend
+  restore function after deliberately replacing the source data. Both restored
+  four rows with canonical logical digest
+  `737bb4a9c596d51203b0965d8c00e89f`, including the empty table, while an
+  unrelated sentinel table remained intact.
+- [x] Inspected raw MinIO storage: managed and customer destinations use
+  separate `.dokploy/encrypted/v1/<destinationId>` roots; logical directories
+  and filenames are absent, encrypted objects have rclone's ciphertext header,
+  and the managed object's physical SHA-256 is
+  `c41592810253b3bf4f0968e7d052e605806a7b12c10cd42b5d80c14f0ad74edd`.
+- [x] Ran three real customer-key backups with `keepLatestCount=2`; retention
+  kept exactly the newest two readable encrypted objects. With a wrong key it
+  found no logical files, deleted nothing, and left both raw objects intact.
+- [x] Verified encrypted-destination isolation, including different key sets in
+  one bucket, and verified legacy plaintext coexistence outside the encrypted
+  namespace with a valid gzip object and unchanged legacy behavior.
+- [x] Verified safe mutations: display-name edits and a real S3 credential
+  rotation to a second MinIO user preserved access to the encrypted object;
+  changing an encrypted destination's bucket failed with the explicit immutable
+  storage-identity error. Original credentials were restored afterward.
+- [x] Exercised API validation failures for managed mode with client secrets,
+  customer mode without a primary key, disabled encryption with a key, equal
+  primary/secondary keys, line breaks, case-insensitive `--crypt-*` overrides,
+  and incompatible filename/directory modes; all failed with the expected
+  field-level HTTP 400 response.
+- [x] Exercised wrong customer keys, a missing encrypted object, deliberately
+  corrupted ciphertext, and a purged-then-restored physical object. Restore
+  failures were non-zero, S3 credentials and crypt secrets were absent from
+  errors/logs, and the source database retained its canonical digest.
+- [x] Restarted Dokploy with the correct master encryption key, with a wrong
+  `ENCRYPTION_KEY`, then with the correct key again. The wrong-key instance
+  redacted destination secrets, failed encrypted listing without data damage,
+  and the final restart recovered access to the original logical object.
+- [x] Corrected the encrypted-column diagnostic discovered by the restart test
+  so it identifies either `ENCRYPTION_KEY` or `BETTER_AUTH_SECRET` as a possible
+  mismatch instead of naming only the legacy auth-secret source.
+- [x] Passed the post-E2E regression gates: 59 focused tests across five files,
+  Dokploy and server TypeScript checks, and Biome on the corrected source file.
+- [x] Removed the temporary restore/retention helpers and dismantled the
+  disposable lab, including its four containers, isolated network, temporary
+  MinIO user, and three data volumes.
 - [x] Confirmed the local repository and PR target context.
 - [x] Retrieved PR metadata, changed-file list, discussion, reviews, and review threads.
 - [x] Audited `Dokploy/dokploy#3194` against upstream `canary`, this fork, and

@@ -6,7 +6,8 @@ import { customAlphabet } from "nanoid";
 
 /**
  * Text column encrypted at rest (AES-256-GCM, key derived from
- * BETTER_AUTH_SECRET). Legacy plaintext values are passed through on read
+ * ENCRYPTION_KEY (or BETTER_AUTH_SECRET as a compatibility fallback). Legacy
+ * plaintext values are passed through on read
  * and get encrypted the next time they are written.
  */
 export const encryptedText = customType<{ data: string; driverData: string }>({
@@ -21,10 +22,11 @@ export const encryptedText = customType<{ data: string; driverData: string }>({
 			return decryptValue(value);
 		} catch {
 			// Fail open so a key mismatch (e.g. restoring a backup under a
-			// different BETTER_AUTH_SECRET) degrades to showing ciphertext
+			// different ENCRYPTION_KEY or BETTER_AUTH_SECRET) degrades to showing
+			// ciphertext
 			// instead of breaking every query that touches the row.
 			console.error(
-				"Failed to decrypt an encrypted column; returning the raw value. This usually means BETTER_AUTH_SECRET changed after the value was encrypted.",
+				"Failed to decrypt an encrypted column; returning the raw value. This usually means ENCRYPTION_KEY or BETTER_AUTH_SECRET changed after the value was encrypted.",
 			);
 			return value;
 		}
