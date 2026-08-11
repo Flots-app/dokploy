@@ -67,6 +67,8 @@ export const findLibsqlById = async (libsqlId: string) => {
 					destination: {
 						columns: {
 							accessKey: false,
+							encryptionPassword: false,
+							encryptionPassword2: false,
 							secretAccessKey: false,
 						},
 					},

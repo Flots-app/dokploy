@@ -4,9 +4,11 @@ import { findComposeById } from "@dokploy/server/services/compose";
 import { findDestinationById } from "@dokploy/server/services/destination";
 import type { findVolumeBackupById } from "@dokploy/server/services/volume-backups";
 import {
+	buildRcloneCommand,
 	getBackupTimestamp,
 	getComposeContainerCommand,
-	getS3Credentials,
+	getRcloneEnvironment,
+	getRcloneRemotePath,
 	normalizeS3Path,
 } from "../backups/utils";
 import { getActiveComposeRuntimeContainerSelector } from "../docker/utils";
@@ -41,11 +43,14 @@ export const backupVolume = async (
 	const s3AppName = getVolumeServiceAppName(volumeBackup);
 	const backupFileName = `${volumeName}-${getBackupTimestamp()}.tar`;
 	const bucketDestination = `${s3AppName}/${normalizeS3Path(prefix || "")}${backupFileName}`;
-	const rcloneFlags = getS3Credentials(destination);
-	const rcloneDestination = `:s3:${destination.bucket}/${bucketDestination}`;
+	const rcloneDestination = getRcloneRemotePath(destination, bucketDestination);
 	const volumeBackupPath = path.join(VOLUME_BACKUPS_PATH, volumeBackup.appName);
 
-	const rcloneCommand = `rclone copyto ${rcloneFlags.join(" ")} "${volumeBackupPath}/${backupFileName}" "${rcloneDestination}"`;
+	const rcloneCommand = buildRcloneCommand(destination, [
+		"copyto",
+		`${volumeBackupPath}/${backupFileName}`,
+		rcloneDestination,
+	]);
 
 	const backupCommand = `
 	set -e
@@ -70,12 +75,16 @@ export const backupVolume = async (
   rm "${volumeBackupPath}/${backupFileName}"
   echo "Local backup file cleaned up ✅"
   `;
+	const result = (command: string) => ({
+		command,
+		environment: getRcloneEnvironment(destination),
+	});
 
 	if (!turnOff) {
-		return `
+		return result(`
 		${backupCommand}
 		${uploadCommand}
-		`;
+		`);
 	}
 
 	const serviceLockId =
@@ -119,7 +128,8 @@ export const backupVolume = async (
 	);
 
 	if (serviceType === "application") {
-		return lockWrapper(`
+		return result(
+			lockWrapper(`
 		echo "Stopping application to 0 replicas"
 		ACTUAL_REPLICAS=$(docker service inspect ${volumeBackup.application?.appName} --format "{{.Spec.Mode.Replicated.Replicas}}")
 		echo "Actual replicas: $ACTUAL_REPLICAS"
@@ -128,7 +138,8 @@ export const backupVolume = async (
 		echo "Starting application to $ACTUAL_REPLICAS replicas"
         docker service update --replicas=$ACTUAL_REPLICAS --with-registry-auth ${volumeBackup.application?.appName}
 		${uploadCommand}
-  `);
+	  `),
+		);
 	}
 	if (serviceType === "compose") {
 		const compose = await findComposeById(
@@ -172,11 +183,15 @@ export const backupVolume = async (
 			echo "Compose container started"
 			`;
 		}
-		return lockWrapper(`
+		return result(
+			lockWrapper(`
         ${stopCommand}
         ${backupCommand}
         ${startCommand}
 		${uploadCommand}
-  `);
+	  `),
+		);
 	}
+
+	return result(`${backupCommand}\n${uploadCommand}`);
 };

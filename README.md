@@ -20,7 +20,7 @@ Dokploy includes multiple features to make your life easier.
 
 - **Applications**: Deploy any type of application (Node.js, PHP, Python, Go, Ruby, etc.).
 - **Databases**: Create and manage databases with support for MySQL, PostgreSQL, MongoDB, MariaDB, libsql, and Redis.
-- **Backups**: Automate backups for databases to an external storage destination.
+- **Backups**: Automate backups to S3-compatible storage, with optional encryption at rest powered by [rclone crypt](https://rclone.org/crypt/).
 - **Docker Compose**: Native support for Docker Compose to manage complex applications.
 - **Multi Node**: Scale applications to multiple nodes using Docker Swarm to manage the cluster.
 - **Templates**: Deploy open-source templates (Plausible, Pocketbase, Calcom, etc.) with a single click.

@@ -1,5 +1,5 @@
-import { relations } from "drizzle-orm";
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { relations, sql } from "drizzle-orm";
+import { boolean, check, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -9,25 +9,69 @@ import {
 } from "../validations/destination";
 import { organization } from "./account";
 import { backups } from "./backups";
+import { encryptedText } from "./utils";
 
-export const destinations = pgTable("destination", {
-	destinationId: text("destinationId")
-		.notNull()
-		.primaryKey()
-		.$defaultFn(() => nanoid()),
-	name: text("name").notNull(),
-	provider: text("provider"),
-	accessKey: text("accessKey").notNull(),
-	secretAccessKey: text("secretAccessKey").notNull(),
-	bucket: text("bucket").notNull(),
-	region: text("region").notNull(),
-	endpoint: text("endpoint").notNull(),
-	additionalFlags: text("additionalFlags").array(),
-	organizationId: text("organizationId")
-		.notNull()
-		.references(() => organization.id, { onDelete: "cascade" }),
-	createdAt: timestamp("createdAt").notNull().defaultNow(),
-});
+export const destinations = pgTable(
+	"destination",
+	{
+		destinationId: text("destinationId")
+			.notNull()
+			.primaryKey()
+			.$defaultFn(() => nanoid()),
+		name: text("name").notNull(),
+		provider: text("provider"),
+		accessKey: text("accessKey").notNull(),
+		secretAccessKey: text("secretAccessKey").notNull(),
+		bucket: text("bucket").notNull(),
+		region: text("region").notNull(),
+		endpoint: text("endpoint").notNull(),
+		additionalFlags: text("additionalFlags").array(),
+		encryptionEnabled: boolean("encryptionEnabled").notNull().default(false),
+		encryptionKeyManagement: text("encryptionKeyManagement")
+			.notNull()
+			.default("dokploy"),
+		// rclone-obscured values, additionally encrypted at rest by Dokploy. They
+		// remain reversible secrets and must never be returned by the API.
+		encryptionPassword: encryptedText("encryptionPassword"),
+		encryptionPassword2: encryptedText("encryptionPassword2"),
+		encryptionFilenameMode: text("encryptionFilenameMode")
+			.notNull()
+			.default("standard"),
+		encryptionDirectoryNames: boolean("encryptionDirectoryNames")
+			.notNull()
+			.default(true),
+		organizationId: text("organizationId")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		createdAt: timestamp("createdAt").notNull().defaultNow(),
+	},
+	(table) => [
+		check(
+			"destination_encryption_password_required",
+			sql`NOT ${table.encryptionEnabled} OR ${table.encryptionPassword} IS NOT NULL`,
+		),
+		check(
+			"destination_encryption_key_management",
+			sql`${table.encryptionKeyManagement} IN ('dokploy', 'customer')`,
+		),
+		check(
+			"destination_managed_encryption_password2_required",
+			sql`NOT ${table.encryptionEnabled} OR ${table.encryptionKeyManagement} <> 'dokploy' OR ${table.encryptionPassword2} IS NOT NULL`,
+		),
+		check(
+			"destination_encryption_filename_mode",
+			sql`${table.encryptionFilenameMode} IN ('standard', 'obfuscate', 'off')`,
+		),
+		check(
+			"destination_encryption_directory_name_mode",
+			sql`${table.encryptionFilenameMode} <> 'off' OR NOT ${table.encryptionDirectoryNames}`,
+		),
+		check(
+			"destination_encryption_disabled_secrets",
+			sql`${table.encryptionEnabled} OR (${table.encryptionPassword} IS NULL AND ${table.encryptionPassword2} IS NULL)`,
+		),
+	],
+);
 
 export const destinationsRelations = relations(
 	destinations,
@@ -52,6 +96,12 @@ const createSchema = createInsertSchema(destinations, {
 	additionalFlags: z
 		.array(z.string().regex(ADDITIONAL_FLAG_REGEX, ADDITIONAL_FLAG_ERROR))
 		.default([]),
+	encryptionEnabled: z.boolean(),
+	encryptionKeyManagement: z.enum(["dokploy", "customer"]),
+	encryptionPassword: z.string().nullable(),
+	encryptionPassword2: z.string().nullable(),
+	encryptionFilenameMode: z.enum(["standard", "obfuscate", "off"]),
+	encryptionDirectoryNames: z.boolean(),
 });
 
 export const apiCreateDestination = createSchema
@@ -64,10 +114,107 @@ export const apiCreateDestination = createSchema
 		endpoint: true,
 		secretAccessKey: true,
 		additionalFlags: true,
+		encryptionEnabled: true,
+		encryptionKeyManagement: true,
+		encryptionPassword: true,
+		encryptionPassword2: true,
+		encryptionFilenameMode: true,
+		encryptionDirectoryNames: true,
 	})
 	.required()
 	.extend({
 		serverId: z.string().optional(),
+		encryptionEnabled: z.boolean().default(false),
+		encryptionKeyManagement: z.enum(["dokploy", "customer"]).default("dokploy"),
+		encryptionPassword: z.string().optional(),
+		encryptionPassword2: z.string().optional(),
+		encryptionFilenameMode: z
+			.enum(["standard", "obfuscate", "off"])
+			.default("standard"),
+		encryptionDirectoryNames: z.boolean().default(true),
+	})
+	.superRefine((destination, ctx) => {
+		if (
+			!destination.encryptionEnabled &&
+			(destination.encryptionPassword || destination.encryptionPassword2)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Encryption passwords require encryption to be enabled",
+				path: ["encryptionPassword"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.encryptionKeyManagement === "customer" &&
+			!destination.encryptionPassword
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Encryption password is required for customer-managed keys",
+				path: ["encryptionPassword"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.encryptionKeyManagement === "dokploy" &&
+			(destination.encryptionPassword || destination.encryptionPassword2)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message:
+					"Encryption passwords must not be supplied for Dokploy-managed keys",
+				path: ["encryptionPassword"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.encryptionPassword2 &&
+			destination.encryptionPassword2 === destination.encryptionPassword
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message: "The second password must differ from the primary password",
+				path: ["encryptionPassword2"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			[destination.encryptionPassword, destination.encryptionPassword2].some(
+				(password) => password && /[\0\r\n]/.test(password),
+			)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Encryption passwords cannot contain NUL or line breaks",
+				path: ["encryptionPassword"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.encryptionFilenameMode === "off" &&
+			destination.encryptionDirectoryNames
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message:
+					"Directory-name encryption must be disabled when filename encryption is off",
+				path: ["encryptionDirectoryNames"],
+			});
+		}
+		if (
+			destination.encryptionEnabled &&
+			destination.additionalFlags?.some((flag) =>
+				flag.toLowerCase().startsWith("--crypt-"),
+			)
+		) {
+			ctx.addIssue({
+				code: "custom",
+				message:
+					"Additional --crypt-* flags are not allowed for encrypted destinations",
+				path: ["additionalFlags"],
+			});
+		}
 	});
 
 export const apiFindOneDestination = z.object({

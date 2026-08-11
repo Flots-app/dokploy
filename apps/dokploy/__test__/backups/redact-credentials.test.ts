@@ -47,4 +47,22 @@ describe("redactRcloneCredentials (#4621)", () => {
 		expect(redacted).not.toContain("MYSECRET");
 		expect(redacted).toContain("[REDACTED]");
 	});
+
+	it("redacts shell-quoted and unquoted S3 credentials", () => {
+		const cmd =
+			"rclone lsf --s3-access-key-id=PLAINKEY --s3-secret-access-key='secret value' :s3:bucket";
+		const redacted = redactRcloneCredentials(cmd);
+		expect(redacted).not.toContain("PLAINKEY");
+		expect(redacted).not.toContain("secret value");
+	});
+
+	it("redacts both rclone crypt password variables", () => {
+		const cmd =
+			"RCLONE_CRYPT_PASSWORD=obscured-primary RCLONE_CRYPT_PASSWORD2='obscured-secondary' rclone lsf :crypt:";
+		const redacted = redactRcloneCredentials(cmd);
+		expect(redacted).not.toContain("obscured-primary");
+		expect(redacted).not.toContain("obscured-secondary");
+		expect(redacted).toContain('RCLONE_CRYPT_PASSWORD="[REDACTED]"');
+		expect(redacted).toContain('RCLONE_CRYPT_PASSWORD2="[REDACTED]"');
+	});
 });

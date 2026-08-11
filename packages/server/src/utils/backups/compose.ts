@@ -10,10 +10,14 @@ import { findProjectById } from "@dokploy/server/services/project";
 import { getActiveComposeRuntimeContainerSelector } from "../docker/utils";
 import { sendDatabaseBackupNotifications } from "../notifications/database-backup";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
+import { getSafeRcloneErrorMessage } from "./redact";
 import {
+	buildRcloneCommand,
 	getBackupCommand,
 	getBackupTimestamp,
-	getS3Credentials,
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
 	normalizeS3Path,
 } from "./utils";
 
@@ -36,9 +40,14 @@ export const runComposeBackup = async (
 	});
 
 	try {
-		const rcloneFlags = getS3Credentials(destination);
-		const rcloneDestination = `:s3:${destination.bucket}/${bucketDestination}`;
-		const rcloneCommand = `rclone rcat ${rcloneFlags.join(" ")} "${rcloneDestination}"`;
+		const rcloneDestination = getRcloneRemotePath(
+			destination,
+			bucketDestination,
+		);
+		const rcloneCommand = buildRcloneCommand(destination, [
+			"rcat",
+			rcloneDestination,
+		]);
 		const runtimeSelector =
 			compose.composeType === "docker-compose"
 				? await getActiveComposeRuntimeContainerSelector(compose)
@@ -51,10 +60,17 @@ export const runComposeBackup = async (
 			runtimeSelector,
 		);
 		if (compose.serverId) {
-			await execAsyncRemote(compose.serverId, backupCommand);
+			await execAsyncRemote(
+				compose.serverId,
+				backupCommand,
+				undefined,
+				undefined,
+				getRcloneEnvironment(destination),
+			);
 		} else {
 			await execAsync(backupCommand, {
 				shell: "/bin/bash",
+				...getRcloneExecOptions(destination),
 			});
 		}
 
@@ -69,14 +85,14 @@ export const runComposeBackup = async (
 
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 	} catch (error) {
-		console.log(error);
+		const errorMessage = getSafeRcloneErrorMessage(error);
+		console.error(errorMessage);
 		await sendDatabaseBackupNotifications({
 			applicationName: name,
 			projectName: project.name,
 			databaseType: getDatabaseType(databaseType),
 			type: "error",
-			// @ts-ignore
-			errorMessage: error?.message || "Error message not provided",
+			errorMessage,
 			organizationId: project.organizationId,
 			databaseName: backup.database,
 		});

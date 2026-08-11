@@ -1,9 +1,14 @@
 import type { apiRestoreBackup } from "@dokploy/server/db/schema";
 import type { Destination } from "@dokploy/server/services/destination";
 import type { MySql } from "@dokploy/server/services/mysql";
-import { quote } from "shell-quote";
 import type { z } from "zod";
-import { getS3Credentials } from "../backups/utils";
+import { getSafeRcloneErrorMessage } from "../backups/redact";
+import {
+	buildRcloneCommand,
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
+} from "../backups/utils";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
 import { getRestoreCommand } from "./utils";
 
@@ -16,11 +21,11 @@ export const restoreMySqlBackup = async (
 	try {
 		const { appName, databaseRootPassword, serverId } = mysql;
 
-		const rcloneFlags = getS3Credentials(destination);
-		const bucketPath = `:s3:${destination.bucket}`;
-		const backupPath = `${bucketPath}/${backupInput.backupFile}`;
-
-		const rcloneCommand = `rclone cat ${rcloneFlags.join(" ")} ${quote([backupPath])} | gunzip`;
+		const backupPath = getRcloneRemotePath(destination, backupInput.backupFile);
+		const rcloneCommand = `${buildRcloneCommand(destination, [
+			"cat",
+			backupPath,
+		])} | gunzip`;
 
 		const command = getRestoreCommand({
 			appName,
@@ -39,21 +44,25 @@ export const restoreMySqlBackup = async (
 		);
 
 		if (serverId) {
-			await execAsyncRemote(serverId, command);
+			await execAsyncRemote(
+				serverId,
+				command,
+				undefined,
+				undefined,
+				getRcloneEnvironment(destination),
+			);
 		} else {
-			await execAsync(command);
+			await execAsync(command, getRcloneExecOptions(destination));
 		}
 
 		emit("Restore completed successfully!");
 	} catch (error) {
-		console.error(error);
-		emit(
-			`Error: ${
-				error instanceof Error ? error.message : "Error restoring mysql backup"
-			}`,
+		const errorMessage = getSafeRcloneErrorMessage(
+			error,
+			"Error restoring mysql backup",
 		);
-		throw new Error(
-			error instanceof Error ? error.message : "Error restoring mysql backup",
-		);
+		console.error(errorMessage);
+		emit(`Error: ${errorMessage}`);
+		throw new Error(errorMessage);
 	}
 };

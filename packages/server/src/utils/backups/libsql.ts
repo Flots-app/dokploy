@@ -9,10 +9,14 @@ import type { Libsql } from "@dokploy/server/services/libsql";
 import { findProjectById } from "@dokploy/server/services/project";
 import { sendDatabaseBackupNotifications } from "../notifications/database-backup";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
+import { getSafeRcloneErrorMessage } from "./redact";
 import {
+	buildRcloneCommand,
 	getBackupCommand,
 	getBackupTimestamp,
-	getS3Credentials,
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
 	normalizeS3Path,
 } from "./utils";
 
@@ -34,10 +38,14 @@ export const runLibsqlBackup = async (
 	const backupFileName = `${getBackupTimestamp()}.sql.gz`;
 	const bucketDestination = `${appName}/${normalizeS3Path(prefix)}${backupFileName}`;
 	try {
-		const rcloneFlags = getS3Credentials(destination);
-		const rcloneDestination = `:s3:${destination.bucket}/${bucketDestination}`;
-
-		const rcloneCommand = `rclone rcat ${rcloneFlags.join(" ")} "${rcloneDestination}"`;
+		const rcloneDestination = getRcloneRemotePath(
+			destination,
+			bucketDestination,
+		);
+		const rcloneCommand = buildRcloneCommand(destination, [
+			"rcat",
+			rcloneDestination,
+		]);
 
 		const backupCommand = getBackupCommand(
 			backup,
@@ -45,10 +53,17 @@ export const runLibsqlBackup = async (
 			deployment.logPath,
 		);
 		if (libsql.serverId) {
-			await execAsyncRemote(libsql.serverId, backupCommand);
+			await execAsyncRemote(
+				libsql.serverId,
+				backupCommand,
+				undefined,
+				undefined,
+				getRcloneEnvironment(destination),
+			);
 		} else {
 			await execAsync(backupCommand, {
 				shell: "/bin/bash",
+				...getRcloneExecOptions(destination),
 			});
 		}
 
@@ -63,13 +78,13 @@ export const runLibsqlBackup = async (
 
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 	} catch (error) {
+		const errorMessage = getSafeRcloneErrorMessage(error);
 		await sendDatabaseBackupNotifications({
 			applicationName: name,
 			projectName: project.name,
 			databaseType: "libsql",
 			type: "error",
-			// @ts-ignore
-			errorMessage: error?.message || "Error message not provided",
+			errorMessage,
 			organizationId: project.organizationId,
 			databaseName: backup.database,
 		});

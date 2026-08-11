@@ -9,10 +9,14 @@ import type { Mariadb } from "@dokploy/server/services/mariadb";
 import { findProjectById } from "@dokploy/server/services/project";
 import { sendDatabaseBackupNotifications } from "../notifications/database-backup";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
+import { getSafeRcloneErrorMessage } from "./redact";
 import {
+	buildRcloneCommand,
 	getBackupCommand,
 	getBackupTimestamp,
-	getS3Credentials,
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
 	normalizeS3Path,
 } from "./utils";
 
@@ -33,9 +37,14 @@ export const runMariadbBackup = async (
 		description: "MariaDB Backup",
 	});
 	try {
-		const rcloneFlags = getS3Credentials(destination);
-		const rcloneDestination = `:s3:${destination.bucket}/${bucketDestination}`;
-		const rcloneCommand = `rclone rcat ${rcloneFlags.join(" ")} "${rcloneDestination}"`;
+		const rcloneDestination = getRcloneRemotePath(
+			destination,
+			bucketDestination,
+		);
+		const rcloneCommand = buildRcloneCommand(destination, [
+			"rcat",
+			rcloneDestination,
+		]);
 
 		const backupCommand = getBackupCommand(
 			backup,
@@ -43,10 +52,17 @@ export const runMariadbBackup = async (
 			deployment.logPath,
 		);
 		if (mariadb.serverId) {
-			await execAsyncRemote(mariadb.serverId, backupCommand);
+			await execAsyncRemote(
+				mariadb.serverId,
+				backupCommand,
+				undefined,
+				undefined,
+				getRcloneEnvironment(destination),
+			);
 		} else {
 			await execAsync(backupCommand, {
 				shell: "/bin/bash",
+				...getRcloneExecOptions(destination),
 			});
 		}
 
@@ -60,14 +76,14 @@ export const runMariadbBackup = async (
 		});
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 	} catch (error) {
-		console.log(error);
+		const errorMessage = getSafeRcloneErrorMessage(error);
+		console.error(errorMessage);
 		await sendDatabaseBackupNotifications({
 			applicationName: name,
 			projectName: project.name,
 			databaseType: "mariadb",
 			type: "error",
-			// @ts-ignore
-			errorMessage: error?.message || "Error message not provided",
+			errorMessage,
 			organizationId: project.organizationId,
 			databaseName: backup.database,
 		});

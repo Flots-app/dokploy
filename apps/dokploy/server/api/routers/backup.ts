@@ -15,6 +15,7 @@ import {
 	findPostgresByBackupId,
 	findPostgresById,
 	findServerById,
+	getSafeRcloneErrorMessage,
 	IS_CLOUD,
 	keepLatestNBackups,
 	removeBackupById,
@@ -32,7 +33,10 @@ import { findDestinationById } from "@dokploy/server/services/destination";
 import { checkServicePermissionAndAccess } from "@dokploy/server/services/permission";
 import { runComposeBackup } from "@dokploy/server/utils/backups/compose";
 import {
-	getS3Credentials,
+	buildRcloneCommand,
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
 	normalizeS3Path,
 } from "@dokploy/server/utils/backups/utils";
 import {
@@ -49,7 +53,6 @@ import {
 	restoreWebServerBackup,
 } from "@dokploy/server/utils/restore";
 import { TRPCError } from "@trpc/server";
-import { quote } from "shell-quote";
 import { z } from "zod";
 import {
 	createTRPCRouter,
@@ -497,9 +500,6 @@ export const backupRouter = createTRPCRouter({
 						});
 					}
 				}
-				const rcloneFlags = getS3Credentials(destination);
-				const bucketPath = `:s3:${destination.bucket}`;
-
 				const lastSlashIndex = input.search.lastIndexOf("/");
 				const baseDir =
 					lastSlashIndex !== -1
@@ -510,16 +510,30 @@ export const backupRouter = createTRPCRouter({
 						? input.search.slice(lastSlashIndex + 1)
 						: input.search;
 
-				const searchPath = baseDir ? `${bucketPath}/${baseDir}` : bucketPath;
-				const listCommand = `rclone lsjson ${rcloneFlags.join(" ")} ${quote([searchPath])} --no-mimetype --no-modtime 2>/dev/null`;
+				const searchPath = getRcloneRemotePath(destination, baseDir);
+				const listCommand = `${buildRcloneCommand(destination, [
+					"lsjson",
+					searchPath,
+					"--no-mimetype",
+					"--no-modtime",
+				])} 2>/dev/null`;
 
 				let stdout = "";
 
 				if (input.serverId) {
-					const result = await execAsyncRemote(input.serverId, listCommand);
+					const result = await execAsyncRemote(
+						input.serverId,
+						listCommand,
+						undefined,
+						undefined,
+						getRcloneEnvironment(destination),
+					);
 					stdout = result.stdout;
 				} else {
-					const result = await execAsync(listCommand);
+					const result = await execAsync(
+						listCommand,
+						getRcloneExecOptions(destination),
+					);
 					stdout = result.stdout;
 				}
 
@@ -551,14 +565,15 @@ export const backupRouter = createTRPCRouter({
 
 				return results.slice(0, 100);
 			} catch (error) {
-				console.error("Error in listBackupFiles:", error);
+				const errorMessage = getSafeRcloneErrorMessage(
+					error,
+					"Error listing backup files",
+				);
+				console.error("Error in listBackupFiles:", errorMessage);
 				throw new TRPCError({
 					code: "BAD_REQUEST",
-					message:
-						error instanceof Error
-							? error.message
-							: "Error listing backup files",
-					cause: error,
+					message: errorMessage,
+					cause: new Error(errorMessage),
 				});
 			}
 		}),
@@ -610,9 +625,7 @@ export const backupRouter = createTRPCRouter({
 			};
 			runRestore()
 				.catch((error) => {
-					onLog(
-						`Error: ${error instanceof Error ? error.message : String(error)}`,
-					);
+					onLog(`Error: ${getSafeRcloneErrorMessage(error)}`);
 				})
 				.finally(() => {
 					done = true;

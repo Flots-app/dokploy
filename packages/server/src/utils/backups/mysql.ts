@@ -9,10 +9,14 @@ import type { MySql } from "@dokploy/server/services/mysql";
 import { findProjectById } from "@dokploy/server/services/project";
 import { sendDatabaseBackupNotifications } from "../notifications/database-backup";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
+import { getSafeRcloneErrorMessage } from "./redact";
 import {
+	buildRcloneCommand,
 	getBackupCommand,
 	getBackupTimestamp,
-	getS3Credentials,
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+	getRcloneRemotePath,
 	normalizeS3Path,
 } from "./utils";
 
@@ -31,10 +35,14 @@ export const runMySqlBackup = async (mysql: MySql, backup: BackupSchedule) => {
 	});
 
 	try {
-		const rcloneFlags = getS3Credentials(destination);
-		const rcloneDestination = `:s3:${destination.bucket}/${bucketDestination}`;
-
-		const rcloneCommand = `rclone rcat ${rcloneFlags.join(" ")} "${rcloneDestination}"`;
+		const rcloneDestination = getRcloneRemotePath(
+			destination,
+			bucketDestination,
+		);
+		const rcloneCommand = buildRcloneCommand(destination, [
+			"rcat",
+			rcloneDestination,
+		]);
 
 		const backupCommand = getBackupCommand(
 			backup,
@@ -43,10 +51,17 @@ export const runMySqlBackup = async (mysql: MySql, backup: BackupSchedule) => {
 		);
 
 		if (mysql.serverId) {
-			await execAsyncRemote(mysql.serverId, backupCommand);
+			await execAsyncRemote(
+				mysql.serverId,
+				backupCommand,
+				undefined,
+				undefined,
+				getRcloneEnvironment(destination),
+			);
 		} else {
 			await execAsync(backupCommand, {
 				shell: "/bin/bash",
+				...getRcloneExecOptions(destination),
 			});
 		}
 		await sendDatabaseBackupNotifications({
@@ -59,14 +74,14 @@ export const runMySqlBackup = async (mysql: MySql, backup: BackupSchedule) => {
 		});
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 	} catch (error) {
-		console.log(error);
+		const errorMessage = getSafeRcloneErrorMessage(error);
+		console.error(errorMessage);
 		await sendDatabaseBackupNotifications({
 			applicationName: name,
 			projectName: project.name,
 			databaseType: "mysql",
 			type: "error",
-			// @ts-ignore
-			errorMessage: error?.message || "Error message not provided",
+			errorMessage,
 			organizationId: project.organizationId,
 			databaseName: backup.database,
 		});

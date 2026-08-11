@@ -21,6 +21,10 @@ import { findDestinationById } from "@dokploy/server/services/destination";
 import { checkServicePermissionAndAccess } from "@dokploy/server/services/permission";
 import { findServerById } from "@dokploy/server/services/server";
 import {
+	getRcloneEnvironment,
+	getRcloneExecOptions,
+} from "@dokploy/server/utils/backups/utils";
+import {
 	execAsyncRemote,
 	execAsyncStream,
 } from "@dokploy/server/utils/process/execAsync";
@@ -329,14 +333,24 @@ export const volumeBackupsRouter = createTRPCRouter({
 						// Execute the restore command with real-time output
 						if (input.serverId) {
 							emit.next(`🌐 Executing on remote server: ${input.serverId}`);
-							await execAsyncRemote(input.serverId, restoreCommand, (data) => {
-								emit.next(data);
-							});
+							await execAsyncRemote(
+								input.serverId,
+								restoreCommand,
+								(data) => {
+									emit.next(data);
+								},
+								undefined,
+								getRcloneEnvironment(destination),
+							);
 						} else {
 							emit.next("🖥️ Executing on local server");
-							await execAsyncStream(restoreCommand, (data) => {
-								emit.next(data);
-							});
+							await execAsyncStream(
+								restoreCommand,
+								(data) => {
+									emit.next(data);
+								},
+								getRcloneExecOptions(destination),
+							);
 						}
 
 						emit.next("");

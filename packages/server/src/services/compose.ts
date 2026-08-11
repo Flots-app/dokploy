@@ -569,6 +569,8 @@ export const findComposeById = async (composeId: string) => {
 					destination: {
 						columns: {
 							accessKey: false,
+							encryptionPassword: false,
+							encryptionPassword2: false,
 							secretAccessKey: false,
 						},
 					},

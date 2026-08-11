@@ -145,11 +145,40 @@ export const execFileAsync = async (
 	});
 };
 
+export const prepareRemoteCommand = (
+	command: string,
+	environment: Record<string, string> = {},
+	input?: string,
+) => {
+	const environmentEntries = Object.entries(environment);
+	for (const [name, value] of environmentEntries) {
+		if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) {
+			throw new Error(`Invalid remote environment variable name: ${name}`);
+		}
+		if (value.includes("\n") || value.includes("\r")) {
+			throw new Error(`Remote environment variable ${name} contains a newline`);
+		}
+	}
+	const environmentSetup = environmentEntries
+		.map(([name]) => `IFS= read -r ${name} || exit 1\nexport ${name}`)
+		.join("\n");
+
+	return {
+		command: withRemoteCommandEnvironment(
+			environmentSetup ? `${environmentSetup}\n${command}` : command,
+		),
+		input: `${environmentEntries
+			.map(([, value]) => `${value}\n`)
+			.join("")}${input ?? ""}`,
+	};
+};
+
 export const execAsyncRemote = async (
 	serverId: string | null,
 	command: string,
 	onData?: (data: string) => void,
 	input?: string,
+	environment: Record<string, string> = {},
 ): Promise<{ stdout: string; stderr: string }> => {
 	if (!serverId) return { stdout: "", stderr: "" };
 	const server = await findServerById(serverId);
@@ -159,12 +188,12 @@ export const execAsyncRemote = async (
 	let stderr = "";
 	return new Promise((resolve, reject) => {
 		const conn = new Client();
-		const remoteCommand = withRemoteCommandEnvironment(command);
+		const preparedCommand = prepareRemoteCommand(command, environment, input);
 
 		sleep(1000);
 		conn
 			.once("ready", () => {
-				conn.exec(remoteCommand, (err, stream) => {
+				conn.exec(preparedCommand.command, (err, stream) => {
 					if (err) {
 						onData?.(err.message);
 						reject(
@@ -204,8 +233,8 @@ export const execAsyncRemote = async (
 							stderr += data.toString();
 							onData?.(data.toString());
 						});
-					if (input !== undefined) {
-						stream.end(input);
+					if (preparedCommand.input) {
+						stream.end(preparedCommand.input);
 					}
 				});
 			})
