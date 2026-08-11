@@ -46,6 +46,12 @@ jobs:
           node-version: 24.4.0
           cache: "pnpm"
 
+      - name: Set up Socket Firewall
+        uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
+        with:
+          mode: firewall-free
+          shims: "false"
+
       - name: Install checksum-verified Nixpacks
         if: matrix.job == 'test'
         env:
@@ -92,7 +98,7 @@ jobs:
           docker network create --driver overlay dokploy-network || true
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: sfw pnpm install --frozen-lockfile
 
       - name: Build shared server package
         if: matrix.job != 'quality'
