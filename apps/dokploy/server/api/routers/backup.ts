@@ -69,18 +69,10 @@ import {
 	apiUpdateBackup,
 } from "@/server/db/schema";
 import { removeJob, schedule, updateJob } from "@/server/utils/backup";
-
-interface RcloneFile {
-	Path: string;
-	Name: string;
-	Size: number;
-	IsDir: boolean;
-	Tier?: string;
-	Hashes?: {
-		MD5?: string;
-		SHA1?: string;
-	};
-}
+import {
+	getBackupDirectoryEntries,
+	type RcloneFile,
+} from "../utils/backup-files";
 
 export const backupRouter = createTRPCRouter({
 	create: protectedProcedure
@@ -514,6 +506,7 @@ export const backupRouter = createTRPCRouter({
 				const listCommand = `${buildRcloneCommand(destination, [
 					"lsjson",
 					searchPath,
+					"--recursive",
 					"--no-mimetype",
 					"--no-modtime",
 				])} 2>/dev/null`;
@@ -545,6 +538,7 @@ export const backupRouter = createTRPCRouter({
 					console.error("Raw stdout:", stdout);
 					throw new Error("Failed to parse backup files list");
 				}
+				files = getBackupDirectoryEntries(files);
 
 				// Limit to first 100 files
 

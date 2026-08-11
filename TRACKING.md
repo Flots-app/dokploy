@@ -2,16 +2,22 @@
 
 ## TODO
 
+- [ ] Publish the backup-directory-size fix, pass every required CI check,
+  release it, and verify the cumulative directory size against production R2.
 - [ ] Run the external-infrastructure smoke test recorded under **TO VERIFY**
   when a disposable remote Dokploy server and production S3 credentials are
   available.
 
 ## IN PROGRESS
 
-- None.
+- Publish the backup-size and restore-source UX branch, then pass every required
+  GitHub check under the repository's Node 24 runtime.
 
 ## TO VERIFY
 
+- [ ] On production R2, confirm the existing Dokploy directory reports its
+  cumulative size and that `/dokploy`, `/intraday`, `/daily`, and `/monthly`
+  open directly from the restore-source selector.
 - [ ] Run one backup/restore smoke test on a real remote Dokploy server and a
   production S3 provider during review; this needs external infrastructure and
   credentials that are not available in this workspace.
@@ -25,6 +31,16 @@
 
 ## DONE
 
+- [x] Made backup listings recurse once through rclone and aggregate descendant
+  object bytes into each immediate directory, while keeping direct files and
+  the existing 100-entry/search behavior.
+- [x] Added a restore-source selector that identifies configured backups by
+  storage prefix, destination, schedule, and retention; selecting one opens its
+  exact path while manual destination browsing remains available.
+- [x] Added seven focused tests for nested sizes, prefix collisions, empty and
+  invalid sizes, immutability, and normalized storage paths; all 40 backup tests,
+  Dokploy/server typechecks, Biome across 912 files, the server bundle, and the
+  production Next.js build pass locally.
 - [x] Built a disposable Docker Compose lab with Dokploy PostgreSQL/Redis,
   MinIO, and a Docker-labeled PostgreSQL 17 source service; ran the real Dokploy
   development server and database migrations against it.
