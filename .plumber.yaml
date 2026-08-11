@@ -22,6 +22,7 @@ github:
         - getplumber/plumber
         - millionco/react-doctor
         - pnpm/action-setup
+        - SocketDev/action
         - softprops/action-gh-release
 
     containerImageMustNotUseForbiddenTags:
