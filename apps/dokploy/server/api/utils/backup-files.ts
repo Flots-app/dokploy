@@ -39,9 +39,16 @@ export const getBackupDirectoryEntries = (files: RcloneFile[]) => {
 		);
 	}
 
-	return files
-		.filter((file) => getTopLevelPath(file.Path) === file.Path)
-		.map((file) =>
+	const entries: RcloneFile[] = [];
+	for (const file of files) {
+		if (getTopLevelPath(file.Path) !== file.Path) {
+			continue;
+		}
+
+		entries.push(
 			file.IsDir ? { ...file, Size: directorySizes.get(file.Path) ?? 0 } : file,
 		);
+	}
+
+	return entries;
 };

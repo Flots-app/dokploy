@@ -79,6 +79,8 @@ interface Props {
 	backups?: BackupSource[];
 }
 
+const EMPTY_BACKUPS: BackupSource[] = [];
+
 const RestoreBackupSchema = z
 	.object({
 		destinationId: z.string().min(1, {
@@ -203,7 +205,7 @@ export const RestoreBackup = ({
 	databaseType,
 	serverId,
 	backupType = "database",
-	backups = [],
+	backups = EMPTY_BACKUPS,
 }: Props) => {
 	const [isOpen, setIsOpen] = useState(false);
 	const [search, setSearch] = useState("");
