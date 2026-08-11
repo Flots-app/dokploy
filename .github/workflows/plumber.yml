@@ -32,7 +32,9 @@ jobs:
           persist-credentials: false
 
       - name: Enforce Socket Firewall coverage
-        run: python3 .github/scripts/check_socket_firewall.py
+        run: |
+          python3 .github/scripts/test_check_socket_firewall.py
+          python3 .github/scripts/check_socket_firewall.py
 
       - name: Enforce Plumber compliance
         uses: getplumber/plumber@59d586ada029ab9691105c5a6aa803ef04c00d07 # v0.4.23
