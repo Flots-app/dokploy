@@ -20,6 +20,7 @@ github:
         - docker/login-action
         - docker/setup-buildx-action
         - getplumber/plumber
+        - millionco/react-doctor
         - pnpm/action-setup
         - softprops/action-gh-release
 
