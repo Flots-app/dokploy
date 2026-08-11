@@ -6,8 +6,7 @@
 
 ## IN PROGRESS
 
-- [ ] Run the complete repository test/build gates, publish the managed-key
-  update to draft PR #13, and verify the final GitHub checks.
+- None.
 
 ## TO VERIFY
 
@@ -122,3 +121,9 @@
   consistency. The non-real local suite passes 753/754 tests under Node 26;
   only the unrelated pre-existing Compose cancellation test exceeds its local
   5-second timeout and remains delegated to the Node 24/Linux CI gate.
+- [x] Rebased the complete encryption branch onto current `canary`, published
+  managed-key commit `ccacd0a34`, and updated draft PR #13 with the ownership,
+  recovery, threat-boundary, cross-source, and validation details.
+- [x] Passed every required GitHub check after publication under Node 24/Linux:
+  Plumber compliance, quality, typecheck, complete test suite, and production
+  build.
