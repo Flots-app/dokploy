@@ -1,6 +1,7 @@
-import { Database, FolderUp, Loader2, Trash2 } from "lucide-react";
+import { Database, FolderUp, Loader2, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { DialogAction } from "@/components/shared/dialog-action";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -58,9 +59,24 @@ export const ShowDestinations = () => {
 												>
 													<div className="flex items-center justify-between p-3.5 rounded-lg bg-background border  w-full">
 														<div className="flex flex-col gap-1">
-															<span className="text-sm">
-																{index + 1}. {destination.name}
-															</span>
+															<div className="flex flex-wrap items-center gap-2">
+																<span className="text-sm">
+																	{index + 1}. {destination.name}
+																</span>
+																{destination.encryptionEnabled ? (
+																	<Badge variant="green">
+																		<ShieldCheck data-icon="inline-start" />
+																		{destination.encryptionKeyManagement ===
+																		"customer"
+																			? "Customer-managed key"
+																			: "Dokploy-managed key"}
+																	</Badge>
+																) : (
+																	<Badge variant="blank">
+																		Dokploy encryption off
+																	</Badge>
+																)}
+															</div>
 															<span className="text-xs text-muted-foreground">
 																Created at:{" "}
 																{new Date(

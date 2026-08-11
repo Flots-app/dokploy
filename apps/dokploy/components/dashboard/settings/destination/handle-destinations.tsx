@@ -37,6 +37,7 @@ import {
 	FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
 	Select,
 	SelectContent,
@@ -72,6 +73,7 @@ const addDestination = z
 			)
 			.optional(),
 		encryptionEnabled: z.boolean(),
+		encryptionKeyManagement: z.enum(["dokploy", "customer"]),
 		encryptionPassword: z.string().optional(),
 		encryptionPassword2: z.string().optional(),
 		encryptionFilenameMode: z.enum(["standard", "obfuscate", "off"]),
@@ -81,6 +83,7 @@ const addDestination = z
 	.superRefine((destination, ctx) => {
 		if (
 			destination.encryptionEnabled &&
+			destination.encryptionKeyManagement === "customer" &&
 			!destination.encryptionPassword &&
 			!destination.encryptionPasswordConfigured
 		) {
@@ -179,6 +182,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 			endpoint: "",
 			additionalFlags: [],
 			encryptionEnabled: false,
+			encryptionKeyManagement: "dokploy",
 			encryptionPassword: "",
 			encryptionPassword2: "",
 			encryptionFilenameMode: "standard",
@@ -193,6 +197,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 		name: "additionalFlags",
 	});
 	const encryptionEnabled = form.watch("encryptionEnabled");
+	const encryptionKeyManagement = form.watch("encryptionKeyManagement");
 	const encryptionFilenameMode = form.watch("encryptionFilenameMode");
 	const storageLocked = Boolean(
 		destinationId && destination?.encryptionEnabled,
@@ -211,6 +216,10 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 				additionalFlags:
 					destination.additionalFlags?.map((f) => ({ value: f })) ?? [],
 				encryptionEnabled: destination.encryptionEnabled,
+				encryptionKeyManagement:
+					destination.encryptionKeyManagement === "customer"
+						? "customer"
+						: "dokploy",
 				encryptionPassword: "",
 				encryptionPassword2: "",
 				encryptionFilenameMode: ["standard", "obfuscate", "off"].includes(
@@ -250,8 +259,19 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 					...destination,
 					serverId: data.serverId,
 					encryptionEnabled: data.encryptionEnabled,
-					encryptionPassword: data.encryptionPassword,
-					encryptionPassword2: data.encryptionPassword2,
+					encryptionKeyManagement: data.encryptionEnabled
+						? data.encryptionKeyManagement
+						: "dokploy",
+					encryptionPassword:
+						data.encryptionEnabled &&
+						data.encryptionKeyManagement === "customer"
+							? data.encryptionPassword
+							: undefined,
+					encryptionPassword2:
+						data.encryptionEnabled &&
+						data.encryptionKeyManagement === "customer"
+							? data.encryptionPassword2
+							: undefined,
 					encryptionFilenameMode: data.encryptionFilenameMode,
 					encryptionDirectoryNames:
 						data.encryptionFilenameMode === "off"
@@ -327,12 +347,22 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 			additionalFlags:
 				form.getValues("additionalFlags")?.map((f) => f.value) ?? [],
 			encryptionEnabled: destinationId ? false : encryptionEnabled,
+			encryptionKeyManagement:
+				destinationId || !encryptionEnabled
+					? "dokploy"
+					: form.getValues("encryptionKeyManagement"),
 			encryptionPassword: destinationId
 				? undefined
-				: form.getValues("encryptionPassword"),
+				: encryptionEnabled &&
+						form.getValues("encryptionKeyManagement") === "customer"
+					? form.getValues("encryptionPassword")
+					: undefined,
 			encryptionPassword2: destinationId
 				? undefined
-				: form.getValues("encryptionPassword2"),
+				: encryptionEnabled &&
+						form.getValues("encryptionKeyManagement") === "customer"
+					? form.getValues("encryptionPassword2")
+					: undefined,
 			encryptionFilenameMode: form.getValues("encryptionFilenameMode"),
 			encryptionDirectoryNames:
 				form.getValues("encryptionFilenameMode") === "off"
@@ -555,7 +585,7 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 							{destinationId ? (
 								<div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
 									{destination?.encryptionEnabled
-										? "Encryption and storage-location settings are immutable so existing backups cannot be orphaned. S3 credentials and the display name can still be rotated."
+										? `Encryption uses ${destination.encryptionKeyManagement === "customer" ? "customer-managed" : "Dokploy-managed"} keys. Key-management, encryption, and storage-location settings are immutable so existing backups cannot be orphaned. S3 credentials and the display name can still be rotated.`
 										: "This destination remains plaintext. Create a new encrypted destination to keep legacy and encrypted backup namespaces separate."}
 								</div>
 							) : (
@@ -585,84 +615,170 @@ export const HandleDestinations = ({ destinationId }: Props) => {
 										<div className="space-y-4">
 											<FormField
 												control={form.control}
-												name="encryptionPassword"
+												name="encryptionKeyManagement"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel>Encryption password</FormLabel>
-														<div className="flex gap-2">
-															<FormControl>
-																<Input
-																	type="password"
-																	autoComplete="new-password"
-																	placeholder="Enter or generate a strong password"
-																	{...field}
-																/>
-															</FormControl>
-															<Button
-																aria-label="Generate primary encryption password"
-																type="button"
-																variant="outline"
-																size="icon"
-																onClick={() => {
-																	form.setValue(
-																		"encryptionPassword",
-																		generateEncryptionPassword(),
-																		{ shouldValidate: true },
-																	);
+														<FormLabel>Key management</FormLabel>
+														<FormControl>
+															<RadioGroup
+																value={field.value}
+																onValueChange={(value) => {
+																	field.onChange(value);
+																	if (value === "dokploy") {
+																		form.setValue("encryptionPassword", "");
+																		form.setValue("encryptionPassword2", "");
+																	}
 																}}
+																className="grid gap-3 sm:grid-cols-2"
 															>
-																<RefreshCw className="size-4" />
-															</Button>
-														</div>
+																<label
+																	htmlFor="key-management-dokploy"
+																	className="flex cursor-pointer items-start gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary has-data-[state=checked]:bg-primary/5"
+																>
+																	<RadioGroupItem
+																		id="key-management-dokploy"
+																		value="dokploy"
+																		className="mt-0.5"
+																	/>
+																	<span className="space-y-1">
+																		<span className="block text-sm font-medium">
+																			Dokploy-managed
+																		</span>
+																		<span className="block text-xs text-muted-foreground">
+																			Generated server-side and used
+																			automatically.
+																		</span>
+																	</span>
+																</label>
+																<label
+																	htmlFor="key-management-customer"
+																	className="flex cursor-pointer items-start gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary has-data-[state=checked]:bg-primary/5"
+																>
+																	<RadioGroupItem
+																		id="key-management-customer"
+																		value="customer"
+																		className="mt-0.5"
+																	/>
+																	<span className="space-y-1">
+																		<span className="block text-sm font-medium">
+																			Customer-managed
+																		</span>
+																		<span className="block text-xs text-muted-foreground">
+																			You supply and retain the recovery
+																			secrets.
+																		</span>
+																	</span>
+																</label>
+															</RadioGroup>
+														</FormControl>
 														<FormDescription>
-															<KeyRound className="mr-1 inline size-3" />
-															Save it externally. It cannot be recovered from
-															the UI or changed later.
+															The selection cannot be changed after creation.
 														</FormDescription>
 														<FormMessage />
 													</FormItem>
 												)}
 											/>
 
-											<FormField
-												control={form.control}
-												name="encryptionPassword2"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel>Second password (recommended)</FormLabel>
-														<div className="flex gap-2">
-															<FormControl>
-																<Input
-																	type="password"
-																	autoComplete="new-password"
-																	placeholder="Use a different password"
-																	{...field}
-																/>
-															</FormControl>
-															<Button
-																aria-label="Generate second encryption password"
-																type="button"
-																variant="outline"
-																size="icon"
-																onClick={() => {
-																	form.setValue(
-																		"encryptionPassword2",
-																		generateEncryptionPassword(),
-																		{ shouldValidate: true },
-																	);
-																}}
-															>
-																<RefreshCw className="size-4" />
-															</Button>
-														</div>
-														<FormDescription>
-															rclone uses this as an additional secret when
-															deriving encryption keys.
-														</FormDescription>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
+											{encryptionKeyManagement === "dokploy" ? (
+												<div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+													Dokploy generates two independent encryption secrets
+													on the server and stores them encrypted for scheduled
+													backup and restore operations. Preserve your Dokploy
+													database backup and its encryption key for disaster
+													recovery.
+												</div>
+											) : (
+												<>
+													<FormField
+														control={form.control}
+														name="encryptionPassword"
+														render={({ field }) => (
+															<FormItem>
+																<FormLabel>Encryption password</FormLabel>
+																<div className="flex gap-2">
+																	<FormControl>
+																		<Input
+																			type="password"
+																			autoComplete="new-password"
+																			placeholder="Enter or generate a strong password"
+																			{...field}
+																		/>
+																	</FormControl>
+																	<Button
+																		aria-label="Generate primary encryption password"
+																		type="button"
+																		variant="outline"
+																		size="icon"
+																		onClick={() => {
+																			form.setValue(
+																				"encryptionPassword",
+																				generateEncryptionPassword(),
+																				{ shouldValidate: true },
+																			);
+																		}}
+																	>
+																		<RefreshCw className="size-4" />
+																	</Button>
+																</div>
+																<FormDescription>
+																	<KeyRound className="mr-1 inline size-3" />
+																	Save it externally. It cannot be recovered
+																	from the UI or changed later.
+																</FormDescription>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+
+													<FormField
+														control={form.control}
+														name="encryptionPassword2"
+														render={({ field }) => (
+															<FormItem>
+																<FormLabel>
+																	Second password (recommended)
+																</FormLabel>
+																<div className="flex gap-2">
+																	<FormControl>
+																		<Input
+																			type="password"
+																			autoComplete="new-password"
+																			placeholder="Use a different password"
+																			{...field}
+																		/>
+																	</FormControl>
+																	<Button
+																		aria-label="Generate second encryption password"
+																		type="button"
+																		variant="outline"
+																		size="icon"
+																		onClick={() => {
+																			form.setValue(
+																				"encryptionPassword2",
+																				generateEncryptionPassword(),
+																				{ shouldValidate: true },
+																			);
+																		}}
+																	>
+																		<RefreshCw className="size-4" />
+																	</Button>
+																</div>
+																<FormDescription>
+																	rclone uses this as an additional secret when
+																	deriving encryption keys.
+																</FormDescription>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<p className="text-xs text-muted-foreground">
+														Dokploy stores an encrypted operational copy so
+														scheduled jobs can use the key. You remain
+														responsible for retaining the original recovery
+														secrets.
+													</p>
+												</>
+											)}
 
 											<FormField
 												control={form.control}

@@ -13,6 +13,7 @@ import {
 	redactDestinationEncryptionSecrets,
 	redactRcloneCredentials,
 	removeDestinationById,
+	resolveDestinationEncryptionKeyMaterial,
 	updateDestinationById,
 } from "@dokploy/server";
 import { db } from "@dokploy/server/db";
@@ -50,6 +51,34 @@ const obscureRclonePassword = async (password: string, serverId?: string) => {
 	return obscured;
 };
 
+const prepareDestinationEncryptionSecrets = async (
+	input: {
+		encryptionEnabled: boolean;
+		encryptionKeyManagement: "dokploy" | "customer";
+		encryptionPassword?: string;
+		encryptionPassword2?: string;
+	},
+	serverId?: string,
+) => {
+	const keyMaterial = resolveDestinationEncryptionKeyMaterial(input);
+	if (!keyMaterial) {
+		return {
+			encryptionPassword: undefined,
+			encryptionPassword2: undefined,
+		};
+	}
+
+	return {
+		encryptionPassword: await obscureRclonePassword(
+			keyMaterial.password,
+			serverId,
+		),
+		encryptionPassword2: keyMaterial.password2
+			? await obscureRclonePassword(keyMaterial.password2, serverId)
+			: undefined,
+	};
+};
+
 export const destinationRouter = createTRPCRouter({
 	create: withPermission("destination", "create")
 		.input(apiCreateDestination)
@@ -59,22 +88,17 @@ export const destinationRouter = createTRPCRouter({
 				if (IS_CLOUD && input.encryptionEnabled && !serverId) {
 					throw new Error("A server is required to configure encryption");
 				}
-				const encryptionPassword = input.encryptionEnabled
-					? await obscureRclonePassword(
-							input.encryptionPassword || "",
-							serverId,
-						)
-					: undefined;
-				const encryptionPassword2 =
-					input.encryptionEnabled && input.encryptionPassword2
-						? await obscureRclonePassword(input.encryptionPassword2, serverId)
-						: undefined;
+				const { encryptionPassword, encryptionPassword2 } =
+					await prepareDestinationEncryptionSecrets(input, serverId);
 				const result = await createDestination(
 					{
 						...input,
 						serverId,
 						encryptionPassword,
 						encryptionPassword2,
+						encryptionKeyManagement: input.encryptionEnabled
+							? input.encryptionKeyManagement
+							: "dokploy",
 						encryptionDirectoryNames:
 							input.encryptionFilenameMode === "off"
 								? false
@@ -108,19 +132,13 @@ export const destinationRouter = createTRPCRouter({
 						message: "Server not found",
 					});
 				}
+				const { encryptionPassword, encryptionPassword2 } =
+					await prepareDestinationEncryptionSecrets(input, serverId);
 				const destination = {
 					...input,
 					destinationId: "connection-test",
-					encryptionPassword: input.encryptionEnabled
-						? await obscureRclonePassword(
-								input.encryptionPassword || "",
-								serverId,
-							)
-						: null,
-					encryptionPassword2:
-						input.encryptionEnabled && input.encryptionPassword2
-							? await obscureRclonePassword(input.encryptionPassword2, serverId)
-							: null,
+					encryptionPassword: encryptionPassword ?? null,
+					encryptionPassword2: encryptionPassword2 ?? null,
 				};
 				const rcloneCommand = buildRcloneCommand(destination, [
 					"ls",

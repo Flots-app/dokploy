@@ -6,7 +6,8 @@
 
 ## IN PROGRESS
 
-- None.
+- [ ] Run the complete repository test/build gates, publish the managed-key
+  update to draft PR #13, and verify the final GitHub checks.
 
 ## TO VERIFY
 
@@ -91,3 +92,33 @@
 - [x] Published hardening commit `207811d9a` and passed every required check on
   draft PR #13 under Node 24/Linux: Plumber compliance, quality, typecheck,
   complete test suite, and production build.
+- [x] Cross-checked the requested key-ownership model against Azure's
+  platform-managed and customer-managed key responsibilities, then adapted the
+  concept to rclone's client-side crypt model without claiming external-vault
+  or online key-revocation semantics.
+- [x] Added an immutable `encryptionKeyManagement` contract with
+  `dokploy`/`customer` modes. New destinations default to Dokploy-managed keys;
+  customer-managed mode requires user-provided recovery secrets.
+- [x] Moved managed-key generation entirely to the server using two independent
+  256-bit CSPRNG values. Managed mode rejects client-supplied key material, and
+  disabled encryption rejects unused secrets.
+- [x] Wrapped both rclone-obscured passwords in Dokploy's AES-256-GCM
+  `encryptedText` storage while preserving API redaction and legacy plaintext
+  read compatibility.
+- [x] Added database constraints for valid key-management modes and the required
+  secondary secret on Dokploy-managed encrypted destinations; migration
+  generation reports no schema drift.
+- [x] Added an accessible key-management selector, explicit recovery ownership
+  guidance, immutable-mode messaging, and visible destination-list badges.
+- [x] Expanded focused coverage to 48 passing tests, including API ownership
+  rules, server-side key entropy/independence, encrypted-at-rest persistence,
+  secret redaction, command safety, and both disabled/enabled boundaries.
+- [x] Passed a real rclone v1.75.0/MinIO integration for Dokploy-managed and
+  customer-managed namespaces: exact upload/restore hashes, distinct encrypted
+  physical names/content, isolation between key sets, and exit-code 9 failures
+  for a wrong primary key or missing managed secondary key.
+- [x] Passed Biome across all 907 files, all four workspace typechecks, the
+  server production bundle, the full Next.js production build, and migration
+  consistency. The non-real local suite passes 753/754 tests under Node 26;
+  only the unrelated pre-existing Compose cancellation test exceeds its local
+  5-second timeout and remains delegated to the Node 24/Linux CI gate.

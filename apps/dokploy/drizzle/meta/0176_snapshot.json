@@ -3061,6 +3061,13 @@
           "notNull": true,
           "default": false
         },
+        "encryptionKeyManagement": {
+          "name": "encryptionKeyManagement",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'dokploy'"
+        },
         "encryptionPassword": {
           "name": "encryptionPassword",
           "type": "text",
@@ -3124,6 +3131,14 @@
         "destination_encryption_password_required": {
           "name": "destination_encryption_password_required",
           "value": "NOT \"destination\".\"encryptionEnabled\" OR \"destination\".\"encryptionPassword\" IS NOT NULL"
+        },
+        "destination_encryption_key_management": {
+          "name": "destination_encryption_key_management",
+          "value": "\"destination\".\"encryptionKeyManagement\" IN ('dokploy', 'customer')"
+        },
+        "destination_managed_encryption_password2_required": {
+          "name": "destination_managed_encryption_password2_required",
+          "value": "NOT \"destination\".\"encryptionEnabled\" OR \"destination\".\"encryptionKeyManagement\" <> 'dokploy' OR \"destination\".\"encryptionPassword2\" IS NOT NULL"
         },
         "destination_encryption_filename_mode": {
           "name": "destination_encryption_filename_mode",

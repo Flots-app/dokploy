@@ -1,11 +1,14 @@
 import {
 	apiCreateDestination,
 	apiUpdateDestination,
+	destinations,
 } from "@dokploy/server/db/schema/destination";
 import {
 	assertEncryptedDestinationStorageUnchanged,
 	type Destination,
+	generateManagedDestinationEncryptionKeyMaterial,
 	redactDestinationEncryptionSecrets,
+	resolveDestinationEncryptionKeyMaterial,
 } from "@dokploy/server/services/destination";
 import { describe, expect, it } from "vitest";
 
@@ -21,10 +24,11 @@ const destination = {
 };
 
 describe("destination encryption validation", () => {
-	it("requires a password whenever encryption is enabled", () => {
+	it("requires a password for customer-managed encryption", () => {
 		const result = apiCreateDestination.safeParse({
 			...destination,
 			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
 			encryptionFilenameMode: "standard",
 			encryptionDirectoryNames: true,
 		});
@@ -36,6 +40,7 @@ describe("destination encryption validation", () => {
 		const result = apiCreateDestination.safeParse({
 			...destination,
 			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
 			encryptionPassword: "same-password",
 			encryptionPassword2: "same-password",
 			encryptionFilenameMode: "standard",
@@ -45,10 +50,11 @@ describe("destination encryption validation", () => {
 		expect(result.success).toBe(false);
 	});
 
-	it("accepts a complete encrypted destination", () => {
+	it("accepts a complete customer-managed encrypted destination", () => {
 		const result = apiCreateDestination.safeParse({
 			...destination,
 			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
 			encryptionPassword: "primary-password",
 			encryptionPassword2: "second-password",
 			encryptionFilenameMode: "standard",
@@ -56,6 +62,42 @@ describe("destination encryption validation", () => {
 		});
 
 		expect(result.success).toBe(true);
+	});
+
+	it("defaults to Dokploy-managed keys without accepting client secrets", () => {
+		const managed = apiCreateDestination.safeParse({
+			...destination,
+			encryptionEnabled: true,
+			encryptionFilenameMode: "standard",
+			encryptionDirectoryNames: true,
+		});
+		const injectedSecret = apiCreateDestination.safeParse({
+			...destination,
+			encryptionEnabled: true,
+			encryptionKeyManagement: "dokploy",
+			encryptionPassword: "client-controlled-password",
+			encryptionFilenameMode: "standard",
+			encryptionDirectoryNames: true,
+		});
+
+		expect(managed.success).toBe(true);
+		if (managed.success) {
+			expect(managed.data.encryptionKeyManagement).toBe("dokploy");
+		}
+		expect(injectedSecret.success).toBe(false);
+	});
+
+	it("rejects unused secrets when encryption is disabled", () => {
+		const result = apiCreateDestination.safeParse({
+			...destination,
+			encryptionEnabled: false,
+			encryptionKeyManagement: "customer",
+			encryptionPassword: "must-not-cross-the-api",
+			encryptionFilenameMode: "standard",
+			encryptionDirectoryNames: true,
+		});
+
+		expect(result.success).toBe(false);
 	});
 
 	it("rejects line-protocol characters in either password", () => {
@@ -69,6 +111,7 @@ describe("destination encryption validation", () => {
 			const result = apiCreateDestination.safeParse({
 				...destination,
 				encryptionEnabled: true,
+				encryptionKeyManagement: "customer",
 				encryptionFilenameMode: "standard",
 				encryptionDirectoryNames: true,
 				...passwordOverrides,
@@ -82,6 +125,7 @@ describe("destination encryption validation", () => {
 		const invalid = apiCreateDestination.safeParse({
 			...destination,
 			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
 			encryptionPassword: "primary-password",
 			encryptionFilenameMode: "off",
 			encryptionDirectoryNames: true,
@@ -89,6 +133,7 @@ describe("destination encryption validation", () => {
 		const valid = apiCreateDestination.safeParse({
 			...destination,
 			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
 			encryptionPassword: "pässword with spaces !",
 			encryptionFilenameMode: "off",
 			encryptionDirectoryNames: false,
@@ -103,6 +148,7 @@ describe("destination encryption validation", () => {
 			...destination,
 			additionalFlags: ["--CRYPT-NO-DATA-ENCRYPTION=true"],
 			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
 			encryptionPassword: "primary-password",
 			encryptionFilenameMode: "standard",
 			encryptionDirectoryNames: true,
@@ -129,6 +175,7 @@ describe("destination encryption validation", () => {
 			destinationId: "destination-1",
 			provider: "AWS",
 			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
 			encryptionPassword: "obscured-primary",
 			encryptionPassword2: "obscured-secondary",
 			encryptionFilenameMode: "standard",
@@ -140,6 +187,79 @@ describe("destination encryption validation", () => {
 
 		expect(result.encryptionPassword).toBeNull();
 		expect(result.encryptionPassword2).toBeNull();
+	});
+
+	it("generates independent server-managed key material", () => {
+		const first = generateManagedDestinationEncryptionKeyMaterial();
+		const second = generateManagedDestinationEncryptionKeyMaterial();
+
+		for (const value of [
+			first.password,
+			first.password2,
+			second.password,
+			second.password2,
+		]) {
+			expect(value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		}
+		expect(new Set(Object.values(first)).size).toBe(2);
+		expect(first).not.toEqual(second);
+	});
+
+	it("encrypts persisted rclone secrets with the Dokploy database key", () => {
+		const rcloneSecret = "rclone-obscured-secret";
+		const driverValue =
+			destinations.encryptionPassword.mapToDriverValue(rcloneSecret);
+
+		expect(driverValue).not.toBe(rcloneSecret);
+		expect(driverValue).toMatch(/^enc:v1:/);
+		expect(
+			destinations.encryptionPassword.mapFromDriverValue(driverValue),
+		).toBe(rcloneSecret);
+	});
+
+	it("resolves managed and customer key ownership without mixing inputs", () => {
+		const managed = resolveDestinationEncryptionKeyMaterial({
+			encryptionEnabled: true,
+			encryptionKeyManagement: "dokploy",
+		});
+		const customer = resolveDestinationEncryptionKeyMaterial({
+			encryptionEnabled: true,
+			encryptionKeyManagement: "customer",
+			encryptionPassword: "owned-by-customer",
+			encryptionPassword2: "customer-salt",
+		});
+		const disabled = resolveDestinationEncryptionKeyMaterial({
+			encryptionEnabled: false,
+			encryptionKeyManagement: "dokploy",
+		});
+
+		expect(managed?.password).toBeTruthy();
+		expect(managed?.password2).toBeTruthy();
+		expect(customer).toEqual({
+			password: "owned-by-customer",
+			password2: "customer-salt",
+		});
+		expect(disabled).toBeUndefined();
+		expect(() =>
+			resolveDestinationEncryptionKeyMaterial({
+				encryptionEnabled: true,
+				encryptionKeyManagement: "customer",
+			}),
+		).toThrow("required for customer-managed keys");
+		expect(() =>
+			resolveDestinationEncryptionKeyMaterial({
+				encryptionEnabled: true,
+				encryptionKeyManagement: "dokploy",
+				encryptionPassword: "injected",
+			}),
+		).toThrow("must not be supplied for Dokploy-managed keys");
+		expect(() =>
+			resolveDestinationEncryptionKeyMaterial({
+				encryptionEnabled: false,
+				encryptionKeyManagement: "customer",
+				encryptionPassword: "unused",
+			}),
+		).toThrow("require encryption to be enabled");
 	});
 
 	it("allows credential rotation but freezes encrypted storage identity", () => {

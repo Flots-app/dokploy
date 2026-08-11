@@ -22,6 +22,7 @@ const destination = (overrides: Partial<Destination> = {}): Destination => ({
 	endpoint: "https://s3.example.com",
 	additionalFlags: ["--s3-sign-accept-encoding=false"],
 	encryptionEnabled: false,
+	encryptionKeyManagement: "dokploy",
 	encryptionPassword: null,
 	encryptionPassword2: null,
 	encryptionFilenameMode: "standard",

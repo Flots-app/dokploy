@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { db } from "@dokploy/server/db";
 import {
 	type apiCreateDestination,
@@ -8,6 +9,58 @@ import { and, eq } from "drizzle-orm";
 import type { z } from "zod";
 
 export type Destination = typeof destinations.$inferSelect;
+
+export type DestinationEncryptionKeyManagement = "dokploy" | "customer";
+
+export type DestinationEncryptionKeyMaterial = {
+	password: string;
+	password2?: string;
+};
+
+/**
+ * Generate independent rclone key inputs on the Dokploy server. These raw
+ * values are only held long enough to pass them to `rclone obscure` over
+ * stdin; API clients never receive them.
+ */
+export const generateManagedDestinationEncryptionKeyMaterial =
+	(): Required<DestinationEncryptionKeyMaterial> => ({
+		password: randomBytes(32).toString("base64url"),
+		password2: randomBytes(32).toString("base64url"),
+	});
+
+export const resolveDestinationEncryptionKeyMaterial = (input: {
+	encryptionEnabled: boolean;
+	encryptionKeyManagement: DestinationEncryptionKeyManagement;
+	encryptionPassword?: string;
+	encryptionPassword2?: string;
+}): DestinationEncryptionKeyMaterial | undefined => {
+	if (!input.encryptionEnabled) {
+		if (input.encryptionPassword || input.encryptionPassword2) {
+			throw new Error("Encryption passwords require encryption to be enabled");
+		}
+		return undefined;
+	}
+
+	if (input.encryptionKeyManagement === "dokploy") {
+		if (input.encryptionPassword || input.encryptionPassword2) {
+			throw new Error(
+				"Encryption passwords must not be supplied for Dokploy-managed keys",
+			);
+		}
+		return generateManagedDestinationEncryptionKeyMaterial();
+	}
+
+	if (!input.encryptionPassword) {
+		throw new Error(
+			"Encryption password is required for customer-managed keys",
+		);
+	}
+
+	return {
+		password: input.encryptionPassword,
+		password2: input.encryptionPassword2 || undefined,
+	};
+};
 
 export const redactDestinationEncryptionSecrets = <T extends Destination>(
 	destination: T,
