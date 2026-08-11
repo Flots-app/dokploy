@@ -2,16 +2,16 @@
 
 ## TODO
 
-- [ ] Publish the backup-directory-size fix, pass every required CI check,
-  release it, and verify the cumulative directory size against production R2.
+- [ ] Release `v0.29.14-flots.5`, deploy it, and verify the cumulative directory
+  size plus restore-source prefixes against production R2.
 - [ ] Run the external-infrastructure smoke test recorded under **TO VERIFY**
   when a disposable remote Dokploy server and production S3 credentials are
   available.
 
 ## IN PROGRESS
 
-- Publish the backup-size and restore-source UX branch, then pass every required
-  GitHub check under the repository's Node 24 runtime.
+- Publish and validate the `v0.29.14-flots.5` release, then deploy it to the
+  production Dokploy instance.
 
 ## TO VERIFY
 
@@ -31,6 +31,10 @@
 
 ## DONE
 
+- [x] Published and merged
+  [Flots-app/dokploy#18](https://github.com/Flots-app/dokploy/pull/18) into
+  `canary`; Plumber compliance, quality, typecheck, complete tests, production
+  build, and React Doctor all passed under Node 24/Linux.
 - [x] Made backup listings recurse once through rclone and aggregate descendant
   object bytes into each immediate directory, while keeping direct files and
   the existing 100-entry/search behavior.
