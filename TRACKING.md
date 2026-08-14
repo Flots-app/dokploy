@@ -21,8 +21,8 @@
   Server.
 - [x] Add schema/migration, authorization, orchestration, command-generation and
   UI tests; run the repository quality, typecheck and focused/complete tests.
-- [ ] Publish a draft pull request against `canary` with requirement-by-
-  requirement evidence.
+- [x] Publish a draft pull request against `canary` with requirement-by-
+  requirement evidence: [Flots-app/dokploy#22](https://github.com/Flots-app/dokploy/pull/22).
 
 ## Current findings
 
@@ -69,7 +69,7 @@
   and the complete non-real suite (85 files, 797 tests). The local real test
   file requires the external `nixpacks` binary; its Dockerfile prerequisite
   case passes and CI remains responsible for the provisioned real environment.
-- [ ] Commit, push and open the draft PR.
+- [x] Commit, push and open the draft PR.
 
 ---
 
