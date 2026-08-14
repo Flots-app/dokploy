@@ -12,7 +12,7 @@ import { createEnvFileCommand } from "./utils";
 
 export const getDockerCommand = (
 	application: ApplicationNested,
-	options: { image?: string; deploymentId?: string } = {},
+	options: { image?: string; deploymentId?: string; platform?: string } = {},
 ) => {
 	const {
 		appName,
@@ -37,6 +37,7 @@ export const getDockerCommand = (
 
 		const commandArgs = [
 			"build",
+			...(options.platform ? ["--platform", quote([options.platform])] : []),
 			"-t",
 			quote([image]),
 			"-f",

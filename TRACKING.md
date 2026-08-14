@@ -23,8 +23,10 @@
   UI tests; run the repository quality, typecheck and focused/complete tests.
 - [x] Publish a draft pull request against `canary` with requirement-by-
   requirement evidence: [Flots-app/dokploy#22](https://github.com/Flots-app/dokploy/pull/22).
-- [ ] Publish and deploy `v0.29.14-flots.6` from the merged `canary`, then
+- [x] Publish and deploy `v0.29.14-flots.6` from the merged `canary`, then
   verify the production migration and service health.
+- [ ] Publish the cross-platform Application Build Server follow-up and verify
+  an arm64 Build Server can activate an amd64 production release.
 
 ## Current findings
 
@@ -76,10 +78,21 @@
   797-test suite still passes after the concurrency refactor.
 - [x] Merge [Flots-app/dokploy#22](https://github.com/Flots-app/dokploy/pull/22)
   into `canary` at `785261e9c48f2960b6070f02a9386f0693ba8f9f`.
-- [ ] Publish the attested amd64/arm64 `v0.29.14-flots.6` image and promote its
+- [x] Publish the attested amd64/arm64 `v0.29.14-flots.6` image and promote its
   verified digest to `latest`.
-- [ ] Deploy `v0.29.14-flots.6` to production and verify migrations, Dokploy,
+- [x] Deploy `v0.29.14-flots.6` to production and verify migrations, Dokploy,
   PostgreSQL, Redis, Traefik, and the existing runtime services.
+- [x] Restore `flots.app` and `www.flots.app` to HTTP 200 with the last local
+  amd64 image after the legacy Application Build Server path left its Swarm
+  service without a runnable image; keep that recovery release active while
+  the cross-platform fix is built and published.
+- [x] Replace the Application architecture equality rejection with an explicit
+  Docker `--platform` target derived from the Deploy Server, preserving legacy
+  builds without a target and documenting the cross-platform builder
+  requirement.
+- [ ] Publish the follow-up release, deploy the current website commit through
+  the arm64 Mac mini, and prove the pushed image and active Swarm task are
+  linux/amd64 while continuous HTTP probes remain successful.
 - [x] Commit, push and open the draft PR.
 
 ---

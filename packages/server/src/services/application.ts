@@ -487,13 +487,8 @@ const deployDockerfileApplicationWithBuildServer = async (
 		await appendApplicationDeploymentLog(
 			buildServerId,
 			deployment.logPath,
-			`\nBuild Server Docker platform: ${buildPlatform}\nDeploy Server Docker platform: ${runtimePlatform}\n`,
+			`\nBuild Server Docker platform: ${buildPlatform}\nDeploy Server Docker platform: ${runtimePlatform}\nBuild target platform: ${runtimePlatform}\n`,
 		);
-		if (buildPlatform !== runtimePlatform) {
-			throw new Error(
-				`Build Server platform ${buildPlatform} does not match Deploy Server platform ${runtimePlatform}`,
-			);
-		}
 
 		if (options.cloneRepository) {
 			await runApplicationBuildStage(
@@ -537,6 +532,7 @@ const deployDockerfileApplicationWithBuildServer = async (
 			`set -e; ${getDockerCommand(buildApplication, {
 				image: localImage,
 				deploymentId: deployment.deploymentId,
+				platform: runtimePlatform,
 			})}\n${getApplicationBuildPushCommand(localImage, runtimeImage)}`,
 			buildCancellationPath,
 		);
