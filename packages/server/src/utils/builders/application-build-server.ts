@@ -295,16 +295,30 @@ export const getWaitApplicationServiceCommand = (
 service_name=${service}
 expected_image=${image}
 deadline=$(( $(date +%s) + ${readinessTimeoutSeconds} ))
+matches_image() {
+  actual="$1"
+  expected="$2"
+  [ "$actual" = "$expected" ] || [ "\${actual%%@*}" = "\${expected%%@*}" ]
+}
+running_tasks_for_image() {
+  expected="$1"
+  count=0
+  while IFS='|' read -r task_image task_state; do
+    if matches_image "$task_image" "$expected"; then
+      case "$task_state" in Running*) count=$((count + 1));; esac
+    fi
+  done <<EOF
+$(docker service ps "$service_name" --no-trunc --filter desired-state=running --format '{{.Image}}|{{.CurrentState}}' 2>/dev/null || true)
+EOF
+  printf '%s' "$count"
+}
 check_release() {
   update_state="$(docker service inspect --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}' "$service_name" 2>/dev/null || true)"
   case "$update_state" in paused|rollback_started|rollback_paused|rollback_completed) echo "Swarm activation failed with state $update_state" >&2; return 2;; esac
-  service_id="$(docker service inspect --format '{{.ID}}' "$service_name" 2>/dev/null || true)"
-  [ -n "$service_id" ] || return 1
-  replicas="$(docker service ls --filter "id=$service_id" --format '{{.Replicas}}' | head -n 1)"
-  running="\${replicas%/*}"
-  desired="\${replicas#*/}"
+  desired="$(docker service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' "$service_name" 2>/dev/null || true)"
+  running="$(running_tasks_for_image "$expected_image")"
   actual_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$service_name" 2>/dev/null || true)"
-  case "$actual_image" in "$expected_image"|"$expected_image"@*) ;; *) return 1;; esac
+  matches_image "$actual_image" "$expected_image" || return 1
   [ -n "$running" ] && [ "$running" = "$desired" ] && [ "$desired" -gt 0 ]
 }
 while true; do
@@ -349,6 +363,18 @@ matches_image() {
   expected="$2"
   [ "$actual" = "$expected" ] || [ "\${actual%%@*}" = "\${expected%%@*}" ]
 }
+running_tasks_for_image() {
+  expected="$1"
+  count=0
+  while IFS='|' read -r task_image task_state; do
+    if matches_image "$task_image" "$expected"; then
+      case "$task_state" in Running*) count=$((count + 1));; esac
+    fi
+  done <<EOF
+$(docker service ps "$service_name" --no-trunc --filter desired-state=running --format '{{.Image}}|{{.CurrentState}}' 2>/dev/null || true)
+EOF
+  printf '%s' "$count"
+}
 current_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$service_name" 2>/dev/null || true)"
 [ -n "$current_image" ] || exit 0
 if ! matches_image "$current_image" "$candidate_image"; then
@@ -363,10 +389,8 @@ case "$update_state" in rollback_started) ;; *) docker service update --rollback
 deadline=$(( $(date +%s) + ${readinessTimeoutSeconds} ))
 while true; do
   current_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$service_name" 2>/dev/null || true)"
-  service_id="$(docker service inspect --format '{{.ID}}' "$service_name" 2>/dev/null || true)"
-  replicas="$(docker service ls --filter "id=$service_id" --format '{{.Replicas}}' | head -n 1)"
-  running="\${replicas%/*}"
-  desired="\${replicas#*/}"
+  desired="$(docker service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' "$service_name" 2>/dev/null || true)"
+  running="$(running_tasks_for_image "$previous_image")"
   if matches_image "$current_image" "$previous_image" && [ -n "$running" ] && [ "$running" = "$desired" ] && [ "$desired" -gt 0 ]; then
     exit 0
   fi

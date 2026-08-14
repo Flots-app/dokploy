@@ -200,9 +200,10 @@ describe("Application Build Server commands", () => {
 		);
 		expect(wait).toContain("rollback_started");
 		expect(wait).toContain("Candidate release became unhealthy");
-		expect(wait).toContain("docker service inspect --format '{{.ID}}'");
-		expect(wait).toContain('docker service ls --filter "id=$service_id"');
-		expect(wait).not.toContain('docker service ls --filter "name=^');
+		expect(wait).toContain("running_tasks_for_image");
+		expect(wait).toContain("--filter desired-state=running");
+		expect(wait).toContain("{{.Spec.Mode.Replicated.Replicas}}");
+		expect(wait).not.toContain("docker service ls");
 		const rollback = getRollbackApplicationServiceCommand(
 			"app-test",
 			"registry.example.com/team/app-test:deployment-123",
@@ -210,8 +211,9 @@ describe("Application Build Server commands", () => {
 		);
 		expect(rollback).toContain("docker service update --rollback");
 		expect(rollback).toContain("rollback did not converge");
-		expect(rollback).toContain("docker service inspect --format '{{.ID}}'");
-		expect(rollback).toContain('docker service ls --filter "id=$service_id"');
-		expect(rollback).not.toContain('docker service ls --filter "name=^');
+		expect(rollback).toContain("running_tasks_for_image");
+		expect(rollback).toContain("--filter desired-state=running");
+		expect(rollback).toContain("{{.Spec.Mode.Replicated.Replicas}}");
+		expect(rollback).not.toContain("docker service ls");
 	});
 });
