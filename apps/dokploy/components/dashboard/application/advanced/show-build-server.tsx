@@ -116,9 +116,11 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 					least one Dokploy Domain, a Docker Swarm health check, and a stop
 					grace period of at least 30 seconds are required. Published host
 					ports, mounts, custom Traefik labels and non-VIP routing are rejected.
-					Dokploy builds and pushes an immutable deployment image on this
-					server, pulls it before activation, then waits for a start-first Swarm
-					update and 30 seconds of stable health.
+					Dokploy builds and pushes an immutable deployment image on this server
+					for the Deploy Server platform, pulls it before activation, then waits
+					for a start-first Swarm update and 30 seconds of stable health. If the
+					servers use different CPU architectures, the Build Server must support
+					Docker cross-platform builds.
 				</AlertBlock>
 
 				{!buildServers || buildServers.length === 0 ? (

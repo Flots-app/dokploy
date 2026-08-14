@@ -26,18 +26,30 @@ const application = {
 } as unknown as ApplicationNested;
 
 describe("Dockerfile Build Server command", () => {
-	it("pins the local image and gives the reserved deployment argument priority", () => {
+	it("targets the runtime platform, pins the image and gives the reserved deployment argument priority", () => {
 		const command = getDockerCommand(application, {
 			image: "app-test:deployment-123",
 			deploymentId: "deployment-123",
+			platform: "linux/amd64",
 		});
 
-		expect(command).toContain("docker build -t app-test\\:deployment-123");
+		expect(command).toContain(
+			"docker build --platform linux/amd64 -t app-test\\:deployment-123",
+		);
 		expect(command).toContain(
 			"--build-arg DOKPLOY_DEPLOYMENT_ID\\=deployment-123",
 		);
 		expect(command).not.toContain("DOKPLOY_DEPLOYMENT_ID=user-controlled");
 		expect(command).toContain("'PUBLIC_VALUE=hello world'");
 		expect(command).toMatch(/Dockerfile\.prod[^\n]+ \. \|\|/);
+	});
+
+	it("keeps legacy builds on the Docker daemon default platform", () => {
+		const command = getDockerCommand(application, {
+			image: "app-test:legacy",
+		});
+
+		expect(command).toContain("docker build -t app-test\\:legacy");
+		expect(command).not.toContain("--platform");
 	});
 });
