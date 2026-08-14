@@ -101,7 +101,14 @@
   merge the exact service-ID convergence fix in
   [Flots-app/dokploy#26](https://github.com/Flots-app/dokploy/pull/26) at
   `ff94bf1f5aef5e2d7ebaa545a88a521ccdc2cb77`.
-- [ ] Publish `v0.29.14-flots.8`, activate the current website release, and
+- [x] Publish and deploy `v0.29.14-flots.8`; prove its immutable amd64 website
+  candidate reaches `Running`, then preserve HTTP 200 traffic while the
+  aggregate-replica stabilization check safely rolls it back during drain.
+- [x] Replace aggregate Swarm replica checks with image-specific
+  `desired-state=running` task checks for activation and rollback, and merge
+  [Flots-app/dokploy#28](https://github.com/Flots-app/dokploy/pull/28) at
+  `bdab8b3c92759220a7408186f246ce89a8b553f3`.
+- [ ] Publish `v0.29.14-flots.9`, activate the current website release, and
   prove the immutable amd64 task remains stable with no failed HTTP probes.
 - [x] Commit, push and open the draft PR.
 
