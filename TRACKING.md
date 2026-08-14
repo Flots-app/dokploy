@@ -23,6 +23,8 @@
   UI tests; run the repository quality, typecheck and focused/complete tests.
 - [x] Publish a draft pull request against `canary` with requirement-by-
   requirement evidence: [Flots-app/dokploy#22](https://github.com/Flots-app/dokploy/pull/22).
+- [ ] Publish and deploy `v0.29.14-flots.6` from the merged `canary`, then
+  verify the production migration and service health.
 
 ## Current findings
 
@@ -72,6 +74,12 @@
 - [x] Resolve the 11 React Doctor warnings reported on PR #22; React Doctor
   0.9.12 reports no changed-scope issues against `origin/canary`, and the full
   797-test suite still passes after the concurrency refactor.
+- [x] Merge [Flots-app/dokploy#22](https://github.com/Flots-app/dokploy/pull/22)
+  into `canary` at `785261e9c48f2960b6070f02a9386f0693ba8f9f`.
+- [ ] Publish the attested amd64/arm64 `v0.29.14-flots.6` image and promote its
+  verified digest to `latest`.
+- [ ] Deploy `v0.29.14-flots.6` to production and verify migrations, Dokploy,
+  PostgreSQL, Redis, Traefik, and the existing runtime services.
 - [x] Commit, push and open the draft PR.
 
 ---
