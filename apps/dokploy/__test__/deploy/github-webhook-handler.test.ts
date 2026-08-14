@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	queueAdd: vi.fn(),
 	verify: vi.fn(),
 	shouldDeploy: vi.fn(),
+	ensureApplicationBuildServer: vi.fn(),
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -71,6 +72,7 @@ vi.mock("@dokploy/server", () => ({
 	findPreviewDeploymentsByPullRequestId: vi.fn(),
 	getBitbucketHeaders: vi.fn(() => ({})),
 	removePreviewDeployment: vi.fn(),
+	ensureApplicationBuildServer: mocks.ensureApplicationBuildServer,
 }));
 
 vi.mock("@octokit/webhooks", () => ({
@@ -169,6 +171,9 @@ describe("GitHub app webhook auto-deploy", () => {
 		mocks.shouldDeploy.mockReturnValue(true);
 		mocks.composeFindMany.mockResolvedValue([]);
 		mocks.queueAdd.mockResolvedValue({ id: "job-id" });
+		mocks.ensureApplicationBuildServer.mockResolvedValue({
+			buildServerId: "build-server",
+		});
 
 		mocks.applicationsFindMany.mockImplementation(({ where }) => {
 			const matches =
@@ -187,6 +192,7 @@ describe("GitHub app webhook auto-deploy", () => {
 							{
 								applicationId: "application-id",
 								serverId: null,
+								buildServerId: "build-server",
 								watchPaths: null,
 							},
 						]
@@ -211,6 +217,7 @@ describe("GitHub app webhook auto-deploy", () => {
 			expect.objectContaining({
 				applicationId: "application-id",
 				applicationType: "application",
+				serverId: "build-server",
 				type: "deploy",
 			}),
 			expect.objectContaining({
@@ -220,6 +227,31 @@ describe("GitHub app webhook auto-deploy", () => {
 		);
 		expect(res.status).toHaveBeenCalledWith(200);
 		expect(res.json).toHaveBeenCalledWith({ message: "Deployed 1 apps" });
+	});
+
+	it("backfills the organization default before partitioning a push job", async () => {
+		mocks.ensureApplicationBuildServer.mockResolvedValueOnce({
+			buildServerId: "default-build-server",
+		});
+		mocks.applicationsFindMany.mockResolvedValue([
+			{
+				applicationId: "application-without-selection",
+				buildServerId: null,
+				watchPaths: null,
+			},
+		]);
+		const res = createResponse();
+
+		await handler(createPushRequest("main"), res);
+
+		expect(mocks.ensureApplicationBuildServer).toHaveBeenCalledWith(
+			"application-without-selection",
+		);
+		expect(mocks.queueAdd).toHaveBeenCalledWith(
+			"deployments",
+			expect.objectContaining({ serverId: "default-build-server" }),
+			expect.anything(),
+		);
 	});
 
 	it("matches compose push events using repository owner login fallback", async () => {
@@ -307,6 +339,7 @@ describe("GitHub app webhook auto-deploy", () => {
 							{
 								applicationId: "application-id",
 								serverId: null,
+								buildServerId: "build-server",
 							},
 						]
 					: [],
@@ -321,6 +354,7 @@ describe("GitHub app webhook auto-deploy", () => {
 			expect.objectContaining({
 				applicationId: "application-id",
 				applicationType: "application",
+				serverId: "build-server",
 				titleLog: "Tag created: v1.0.0",
 				type: "deploy",
 			}),

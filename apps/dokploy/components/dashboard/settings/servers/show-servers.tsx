@@ -6,6 +6,7 @@ import {
 	Loader2,
 	Network,
 	ServerIcon,
+	Star,
 	Terminal,
 	Trash2,
 	User,
@@ -43,6 +44,8 @@ export const ShowServers = () => {
 	const query = router.query;
 	const { data, refetch, isPending } = api.server.all.useQuery();
 	const { mutateAsync } = api.server.remove.useMutation();
+	const { mutateAsync: setDefaultBuildServer, isPending: isSettingDefault } =
+		api.server.setDefaultBuildServer.useMutation();
 	const { data: sshKeys } = api.sshKey.all.useQuery();
 	const { data: isCloud } = api.settings.isCloud.useQuery();
 	const { data: canCreateMoreServers } =
@@ -110,7 +113,8 @@ export const ShowServers = () => {
 											<div className="flex flex-col gap-4 min-h-[25vh]">
 												<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
 													{data?.map((server) => {
-														const canDelete = server.totalSum === 0;
+														const canDelete =
+															server.totalSum + server.buildTotalSum === 0;
 														const isActive = server.serverStatus === "active";
 														const isBuildServer = server.serverType === "build";
 														return (
@@ -172,6 +176,12 @@ export const ShowServers = () => {
 																			>
 																				{server.serverType}
 																			</Badge>
+																			{server.isDefaultBuildServer ? (
+																				<Badge variant="outline">
+																					<Star className="mr-1 size-3 fill-current" />
+																					Default Build Server
+																				</Badge>
+																			) : null}
 																		</div>
 																	</TooltipProvider>
 																</CardHeader>
@@ -224,6 +234,33 @@ export const ShowServers = () => {
 																	{isActive && (
 																		<div className="flex items-center  gap-2 pt-3 border-t mt-auto flex-wrap">
 																			<div className="flex items-center gap-2 w-full">
+																				{isBuildServer &&
+																					server.sshKeyId &&
+																					!server.isDefaultBuildServer &&
+																					permissions?.server.create && (
+																						<Button
+																							variant="outline"
+																							size="sm"
+																							disabled={isSettingDefault}
+																							onClick={async () => {
+																								await setDefaultBuildServer({
+																									serverId: server.serverId,
+																								})
+																									.then(async () => {
+																										await refetch();
+																										toast.success(
+																											`${server.name} is now the default Build Server`,
+																										);
+																									})
+																									.catch((error) => {
+																										toast.error(error.message);
+																									});
+																							}}
+																						>
+																							<Star className="mr-2 size-4" />
+																							Set as default
+																						</Button>
+																					)}
 																				<Tooltip>
 																					<TooltipTrigger asChild>
 																						<SetupServer

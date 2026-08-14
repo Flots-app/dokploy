@@ -1,3 +1,78 @@
+# Application Build Servers and zero-downtime Dockerfile deployments
+
+## Current objective
+
+- [x] Make every Dokploy Application use an organization-owned, active VM whose
+  `serverType` is strictly `build`; a deploy server must never be accepted as an
+  Application Build Server.
+- [x] Automatically make the only Build Server in an organization the default;
+  when several exist, keep exactly one explicitly selectable default.
+- [x] Refuse Application builds when no valid Build Server is available.
+- [x] Give Git-backed `buildType: dockerfile` Applications the same safety
+  properties as Compose Build Server deployments: checkout/build/push and logs
+  on the Build Server, immutable deployment images, pull-before-mutation on the
+  runtime server, start-first health-gated activation, rollback on activation
+  failure, and no application container on the Build Server.
+- [x] Route every manual, redeploy, refresh-token and GitHub push/tag trigger,
+  queue partition, cancellation, patch and commit-log operation through the
+  effective Build Server.
+- [x] Update the Application and Server interfaces so the invariant and default
+  are visible and configurable without allowing `None` as an Application Build
+  Server.
+- [x] Add schema/migration, authorization, orchestration, command-generation and
+  UI tests; run the repository quality, typecheck and focused/complete tests.
+- [ ] Publish a draft pull request against `canary` with requirement-by-
+  requirement evidence.
+
+## Current findings
+
+- The existing Application integration is partial: it can execute a build on
+  `application.buildServerId`, but it tags/pushes `latest`, accepts the fields
+  through the generic update mutation, does not validate server type or
+  organization, and several triggers/queue/cancellation paths still target the
+  deploy server.
+- Application runtime activation already uses Docker Swarm and defaults to
+  `start-first`, but deployment completion is recorded immediately after the
+  update API call. It does not pull and verify the immutable image before
+  mutation or wait for Swarm convergence/health, so it does not yet prove
+  zero-downtime behavior.
+- The pre-existing local migration journal was preserved at
+  `/private/tmp/dokploy-TRACKING.user-20260814.md` before switching to the latest
+  `canary`, which now tracks this file.
+
+## Current progress
+
+- [x] Fetch current `origin/canary` and create
+  `codex/application-build-server-zero-downtime` without touching
+  `.env.production`.
+- [x] Audit Application schema/API/UI, build/push commands, deployment logging,
+  queues/webhooks, Server lifecycle/default support and Compose blue/green
+  primitives.
+- [x] Finalize the implementation contract and compatibility/migration rules:
+  nullable set-null foreign keys for compatibility, one active SSH-capable
+  organization default, strict runtime resolution, and a Git/Dockerfile V1 for
+  health-gated immutable activation.
+- [x] Add the schema, deterministic backfill/repair migration, dedicated
+  mutations, organization/permission/type validation, automatic default
+  assignment, and lifecycle guards.
+- [x] Route main and preview checkout/build/push, patches, commit metadata,
+  deployment logs, queues, webhooks, refresh-token triggers and cancellation
+  through the effective Build Server.
+- [x] Implement immutable deployment-ID images, reserved environment/build
+  arguments, registry logins through stdin, platform validation, pull before
+  mutation, start-first Swarm activation, convergence/stabilization checks and
+  explicit rollback/removal after a failed or cancelled activation.
+- [x] Replace the optional Application UI with required Build Server/registry
+  selection and expose the organization default on the Server cards.
+- [x] Finish focused tests and complete repository validation.
+- [x] Pass both TypeScript projects, Biome across 918 files, 59 focused tests,
+  and the complete non-real suite (85 files, 797 tests). The local real test
+  file requires the external `nixpacks` binary; its Dockerfile prerequisite
+  case passes and CI remains responsible for the provisioned real environment.
+- [ ] Commit, push and open the draft PR.
+
+---
+
 # S3 backup encryption at rest
 
 ## TODO

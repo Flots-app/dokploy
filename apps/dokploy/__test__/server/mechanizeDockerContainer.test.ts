@@ -3,12 +3,18 @@ import { mechanizeDockerContainer } from "@dokploy/server/utils/builders";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type MockCreateServiceOptions = {
+	Labels?: Record<string, string>;
 	TaskTemplate?: {
 		ContainerSpec?: {
+			Env?: string[];
+			Image?: string;
+			Labels?: Record<string, string>;
 			StopGracePeriod?: number;
 			Ulimits?: Array<{ Name: string; Soft: number; Hard: number }>;
 		};
 	};
+	UpdateConfig?: Record<string, unknown>;
+	RollbackConfig?: Record<string, unknown>;
 	[key: string]: unknown;
 };
 
@@ -39,6 +45,7 @@ const createApplication = (
 	overrides: Partial<ApplicationNested> = {},
 ): ApplicationNested =>
 	({
+		applicationId: "application-id",
 		appName: "test-app",
 		buildType: "dockerfile",
 		env: null,
@@ -66,7 +73,9 @@ const createApplication = (
 describe("mechanizeDockerContainer", () => {
 	beforeEach(() => {
 		inspectMock.mockReset();
-		inspectMock.mockRejectedValue(new Error("service not found"));
+		inspectMock.mockRejectedValue(
+			Object.assign(new Error("service not found"), { statusCode: 404 }),
+		);
 		getServiceMock.mockClear();
 		createServiceMock.mockClear();
 		getRemoteDockerMock.mockClear();
@@ -157,5 +166,66 @@ describe("mechanizeDockerContainer", () => {
 		}
 		const [settings] = call;
 		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty("Ulimits");
+	});
+
+	it("pins the immutable release and enforces start-first rollback settings", async () => {
+		const application = createApplication({
+			env: "DOKPLOY_DEPLOYMENT_ID=user-controlled\nFEATURE=true",
+			username: "registry-user",
+			password: "registry-password",
+			registryUrl: "registry.example.com",
+		});
+
+		await mechanizeDockerContainer(application, {
+			runtimeImage: "registry.example.com/team/app:deployment-123",
+			deploymentId: "deployment-123",
+			enforceZeroDowntime: true,
+		});
+
+		const call = createServiceMock.mock.calls[0];
+		if (!call)
+			throw new Error("createServiceMock should have been called once");
+		const [settings] = call;
+		expect(settings.TaskTemplate?.ContainerSpec?.Image).toBe(
+			"registry.example.com/team/app:deployment-123",
+		);
+		expect(settings.TaskTemplate?.ContainerSpec?.Env).toContain(
+			"DOKPLOY_DEPLOYMENT_ID=deployment-123",
+		);
+		expect(settings.TaskTemplate?.ContainerSpec?.Env).not.toContain(
+			"DOKPLOY_DEPLOYMENT_ID=user-controlled",
+		);
+		expect(settings.UpdateConfig).toMatchObject({
+			Parallelism: 1,
+			Order: "start-first",
+			FailureAction: "rollback",
+			MaxFailureRatio: 0,
+		});
+		expect(settings.RollbackConfig).toMatchObject({
+			Parallelism: 1,
+			Order: "start-first",
+			FailureAction: "pause",
+		});
+		expect(settings.Labels).toMatchObject({
+			"com.dokploy.application-id": "application-id",
+			"com.dokploy.deployment-id": "deployment-123",
+		});
+		expect(settings.TaskTemplate?.ContainerSpec?.Labels).toMatchObject({
+			"com.dokploy.deployment-id": "deployment-123",
+		});
+		expect(createServiceMock).toHaveBeenCalledWith(settings);
+	});
+
+	it("does not turn a transient inspect failure into a create attempt", async () => {
+		inspectMock.mockRejectedValueOnce(
+			Object.assign(new Error("Docker daemon unavailable"), {
+				statusCode: 503,
+			}),
+		);
+
+		await expect(mechanizeDockerContainer(createApplication())).rejects.toThrow(
+			"Docker daemon unavailable",
+		);
+		expect(createServiceMock).not.toHaveBeenCalled();
 	});
 });

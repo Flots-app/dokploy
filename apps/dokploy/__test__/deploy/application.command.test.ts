@@ -78,6 +78,7 @@ vi.mock("@dokploy/server/utils/providers/git", async () => {
 
 vi.mock("@dokploy/server/utils/process/execAsync", () => ({
 	execAsync: vi.fn(),
+	execAsyncRemote: vi.fn(),
 	ExecError: class ExecError extends Error {},
 }));
 
@@ -119,6 +120,16 @@ const createMockApplication = (overrides = {}) => ({
 	buildPath: "/astro",
 	env: "NODE_ENV=production",
 	serverId: null,
+	buildServerId: "build-server-id",
+	buildRegistryId: "registry-id",
+	buildServer: {
+		serverId: "build-server-id",
+		organizationId: "org-id",
+		serverType: "build" as const,
+		serverStatus: "active" as const,
+		sshKeyId: "ssh-key-id",
+	},
+	buildRegistry: null,
 	rollbackActive: false,
 	enableSubmodules: false,
 	environmentId: "env-id",
@@ -157,6 +168,10 @@ describe("deployApplication - Command Generation Tests", () => {
 			createMockDeployment() as any,
 		);
 		vi.mocked(execProcess.execAsync).mockResolvedValue({
+			stdout: "",
+			stderr: "",
+		} as any);
+		vi.mocked(execProcess.execAsyncRemote).mockResolvedValue({
 			stdout: "",
 			stderr: "",
 		} as any);
@@ -217,7 +232,8 @@ describe("deployApplication - Command Generation Tests", () => {
 			}),
 		);
 
-		expect(execProcess.execAsync).toHaveBeenCalledWith(
+		expect(execProcess.execAsyncRemote).toHaveBeenCalledWith(
+			"build-server-id",
 			expect.stringContaining("nixpacks build"),
 		);
 	});
@@ -246,7 +262,8 @@ describe("deployApplication - Command Generation Tests", () => {
 			}),
 		);
 
-		expect(execProcess.execAsync).toHaveBeenCalledWith(
+		expect(execProcess.execAsyncRemote).toHaveBeenCalledWith(
+			"build-server-id",
 			expect.stringContaining("railpack prepare"),
 		);
 	});
@@ -261,10 +278,10 @@ describe("deployApplication - Command Generation Tests", () => {
 			descriptionLog: "",
 		});
 
-		const execCalls = vi.mocked(execProcess.execAsync).mock.calls;
+		const execCalls = vi.mocked(execProcess.execAsyncRemote).mock.calls;
 		expect(execCalls.length).toBeGreaterThan(0);
 
-		const fullCommand = execCalls[0]?.[0];
+		const fullCommand = execCalls[0]?.[1];
 		expect(fullCommand).toContain("set -e");
 		expect(fullCommand).toContain("git clone");
 		expect(fullCommand).toContain("nixpacks build");
@@ -280,8 +297,8 @@ describe("deployApplication - Command Generation Tests", () => {
 			descriptionLog: "",
 		});
 
-		const execCalls = vi.mocked(execProcess.execAsync).mock.calls;
-		const fullCommand = execCalls[0]?.[0];
+		const execCalls = vi.mocked(execProcess.execAsyncRemote).mock.calls;
+		const fullCommand = execCalls[0]?.[1];
 
 		expect(fullCommand).toContain(">> /tmp/test-deployment.log 2>&1");
 	});

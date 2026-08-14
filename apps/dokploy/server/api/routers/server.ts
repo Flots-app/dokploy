@@ -14,6 +14,7 @@ import {
 	serverAudit,
 	serverSetup,
 	serverValidate,
+	setDefaultBuildServer,
 	setupMonitoring,
 	updateServerById,
 } from "@dokploy/server";
@@ -34,6 +35,7 @@ import {
 	apiCreateServer,
 	apiFindOneServer,
 	apiRemoveServer,
+	apiSetDefaultBuildServer,
 	apiUpdateServer,
 	apiUpdateServerBuildsConcurrency,
 	apiUpdateServerMonitoring,
@@ -122,6 +124,10 @@ export const serverRouter = createTRPCRouter({
 			.select({
 				...getTableColumns(server),
 				totalSum: sql<number>`cast(count(${applications.applicationId}) + count(${compose.composeId}) + count(${redis.redisId}) + count(${mariadb.mariadbId}) + count(${mongo.mongoId}) + count(${mysql.mysqlId}) + count(${postgres.postgresId}) as integer)`,
+				buildTotalSum: sql<number>`cast(
+						(select count(*) from "application" where "application"."buildServerId" = ${server.serverId}) +
+						(select count(*) from "compose" where "compose"."buildServerId" = ${server.serverId})
+					as integer)`,
 			})
 			.from(server)
 			.leftJoin(applications, eq(applications.serverId, server.serverId))
@@ -192,11 +198,39 @@ export const serverRouter = createTRPCRouter({
 		});
 		return result.filter((s) => accessibleIds.has(s.serverId));
 	}),
+	setDefaultBuildServer: withPermission("server", "create")
+		.input(apiSetDefaultBuildServer)
+		.mutation(async ({ input, ctx }) => {
+			const accessibleIds = await getAccessibleServerIds(ctx.session);
+			if (!accessibleIds.has(input.serverId)) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You are not authorized to access this Build Server",
+				});
+			}
+			const updated = await setDefaultBuildServer(
+				input.serverId,
+				ctx.session.activeOrganizationId,
+			);
+			if (!updated) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Unable to select the default Build Server",
+				});
+			}
+			await audit(ctx, {
+				action: "update",
+				resourceType: "server",
+				resourceId: updated.serverId,
+				resourceName: updated.name,
+			});
+			return updated;
+		}),
 	buildServers: withPermission("server", "read").query(async ({ ctx }) => {
 		const accessibleIds = await getAccessibleServerIds(ctx.session);
 
 		const result = await db.query.server.findMany({
-			orderBy: desc(server.createdAt),
+			orderBy: [desc(server.isDefaultBuildServer), desc(server.createdAt)],
 			where: and(
 				isNotNull(server.sshKeyId),
 				eq(server.organizationId, ctx.session.activeOrganizationId),

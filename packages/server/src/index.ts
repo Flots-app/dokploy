@@ -81,6 +81,7 @@ export * from "./utils/backups/postgres";
 export * from "./utils/backups/redact";
 export * from "./utils/backups/utils";
 export * from "./utils/backups/web-server";
+export * from "./utils/builders/application-build-server";
 export * from "./utils/builders/compose";
 export * from "./utils/builders/compose-build-server";
 export * from "./utils/builders/docker-file";

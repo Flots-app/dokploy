@@ -544,4 +544,10 @@ export const apiUpdateApplication = createSchema
 	.extend({
 		applicationId: z.string().min(1),
 	})
-	.omit({ serverId: true });
+	.omit({ serverId: true, buildServerId: true, buildRegistryId: true });
+
+export const apiUpdateApplicationBuildServer = z.object({
+	applicationId: z.string().min(1),
+	buildServerId: z.string().min(1),
+	buildRegistryId: z.string().min(1),
+});

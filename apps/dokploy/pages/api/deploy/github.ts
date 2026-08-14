@@ -2,6 +2,7 @@ import {
 	checkUserRepositoryPermissions,
 	createPreviewDeployment,
 	createSecurityBlockedComment,
+	ensureApplicationBuildServer,
 	findGithubById,
 	findPreviewDeploymentByApplicationId,
 	findPreviewDeploymentsByPullRequestId,
@@ -25,6 +26,21 @@ import {
 
 const getGithubRepositoryOwner = (githubBody: any) =>
 	githubBody?.repository?.owner?.name ?? githubBody?.repository?.owner?.login;
+
+const getEffectiveApplicationBuildServerId = async (application: {
+	applicationId: string;
+	buildServerId?: string | null;
+}) => {
+	const buildServerId = (
+		await ensureApplicationBuildServer(application.applicationId)
+	).buildServerId;
+	if (!buildServerId) {
+		throw new Error(
+			`Application ${application.applicationId} has no Build Server and cannot build`,
+		);
+	}
+	return buildServerId;
+};
 
 export default async function handler(
 	req: NextApiRequest,
@@ -129,17 +145,17 @@ export default async function handler(
 			});
 
 			for (const app of apps) {
+				const buildServerId = await getEffectiveApplicationBuildServerId(app);
 				const jobData: DeploymentJob = {
 					applicationId: app.applicationId as string,
 					titleLog: deploymentTitle,
 					descriptionLog: `Hash: ${deploymentHash}`,
 					type: "deploy",
 					applicationType: "application",
-					server: !!app.serverId,
+					server: true,
+					serverId: buildServerId,
 				};
-
-				if (IS_CLOUD && app.serverId) {
-					jobData.serverId = app.serverId;
+				if (IS_CLOUD) {
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});
@@ -241,15 +257,6 @@ export default async function handler(
 			});
 
 			for (const app of apps) {
-				const jobData: DeploymentJob = {
-					applicationId: app.applicationId as string,
-					titleLog: deploymentTitle,
-					descriptionLog: `Hash: ${deploymentHash}`,
-					type: "deploy",
-					applicationType: "application",
-					server: !!app.serverId,
-				};
-
 				const shouldDeployPaths = shouldDeploy(
 					app.watchPaths,
 					normalizedCommits,
@@ -259,8 +266,17 @@ export default async function handler(
 					continue;
 				}
 
-				if (IS_CLOUD && app.serverId) {
-					jobData.serverId = app.serverId;
+				const buildServerId = await getEffectiveApplicationBuildServerId(app);
+				const jobData: DeploymentJob = {
+					applicationId: app.applicationId as string,
+					titleLog: deploymentTitle,
+					descriptionLog: `Hash: ${deploymentHash}`,
+					type: "deploy",
+					applicationType: "application",
+					server: true,
+					serverId: buildServerId,
+				};
+				if (IS_CLOUD) {
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});
@@ -512,13 +528,15 @@ export default async function handler(
 					descriptionLog: `Hash: ${deploymentHash}`,
 					type: "deploy",
 					applicationType: "application-preview",
-					server: !!app.serverId,
+					server: true,
+					serverId: previewDeploymentId
+						? await getEffectiveApplicationBuildServerId(app)
+						: undefined,
 					previewDeploymentId,
 				};
 
 				if (previewDeploymentId) {
-					if (IS_CLOUD && app.serverId) {
-						jobData.serverId = app.serverId;
+					if (IS_CLOUD) {
 						deploy(jobData).catch((error) => {
 							console.error("Background deployment failed:", error);
 						});

@@ -1,6 +1,6 @@
 import {
 	getEnvironmentVariablesObject,
-	prepareEnvironmentVariablesForShell,
+	prepareEnvironmentVariables,
 } from "@dokploy/server/utils/docker/utils";
 import { quote } from "shell-quote";
 import {
@@ -10,7 +10,10 @@ import {
 import type { ApplicationNested } from ".";
 import { createEnvFileCommand } from "./utils";
 
-export const getDockerCommand = (application: ApplicationNested) => {
+export const getDockerCommand = (
+	application: ApplicationNested,
+	options: { image?: string; deploymentId?: string } = {},
+) => {
 	const {
 		appName,
 		env,
@@ -24,7 +27,7 @@ export const getDockerCommand = (application: ApplicationNested) => {
 	const dockerFilePath = getBuildAppDirectory(application);
 
 	try {
-		const image = `${appName}`;
+		const image = options.image || `${appName}`;
 
 		const defaultContextPath =
 			dockerFilePath.substring(0, dockerFilePath.lastIndexOf("/") + 1) || ".";
@@ -32,24 +35,38 @@ export const getDockerCommand = (application: ApplicationNested) => {
 		const dockerContextPath =
 			getDockerContextPath(application) || defaultContextPath;
 
-		const commandArgs = ["build", "-t", image, "-f", dockerFilePath, "."];
+		const commandArgs = [
+			"build",
+			"-t",
+			quote([image]),
+			"-f",
+			quote([dockerFilePath]),
+		];
 
 		if (dockerBuildStage) {
-			commandArgs.push("--target", dockerBuildStage);
+			commandArgs.push("--target", quote([dockerBuildStage]));
 		}
 
 		if (cleanCache) {
 			commandArgs.push("--no-cache");
 		}
 
-		const args = prepareEnvironmentVariablesForShell(
+		const args = prepareEnvironmentVariables(
 			buildArgs,
 			application.environment.project.env,
 			application.environment.env,
 		);
 
-		for (const arg of args) {
-			commandArgs.push("--build-arg", arg);
+		for (const arg of args.filter(
+			(arg) => !arg.startsWith("DOKPLOY_DEPLOYMENT_ID="),
+		)) {
+			commandArgs.push("--build-arg", quote([arg]));
+		}
+		if (options.deploymentId) {
+			commandArgs.push(
+				"--build-arg",
+				quote([`DOKPLOY_DEPLOYMENT_ID=${options.deploymentId}`]),
+			);
 		}
 
 		const secrets = getEnvironmentVariablesObject(
@@ -81,7 +98,7 @@ export const getDockerCommand = (application: ApplicationNested) => {
 			// Although buildx is smart enough to know we may be referring to an environment variable name,
 			// we still make sure it doesn't fall back to `type=file`.
 			// See: https://docs.docker.com/reference/cli/docker/buildx/build/#secret
-			commandArgs.push("--secret", `type=env,id=${key}`);
+			commandArgs.push("--secret", quote([`type=env,id=${key}`]));
 		}
 
 		command += `
@@ -91,7 +108,7 @@ cd ${quote([dockerContextPath])} || {
   exit 1;
 }
 
-${joinedSecrets} docker ${commandArgs.join(" ")} || {
+${joinedSecrets} docker ${commandArgs.join(" ")} ${quote(["."])} || {
   echo "❌ Docker build failed" ;
   exit 1;
 }
