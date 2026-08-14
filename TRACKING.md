@@ -93,9 +93,16 @@
 - [x] Merge the cross-platform fix in
   [Flots-app/dokploy#24](https://github.com/Flots-app/dokploy/pull/24) at
   `d0f8a7587170bd3b913821c844b51240a0a55d02` after every required check passed.
-- [ ] Publish `v0.29.14-flots.7`, deploy the current website commit through
-  the arm64 Mac mini, and prove the pushed image and active Swarm task are
-  linux/amd64 while continuous HTTP probes remain successful.
+- [x] Publish and deploy `v0.29.14-flots.7`, then prove the arm64 Mac mini
+  builds and pushes linux/amd64 website images while continuous HTTP probes
+  remain successful through protected candidate rollbacks.
+- [x] Replace the production website health check with the available BusyBox
+  `wget`, reproduce the anchored Swarm name filter returning no replicas, and
+  merge the exact service-ID convergence fix in
+  [Flots-app/dokploy#26](https://github.com/Flots-app/dokploy/pull/26) at
+  `ff94bf1f5aef5e2d7ebaa545a88a521ccdc2cb77`.
+- [ ] Publish `v0.29.14-flots.8`, activate the current website release, and
+  prove the immutable amd64 task remains stable with no failed HTTP probes.
 - [x] Commit, push and open the draft PR.
 
 ---
