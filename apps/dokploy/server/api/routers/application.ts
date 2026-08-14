@@ -1,8 +1,12 @@
 import {
+	assertApplicationBuildServerSelection,
+	assertApplicationRuntimeServerSelection,
 	clearOldDeployments,
 	createApplication,
 	deleteAllMiddlewares,
+	ensureApplicationBuildServer,
 	findApplicationById,
+	findDefaultBuildServer,
 	findEnvironmentById,
 	findProjectById,
 	getAccessibleServerIds,
@@ -18,6 +22,7 @@ import {
 	removeMonitoringDirectory,
 	removeService,
 	removeTraefikConfig,
+	requestApplicationDeploymentCancellation,
 	startService,
 	startServiceRemote,
 	stopService,
@@ -33,6 +38,7 @@ import { db } from "@dokploy/server/db";
 import { canEditDeployGitSource } from "@dokploy/server/services/git-provider";
 import {
 	addNewService,
+	checkPermission,
 	checkServiceAccess,
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
@@ -64,9 +70,12 @@ import {
 	apiSaveGitlabProvider,
 	apiSaveGitProvider,
 	apiUpdateApplication,
+	apiUpdateApplicationBuildServer,
 	applications,
 	environments,
 	projects,
+	registry,
+	server,
 } from "@/server/db/schema";
 import type { DeploymentJob } from "@/server/queues/queue-types";
 import {
@@ -104,8 +113,8 @@ export const applicationRouter = createTRPCRouter({
 					});
 				}
 
+				const accessibleIds = await getAccessibleServerIds(ctx.session);
 				if (input.serverId) {
-					const accessibleIds = await getAccessibleServerIds(ctx.session);
 					if (!accessibleIds.has(input.serverId)) {
 						throw new TRPCError({
 							code: "UNAUTHORIZED",
@@ -113,8 +122,49 @@ export const applicationRouter = createTRPCRouter({
 						});
 					}
 				}
+				const defaultBuildServer = await findDefaultBuildServer(
+					project.organizationId,
+				);
+				if (!defaultBuildServer) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Create an active default Build Server before creating an Application",
+					});
+				}
+				try {
+					assertApplicationBuildServerSelection({
+						organizationId: project.organizationId,
+						accessibleServerIds: accessibleIds,
+						server: defaultBuildServer,
+					});
+					const runtimeServer = input.serverId
+						? await db.query.server.findFirst({
+								where: eq(server.serverId, input.serverId),
+							})
+						: null;
+					if (input.serverId && !runtimeServer) {
+						throw new Error("Deploy Server not found");
+					}
+					assertApplicationRuntimeServerSelection({
+						organizationId: project.organizationId,
+						buildServerId: defaultBuildServer.serverId,
+						runtimeServer,
+					});
+				} catch (error) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							error instanceof Error
+								? error.message
+								: "Invalid default Build Server",
+					});
+				}
 
-				const newApplication = await createApplication(input);
+				const newApplication = await createApplication({
+					...input,
+					buildServerId: defaultBuildServer.serverId,
+				});
 
 				await addNewService(ctx, newApplication.applicationId);
 				await audit(ctx, {
@@ -246,8 +296,13 @@ export const applicationRouter = createTRPCRouter({
 			const cleanupOperations = [
 				async () => await deleteAllMiddlewares(application),
 				async () => await removeDeployments(application),
-				async () =>
-					await removeDirectoryCode(application.appName, application.serverId),
+				async () => {
+					await Promise.all(
+						[...new Set([application.buildServerId, application.serverId])].map(
+							(serverId) => removeDirectoryCode(application.appName, serverId),
+						),
+					);
+				},
 				async () =>
 					await removeMonitoringDirectory(
 						application.appName,
@@ -324,18 +379,20 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
-			const application = await findApplicationById(input.applicationId);
+			const application = await ensureApplicationBuildServer(
+				input.applicationId,
+			);
 			const jobData: DeploymentJob = {
 				applicationId: input.applicationId,
 				titleLog: input.title || "Rebuild deployment",
 				descriptionLog: input.description || "",
 				type: "redeploy",
 				applicationType: "application",
-				server: !!application.serverId,
-				serverId: application.serverId ?? undefined,
+				server: true,
+				serverId: application.buildServerId ?? undefined,
 			};
 
-			if (IS_CLOUD && application.serverId) {
+			if (IS_CLOUD && application.buildServerId) {
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});
@@ -639,16 +696,6 @@ export const applicationRouter = createTRPCRouter({
 				service: ["create"],
 			});
 
-			if (input.buildServerId) {
-				const accessibleIds = await getAccessibleServerIds(ctx.session);
-				if (!accessibleIds.has(input.buildServerId)) {
-					throw new TRPCError({
-						code: "UNAUTHORIZED",
-						message: "You are not authorized to access this build server",
-					});
-				}
-			}
-
 			const { applicationId, ...rest } = input;
 			const updateApp = await updateApplication(applicationId, {
 				...rest,
@@ -665,6 +712,70 @@ export const applicationRouter = createTRPCRouter({
 				resourceType: "application",
 				resourceId: updateApp.applicationId,
 				resourceName: updateApp.appName,
+			});
+			return true;
+		}),
+	updateBuildServer: protectedProcedure
+		.input(apiUpdateApplicationBuildServer)
+		.mutation(async ({ input, ctx }) => {
+			await Promise.all([
+				checkServicePermissionAndAccess(ctx, input.applicationId, {
+					service: ["create"],
+				}),
+				checkPermission(ctx, { server: ["read"], registry: ["read"] }),
+			]);
+			const [application, accessibleServerIds, buildServer, buildRegistry] =
+				await Promise.all([
+					findApplicationById(input.applicationId),
+					getAccessibleServerIds(ctx.session),
+					db.query.server.findFirst({
+						where: eq(server.serverId, input.buildServerId),
+					}),
+					db.query.registry.findFirst({
+						where: eq(registry.registryId, input.buildRegistryId),
+						columns: { password: false },
+					}),
+				]);
+			const organizationId = application.environment.project.organizationId;
+			if (organizationId !== ctx.session.activeOrganizationId) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You are not authorized to update this Application",
+				});
+			}
+			try {
+				assertApplicationBuildServerSelection({
+					organizationId,
+					accessibleServerIds,
+					server: buildServer,
+					registry: buildRegistry,
+				});
+				if (application.serverId === input.buildServerId) {
+					throw new Error(
+						"Build Server and Deploy Server must be different machines",
+					);
+				}
+			} catch (error) {
+				throw new TRPCError({
+					code:
+						error instanceof Error && error.message.includes("authorized")
+							? "UNAUTHORIZED"
+							: "BAD_REQUEST",
+					message:
+						error instanceof Error
+							? error.message
+							: "Invalid Application Build Server",
+				});
+			}
+			await updateApplication(input.applicationId, {
+				buildServerId: input.buildServerId,
+				buildRegistryId: input.buildRegistryId,
+			});
+			await audit(ctx, {
+				action: "update",
+				resourceType: "application",
+				resourceId: application.applicationId,
+				resourceName: application.appName,
 			});
 			return true;
 		}),
@@ -692,17 +803,19 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
-			const application = await findApplicationById(input.applicationId);
+			const application = await ensureApplicationBuildServer(
+				input.applicationId,
+			);
 			const jobData: DeploymentJob = {
 				applicationId: input.applicationId,
 				titleLog: input.title || "Manual deployment",
 				descriptionLog: input.description || "",
 				type: "deploy",
 				applicationType: "application",
-				server: !!application.serverId,
-				serverId: application.serverId ?? undefined,
+				server: true,
+				serverId: application.buildServerId ?? undefined,
 			};
-			if (IS_CLOUD && application.serverId) {
+			if (IS_CLOUD && application.buildServerId) {
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});
@@ -745,7 +858,18 @@ export const applicationRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const application = await findApplicationById(input.applicationId);
-			await clearOldDeployments(application.appName, application.serverId);
+			const logServerIds = new Set([
+				application.buildServerId,
+				application.serverId,
+				...application.deployments.map(
+					(deployment) => deployment.buildServerId,
+				),
+			]);
+			await Promise.all(
+				[...logServerIds].map((serverId) =>
+					clearOldDeployments(application.appName, serverId),
+				),
+			);
 			await audit(ctx, {
 				action: "delete",
 				resourceType: "application",
@@ -761,7 +885,18 @@ export const applicationRouter = createTRPCRouter({
 				deployment: ["cancel"],
 			});
 			const application = await findApplicationById(input.applicationId);
-			await killDockerBuild("application", application.serverId);
+			const runningDeployment = application.deployments
+				.filter((deployment) => deployment.status === "running")
+				.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+			if (runningDeployment) {
+				await updateDeploymentStatus(
+					runningDeployment.deploymentId,
+					"cancelled",
+				);
+			}
+			await updateApplicationStatus(input.applicationId, "idle");
+			await requestApplicationDeploymentCancellation(application.applicationId);
+			await killDockerBuild("application", application.buildServerId);
 			await audit(ctx, {
 				action: "stop",
 				resourceType: "application",
@@ -804,24 +939,24 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, applicationId, {
 				deployment: ["create"],
 			});
-			const app = await findApplicationById(applicationId);
+			const app = await ensureApplicationBuildServer(applicationId);
 
 			await updateApplication(applicationId, {
 				sourceType: "drop",
 				dropBuildPath: dropBuildPath || "",
 			});
 
-			await unzipDrop(zipFile, app);
+			await unzipDrop(zipFile, { ...app, serverId: app.buildServerId });
 			const jobData: DeploymentJob = {
 				applicationId: app.applicationId,
 				titleLog: "Manual deployment",
 				descriptionLog: "",
 				type: "deploy",
 				applicationType: "application",
-				server: !!app.serverId,
-				serverId: app.serverId ?? undefined,
+				server: true,
+				serverId: app.buildServerId ?? undefined,
 			};
-			if (IS_CLOUD && app.serverId) {
+			if (IS_CLOUD && app.buildServerId) {
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});
@@ -925,17 +1060,21 @@ export const applicationRouter = createTRPCRouter({
 			});
 			const application = await findApplicationById(input.applicationId);
 
-			if (IS_CLOUD && application.serverId) {
+			if (IS_CLOUD && application.buildServerId) {
 				try {
 					await updateApplicationStatus(input.applicationId, "idle");
 
-					if (application.deployments[0]) {
+					const runningDeployment = application.deployments
+						.filter((deployment) => deployment.status === "running")
+						.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+					if (runningDeployment) {
 						await updateDeploymentStatus(
-							application.deployments[0].deploymentId,
-							"done",
+							runningDeployment.deploymentId,
+							"cancelled",
 						);
 					}
 
+					await requestApplicationDeploymentCancellation(input.applicationId);
 					await cancelDeployment({
 						applicationId: input.applicationId,
 						applicationType: "application",

@@ -14,6 +14,7 @@ import {
 	serverAudit,
 	serverSetup,
 	serverValidate,
+	setDefaultBuildServer,
 	setupMonitoring,
 	updateServerById,
 } from "@dokploy/server";
@@ -34,6 +35,7 @@ import {
 	apiCreateServer,
 	apiFindOneServer,
 	apiRemoveServer,
+	apiSetDefaultBuildServer,
 	apiUpdateServer,
 	apiUpdateServerBuildsConcurrency,
 	apiUpdateServerMonitoring,
@@ -116,24 +118,29 @@ export const serverRouter = createTRPCRouter({
 			return defaultCommand(isBuildServer);
 		}),
 	all: withPermission("server", "read").query(async ({ ctx }) => {
-		const accessibleIds = await getAccessibleServerIds(ctx.session);
-
-		const result = await db
-			.select({
-				...getTableColumns(server),
-				totalSum: sql<number>`cast(count(${applications.applicationId}) + count(${compose.composeId}) + count(${redis.redisId}) + count(${mariadb.mariadbId}) + count(${mongo.mongoId}) + count(${mysql.mysqlId}) + count(${postgres.postgresId}) as integer)`,
-			})
-			.from(server)
-			.leftJoin(applications, eq(applications.serverId, server.serverId))
-			.leftJoin(compose, eq(compose.serverId, server.serverId))
-			.leftJoin(redis, eq(redis.serverId, server.serverId))
-			.leftJoin(mariadb, eq(mariadb.serverId, server.serverId))
-			.leftJoin(mongo, eq(mongo.serverId, server.serverId))
-			.leftJoin(mysql, eq(mysql.serverId, server.serverId))
-			.leftJoin(postgres, eq(postgres.serverId, server.serverId))
-			.where(eq(server.organizationId, ctx.session.activeOrganizationId))
-			.orderBy(desc(server.createdAt))
-			.groupBy(server.serverId);
+		const [accessibleIds, result] = await Promise.all([
+			getAccessibleServerIds(ctx.session),
+			db
+				.select({
+					...getTableColumns(server),
+					totalSum: sql<number>`cast(count(${applications.applicationId}) + count(${compose.composeId}) + count(${redis.redisId}) + count(${mariadb.mariadbId}) + count(${mongo.mongoId}) + count(${mysql.mysqlId}) + count(${postgres.postgresId}) as integer)`,
+					buildTotalSum: sql<number>`cast(
+						(select count(*) from "application" where "application"."buildServerId" = ${server.serverId}) +
+						(select count(*) from "compose" where "compose"."buildServerId" = ${server.serverId})
+					as integer)`,
+				})
+				.from(server)
+				.leftJoin(applications, eq(applications.serverId, server.serverId))
+				.leftJoin(compose, eq(compose.serverId, server.serverId))
+				.leftJoin(redis, eq(redis.serverId, server.serverId))
+				.leftJoin(mariadb, eq(mariadb.serverId, server.serverId))
+				.leftJoin(mongo, eq(mongo.serverId, server.serverId))
+				.leftJoin(mysql, eq(mysql.serverId, server.serverId))
+				.leftJoin(postgres, eq(postgres.serverId, server.serverId))
+				.where(eq(server.organizationId, ctx.session.activeOrganizationId))
+				.orderBy(desc(server.createdAt))
+				.groupBy(server.serverId),
+		]);
 
 		return result.filter((s) => accessibleIds.has(s.serverId));
 	}),
@@ -192,18 +199,47 @@ export const serverRouter = createTRPCRouter({
 		});
 		return result.filter((s) => accessibleIds.has(s.serverId));
 	}),
+	setDefaultBuildServer: withPermission("server", "create")
+		.input(apiSetDefaultBuildServer)
+		.mutation(async ({ input, ctx }) => {
+			const accessibleIds = await getAccessibleServerIds(ctx.session);
+			if (!accessibleIds.has(input.serverId)) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You are not authorized to access this Build Server",
+				});
+			}
+			const updated = await setDefaultBuildServer(
+				input.serverId,
+				ctx.session.activeOrganizationId,
+			);
+			if (!updated) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Unable to select the default Build Server",
+				});
+			}
+			await audit(ctx, {
+				action: "update",
+				resourceType: "server",
+				resourceId: updated.serverId,
+				resourceName: updated.name,
+			});
+			return updated;
+		}),
 	buildServers: withPermission("server", "read").query(async ({ ctx }) => {
-		const accessibleIds = await getAccessibleServerIds(ctx.session);
-
-		const result = await db.query.server.findMany({
-			orderBy: desc(server.createdAt),
-			where: and(
-				isNotNull(server.sshKeyId),
-				eq(server.organizationId, ctx.session.activeOrganizationId),
-				eq(server.serverStatus, "active"),
-				eq(server.serverType, "build"),
-			),
-		});
+		const [accessibleIds, result] = await Promise.all([
+			getAccessibleServerIds(ctx.session),
+			db.query.server.findMany({
+				orderBy: [desc(server.isDefaultBuildServer), desc(server.createdAt)],
+				where: and(
+					isNotNull(server.sshKeyId),
+					eq(server.organizationId, ctx.session.activeOrganizationId),
+					eq(server.serverStatus, "active"),
+					eq(server.serverType, "build"),
+				),
+			}),
+		]);
 		return result.filter((s) => accessibleIds.has(s.serverId));
 	}),
 	setup: withPermission("server", "create")

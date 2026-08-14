@@ -7,6 +7,32 @@ import { format } from "date-fns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const REAL_TEST_TIMEOUT = 180000; // 3 minutes
+const DOCKER_AVAILABLE = await execAsync("docker info")
+	.then(() => true)
+	.catch(() => false);
+
+vi.mock("@dokploy/server/constants", async () => {
+	const actual = await vi.importActual<
+		typeof import("@dokploy/server/constants")
+	>("@dokploy/server/constants");
+	return {
+		...actual,
+		paths: () => actual.paths(false),
+	};
+});
+
+vi.mock("@dokploy/server/utils/process/execAsync", async () => {
+	const actual = await vi.importActual<
+		typeof import("@dokploy/server/utils/process/execAsync")
+	>("@dokploy/server/utils/process/execAsync");
+	return {
+		...actual,
+		execAsyncRemote: vi.fn(
+			async (_serverId: string | null, command: string) =>
+				await actual.execAsync(command),
+		),
+	};
+});
 
 // Mock ONLY database and notifications
 vi.mock("@dokploy/server/db", () => {
@@ -106,6 +132,16 @@ const createMockApplication = (
 		buildType: "nixpacks" as const,
 		env: "NODE_ENV=production",
 		serverId: null,
+		buildServerId: "build-server-id",
+		buildRegistryId: "registry-id",
+		buildServer: {
+			serverId: "build-server-id",
+			organizationId: "org-id",
+			serverType: "build",
+			serverStatus: "active",
+			sshKeyId: "ssh-key-id",
+		},
+		buildRegistry: null,
 		rollbackActive: false,
 		enableSubmodules: false,
 		environmentId: "env-id",
@@ -172,7 +208,7 @@ async function cleanupFiles(appName: string) {
 	}
 }
 
-describe(
+describe.skipIf(!DOCKER_AVAILABLE)(
 	"deployApplication - REAL Execution Tests",
 	() => {
 		let currentAppName: string;
@@ -439,7 +475,7 @@ describe(
 		);
 
 		it(
-			"should REALLY build with Dockerfile",
+			"should reject a Dockerfile build without the zero-downtime prerequisites",
 			async () => {
 				const dockerfileAppName = `real-dockerfile-${Date.now()}`;
 				const dockerfileApp = createMockApplication({
@@ -458,31 +494,28 @@ describe(
 					dockerfileApp as any,
 				);
 
-				console.log(`\n🚀 Testing real Dockerfile build: ${currentAppName}`);
-
-				const result = await deployApplication({
-					applicationId: "test-app-id",
-					titleLog: "Real Dockerfile Test",
-					descriptionLog: "",
-				});
-
-				expect(result).toBe(true);
+				await expect(
+					deployApplication({
+						applicationId: "test-app-id",
+						titleLog: "Real Dockerfile Test",
+						descriptionLog: "",
+					}),
+				).rejects.toThrow(/Domain/);
 
 				// Verify log
 				const { stdout: logContent } = await execAsync(
 					`cat ${currentDeployment.logPath}`,
 				);
-				expect(logContent).toContain("Building");
-				expect(logContent).toContain(dockerfileAppName);
-				console.log("✅ Dockerfile build log verified");
+				expect(logContent).toContain("Domain");
+				expect(deploymentService.updateDeploymentStatus).toHaveBeenCalledWith(
+					"deployment-id",
+					"error",
+				);
 
-				// Verify image
 				const { stdout: dockerImages } = await execAsync(
 					`docker images ${currentAppName} --format "{{.Repository}}"`,
 				);
-				console.log("dockerImages", dockerImages);
-				expect(dockerImages.trim()).toBe(currentAppName);
-				console.log(`✅ Docker image created: ${currentAppName}`);
+				expect(dockerImages.trim()).toBe("");
 			},
 			REAL_TEST_TIMEOUT,
 		);

@@ -1,11 +1,13 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
 	boolean,
+	check,
 	integer,
 	jsonb,
 	pgEnum,
 	pgTable,
 	text,
+	uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { nanoid } from "nanoid";
@@ -27,78 +29,95 @@ import { generateAppName } from "./utils";
 export const serverStatus = pgEnum("serverStatus", ["active", "inactive"]);
 export const serverType = pgEnum("serverType", ["deploy", "build"]);
 
-export const server = pgTable("server", {
-	serverId: text("serverId")
-		.notNull()
-		.primaryKey()
-		.$defaultFn(() => nanoid()),
-	name: text("name").notNull(),
-	description: text("description"),
-	ipAddress: text("ipAddress").notNull(),
-	port: integer("port").notNull(),
-	username: text("username").notNull().default("root"),
-	appName: text("appName")
-		.notNull()
-		.$defaultFn(() => generateAppName("server")),
-	enableDockerCleanup: boolean("enableDockerCleanup").notNull().default(false),
-	buildsConcurrency: integer("buildsConcurrency").notNull().default(1),
-	createdAt: text("createdAt").notNull(),
-	organizationId: text("organizationId")
-		.notNull()
-		.references(() => organization.id, { onDelete: "cascade" }),
-	serverStatus: serverStatus("serverStatus").notNull().default("active"),
-	serverType: serverType("serverType").notNull().default("deploy"),
-	command: text("command").notNull().default(""),
-	sshKeyId: text("sshKeyId").references(() => sshKeys.sshKeyId, {
-		onDelete: "set null",
-	}),
-	metricsConfig: jsonb("metricsConfig")
-		.$type<{
-			server: {
-				type: "Dokploy" | "Remote";
-				refreshRate: number;
-				port: number;
-				token: string;
-				urlCallback: string;
-				retentionDays: number;
-				cronJob: string;
-				thresholds: {
-					cpu: number;
-					memory: number;
-				};
-			};
-			containers: {
-				refreshRate: number;
-				services: {
-					include: string[];
-					exclude: string[];
-				};
-			};
-		}>()
-		.notNull()
-		.default({
-			server: {
-				type: "Remote",
-				refreshRate: 60,
-				port: 4500,
-				token: "",
-				urlCallback: "",
-				cronJob: "",
-				retentionDays: 2,
-				thresholds: {
-					cpu: 0,
-					memory: 0,
-				},
-			},
-			containers: {
-				refreshRate: 60,
-				services: {
-					include: [],
-					exclude: [],
-				},
-			},
+export const server = pgTable(
+	"server",
+	{
+		serverId: text("serverId")
+			.notNull()
+			.primaryKey()
+			.$defaultFn(() => nanoid()),
+		name: text("name").notNull(),
+		description: text("description"),
+		ipAddress: text("ipAddress").notNull(),
+		port: integer("port").notNull(),
+		username: text("username").notNull().default("root"),
+		appName: text("appName")
+			.notNull()
+			.$defaultFn(() => generateAppName("server")),
+		enableDockerCleanup: boolean("enableDockerCleanup")
+			.notNull()
+			.default(false),
+		buildsConcurrency: integer("buildsConcurrency").notNull().default(1),
+		createdAt: text("createdAt").notNull(),
+		organizationId: text("organizationId")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		serverStatus: serverStatus("serverStatus").notNull().default("active"),
+		serverType: serverType("serverType").notNull().default("deploy"),
+		isDefaultBuildServer: boolean("isDefaultBuildServer")
+			.notNull()
+			.default(false),
+		command: text("command").notNull().default(""),
+		sshKeyId: text("sshKeyId").references(() => sshKeys.sshKeyId, {
+			onDelete: "set null",
 		}),
-});
+		metricsConfig: jsonb("metricsConfig")
+			.$type<{
+				server: {
+					type: "Dokploy" | "Remote";
+					refreshRate: number;
+					port: number;
+					token: string;
+					urlCallback: string;
+					retentionDays: number;
+					cronJob: string;
+					thresholds: {
+						cpu: number;
+						memory: number;
+					};
+				};
+				containers: {
+					refreshRate: number;
+					services: {
+						include: string[];
+						exclude: string[];
+					};
+				};
+			}>()
+			.notNull()
+			.default({
+				server: {
+					type: "Remote",
+					refreshRate: 60,
+					port: 4500,
+					token: "",
+					urlCallback: "",
+					cronJob: "",
+					retentionDays: 2,
+					thresholds: {
+						cpu: 0,
+						memory: 0,
+					},
+				},
+				containers: {
+					refreshRate: 60,
+					services: {
+						include: [],
+						exclude: [],
+					},
+				},
+			}),
+	},
+	(table) => [
+		uniqueIndex("server_default_build_server_org_unique")
+			.on(table.organizationId)
+			.where(sql`${table.isDefaultBuildServer} = true`),
+		check(
+			"server_default_build_server_requires_build_type",
+			sql`NOT ${table.isDefaultBuildServer} OR ${table.serverType} = 'build'`,
+		),
+	],
+);
 
 export const serverRelations = relations(server, ({ one, many }) => ({
 	deployments: many(deployments, {
@@ -191,6 +210,10 @@ export const apiUpdateServer = createSchema
 export const apiUpdateServerBuildsConcurrency = z.object({
 	serverId: z.string().min(1),
 	buildsConcurrency: z.number().int().min(1).max(100),
+});
+
+export const apiSetDefaultBuildServer = z.object({
+	serverId: z.string().min(1),
 });
 
 export const apiUpdateServerMonitoring = createSchema

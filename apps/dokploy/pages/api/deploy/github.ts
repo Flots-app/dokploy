@@ -2,6 +2,7 @@ import {
 	checkUserRepositoryPermissions,
 	createPreviewDeployment,
 	createSecurityBlockedComment,
+	ensureApplicationBuildServer,
 	findGithubById,
 	findPreviewDeploymentByApplicationId,
 	findPreviewDeploymentsByPullRequestId,
@@ -25,6 +26,21 @@ import {
 
 const getGithubRepositoryOwner = (githubBody: any) =>
 	githubBody?.repository?.owner?.name ?? githubBody?.repository?.owner?.login;
+
+const getEffectiveApplicationBuildServerId = async (application: {
+	applicationId: string;
+	buildServerId?: string | null;
+}) => {
+	const buildServerId = (
+		await ensureApplicationBuildServer(application.applicationId)
+	).buildServerId;
+	if (!buildServerId) {
+		throw new Error(
+			`Application ${application.applicationId} has no Build Server and cannot build`,
+		);
+	}
+	return buildServerId;
+};
 
 export default async function handler(
 	req: NextApiRequest,
@@ -128,32 +144,34 @@ export default async function handler(
 				),
 			});
 
-			for (const app of apps) {
-				const jobData: DeploymentJob = {
-					applicationId: app.applicationId as string,
-					titleLog: deploymentTitle,
-					descriptionLog: `Hash: ${deploymentHash}`,
-					type: "deploy",
-					applicationType: "application",
-					server: !!app.serverId,
-				};
-
-				if (IS_CLOUD && app.serverId) {
-					jobData.serverId = app.serverId;
-					deploy(jobData).catch((error) => {
-						console.error("Background deployment failed:", error);
-					});
-					continue;
-				}
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
-			}
+			await Promise.all(
+				apps.map(async (app) => {
+					const buildServerId = await getEffectiveApplicationBuildServerId(app);
+					const jobData: DeploymentJob = {
+						applicationId: app.applicationId as string,
+						titleLog: deploymentTitle,
+						descriptionLog: `Hash: ${deploymentHash}`,
+						type: "deploy",
+						applicationType: "application",
+						server: true,
+						serverId: buildServerId,
+					};
+					if (IS_CLOUD) {
+						deploy(jobData).catch((error) => {
+							console.error("Background deployment failed:", error);
+						});
+						return;
+					}
+					await myQueue.add(
+						"deployments",
+						{ ...jobData },
+						{
+							removeOnComplete: true,
+							removeOnFail: true,
+						},
+					);
+				}),
+			);
 
 			// Find compose apps configured to deploy on tag
 			const composeApps = await db.query.compose.findMany({
@@ -240,41 +258,43 @@ export default async function handler(
 				),
 			});
 
-			for (const app of apps) {
-				const jobData: DeploymentJob = {
-					applicationId: app.applicationId as string,
-					titleLog: deploymentTitle,
-					descriptionLog: `Hash: ${deploymentHash}`,
-					type: "deploy",
-					applicationType: "application",
-					server: !!app.serverId,
-				};
+			await Promise.all(
+				apps.map(async (app) => {
+					const shouldDeployPaths = shouldDeploy(
+						app.watchPaths,
+						normalizedCommits,
+					);
 
-				const shouldDeployPaths = shouldDeploy(
-					app.watchPaths,
-					normalizedCommits,
-				);
+					if (!shouldDeployPaths) {
+						return;
+					}
 
-				if (!shouldDeployPaths) {
-					continue;
-				}
-
-				if (IS_CLOUD && app.serverId) {
-					jobData.serverId = app.serverId;
-					deploy(jobData).catch((error) => {
-						console.error("Background deployment failed:", error);
-					});
-					continue;
-				}
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
-			}
+					const buildServerId = await getEffectiveApplicationBuildServerId(app);
+					const jobData: DeploymentJob = {
+						applicationId: app.applicationId as string,
+						titleLog: deploymentTitle,
+						descriptionLog: `Hash: ${deploymentHash}`,
+						type: "deploy",
+						applicationType: "application",
+						server: true,
+						serverId: buildServerId,
+					};
+					if (IS_CLOUD) {
+						deploy(jobData).catch((error) => {
+							console.error("Background deployment failed:", error);
+						});
+						return;
+					}
+					await myQueue.add(
+						"deployments",
+						{ ...jobData },
+						{
+							removeOnComplete: true,
+							removeOnFail: true,
+						},
+					);
+				}),
+			);
 
 			const composeApps = await db.query.compose.findMany({
 				where: and(
@@ -512,13 +532,15 @@ export default async function handler(
 					descriptionLog: `Hash: ${deploymentHash}`,
 					type: "deploy",
 					applicationType: "application-preview",
-					server: !!app.serverId,
+					server: true,
+					serverId: previewDeploymentId
+						? await getEffectiveApplicationBuildServerId(app)
+						: undefined,
 					previewDeploymentId,
 				};
 
 				if (previewDeploymentId) {
-					if (IS_CLOUD && app.serverId) {
-						jobData.serverId = app.serverId;
+					if (IS_CLOUD) {
 						deploy(jobData).catch((error) => {
 							console.error("Background deployment failed:", error);
 						});

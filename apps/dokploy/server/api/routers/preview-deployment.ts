@@ -1,5 +1,5 @@
 import {
-	findApplicationById,
+	ensureApplicationBuildServer,
 	findPreviewDeploymentById,
 	findPreviewDeploymentsByApplicationId,
 	IS_CLOUD,
@@ -75,7 +75,7 @@ export const previewDeploymentRouter = createTRPCRouter({
 				previewDeployment.applicationId,
 				{ deployment: ["create"] },
 			);
-			const application = await findApplicationById(
+			const application = await ensureApplicationBuildServer(
 				previewDeployment.applicationId,
 			);
 			const jobData: DeploymentJob = {
@@ -85,11 +85,11 @@ export const previewDeploymentRouter = createTRPCRouter({
 				type: "redeploy",
 				applicationType: "application-preview",
 				previewDeploymentId: input.previewDeploymentId,
-				server: !!application.serverId,
-				serverId: application.serverId ?? undefined,
+				server: true,
+				serverId: application.buildServerId ?? undefined,
 			};
 
-			if (IS_CLOUD && application.serverId) {
+			if (IS_CLOUD && application.buildServerId) {
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});

@@ -77,6 +77,11 @@ export const getBuildCommand = async (application: ApplicationNested) => {
 
 export const mechanizeDockerContainer = async (
 	application: ApplicationNested,
+	options: {
+		runtimeImage?: string;
+		deploymentId?: string;
+		enforceZeroDowntime?: boolean;
+	} = {},
 ) => {
 	const {
 		appName,
@@ -120,15 +125,43 @@ export const mechanizeDockerContainer = async (
 		env,
 		application.environment.project.env,
 		application.environment.env,
-	);
+	).filter((value) => !value.startsWith("DOKPLOY_DEPLOYMENT_ID="));
+	if (options.deploymentId) {
+		envVariables.push(`DOKPLOY_DEPLOYMENT_ID=${options.deploymentId}`);
+	}
 
-	const image = await getImageName(application);
+	const image = options.runtimeImage || (await getImageName(application));
 	const authConfig = await getAuthConfig(application);
 	const docker = await getRemoteDocker(application.serverId);
+	const reservedLabels: Record<string, string> = options.deploymentId
+		? {
+				"com.dokploy.application-id": application.applicationId,
+				"com.dokploy.deployment-id": options.deploymentId,
+				"com.dokploy.runtime-service": appName,
+			}
+		: {};
+	const zeroDowntimeUpdateConfig = options.enforceZeroDowntime
+		? {
+				Parallelism: 1,
+				Order: "start-first",
+				FailureAction: "rollback",
+				Monitor: 30_000_000_000,
+				MaxFailureRatio: 0,
+			}
+		: UpdateConfig;
+	const zeroDowntimeRollbackConfig = options.enforceZeroDowntime
+		? {
+				Parallelism: 1,
+				Order: "start-first",
+				Monitor: 30_000_000_000,
+				FailureAction: "pause",
+			}
+		: RollbackConfig;
 
 	const settings: CreateServiceOptions = {
 		authconfig: authConfig,
 		Name: appName,
+		Labels: reservedLabels,
 		TaskTemplate: {
 			ContainerSpec: {
 				HealthCheck,
@@ -145,7 +178,7 @@ export const mechanizeDockerContainer = async (
 						Args: args,
 					}),
 				...(Ulimits && { Ulimits }),
-				Labels,
+				Labels: { ...(Labels || {}), ...reservedLabels },
 			},
 			Networks,
 			RestartPolicy,
@@ -155,7 +188,7 @@ export const mechanizeDockerContainer = async (
 			},
 		},
 		Mode,
-		RollbackConfig,
+		RollbackConfig: zeroDowntimeRollbackConfig,
 		EndpointSpec: EndpointSpec
 			? EndpointSpec
 			: {
@@ -166,29 +199,34 @@ export const mechanizeDockerContainer = async (
 						PublishedPort: port.publishedPort,
 					})),
 				},
-		UpdateConfig,
+		UpdateConfig: zeroDowntimeUpdateConfig,
 	};
 
+	const service = docker.getService(appName);
+	let inspect: Awaited<ReturnType<typeof service.inspect>>;
 	try {
-		const service = docker.getService(appName);
-		const inspect = await service.inspect();
-
-		await service.update({
-			version: Number.parseInt(inspect.Version.Index),
-			...settings,
-			TaskTemplate: {
-				...settings.TaskTemplate,
-				ForceUpdate: inspect.Spec.TaskTemplate.ForceUpdate + 1,
-			},
-		});
+		inspect = await service.inspect();
 	} catch (error) {
-		console.log(error);
-		if (authConfig) {
-			await docker.createService(authConfig, settings);
-		} else {
-			await docker.createService(settings);
+		if (
+			typeof error !== "object" ||
+			error === null ||
+			!("statusCode" in error) ||
+			error.statusCode !== 404
+		) {
+			throw error;
 		}
+		await docker.createService(settings);
+		return;
 	}
+
+	await service.update({
+		version: Number.parseInt(inspect.Version.Index),
+		...settings,
+		TaskTemplate: {
+			...settings.TaskTemplate,
+			ForceUpdate: inspect.Spec.TaskTemplate.ForceUpdate + 1,
+		},
+	});
 };
 
 const getImageName = async (application: ApplicationNested) => {

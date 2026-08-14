@@ -1240,6 +1240,13 @@
       "when": 1785510460497,
       "tag": "0176_petite_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1786715780989,
+      "tag": "0177_clear_fallen_one",
+      "breakpoints": true
     }
   ]
 }

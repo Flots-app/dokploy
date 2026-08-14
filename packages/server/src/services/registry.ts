@@ -1,6 +1,7 @@
 import { db } from "@dokploy/server/db";
 import {
 	type apiCreateRegistry,
+	applications,
 	compose,
 	registry,
 } from "@dokploy/server/db/schema";
@@ -91,6 +92,14 @@ export const createRegistry = async (
 export const removeRegistry = async (registryId: string) => {
 	try {
 		const response = await db.transaction(async (tx) => {
+			await tx
+				.update(applications)
+				.set({
+					buildServerId: null,
+					buildRegistryId: null,
+				})
+				.where(eq(applications.buildRegistryId, registryId));
+
 			await tx
 				.update(compose)
 				.set({

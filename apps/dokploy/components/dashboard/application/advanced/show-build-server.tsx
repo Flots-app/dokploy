@@ -38,31 +38,10 @@ interface Props {
 	applicationId: string;
 }
 
-const schema = z
-	.object({
-		buildServerId: z.string().optional(),
-		buildRegistryId: z.string().optional(),
-	})
-	.refine(
-		(data) => {
-			// Both empty/none is valid
-			const buildServerIsNone =
-				!data.buildServerId || data.buildServerId === "none";
-			const buildRegistryIsNone =
-				!data.buildRegistryId || data.buildRegistryId === "none";
-
-			// Both should be either filled or empty
-			if (buildServerIsNone && buildRegistryIsNone) return true;
-			if (!buildServerIsNone && !buildRegistryIsNone) return true;
-
-			return false;
-		},
-		{
-			message:
-				"Both Build Server and Build Registry must be selected together, or both set to None",
-			path: ["buildServerId"], // Show error on buildServerId field
-		},
-	);
+const schema = z.object({
+	buildServerId: z.string().min(1, "A Build Server is required"),
+	buildRegistryId: z.string().min(1, "A Build Registry is required"),
+});
 
 type Schema = z.infer<typeof schema>;
 
@@ -74,36 +53,34 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 	const { data: buildServers } = api.server.buildServers.useQuery();
 	const { data: registries } = api.registry.all.useQuery();
 
-	const { mutateAsync, isPending } = api.application.update.useMutation();
+	const { mutateAsync, isPending } =
+		api.application.updateBuildServer.useMutation();
+	const defaultBuildServer = buildServers?.find(
+		(server) => server.isDefaultBuildServer,
+	);
 
 	const form = useForm<Schema>({
 		defaultValues: {
-			buildServerId: data?.buildServerId || "",
+			buildServerId: data?.buildServerId || defaultBuildServer?.serverId || "",
 			buildRegistryId: data?.buildRegistryId || "",
 		},
 		resolver: zodResolver(schema),
 	});
 
 	useEffect(() => {
-		if (data) {
+		if (data && buildServers) {
 			form.reset({
-				buildServerId: data?.buildServerId || "",
+				buildServerId: data.buildServerId || defaultBuildServer?.serverId || "",
 				buildRegistryId: data?.buildRegistryId || "",
 			});
 		}
-	}, [form, form.reset, data]);
+	}, [form, data, buildServers, defaultBuildServer?.serverId]);
 
 	const onSubmit = async (formData: Schema) => {
 		await mutateAsync({
 			applicationId,
-			buildServerId:
-				formData?.buildServerId === "none" || !formData?.buildServerId
-					? null
-					: formData?.buildServerId,
-			buildRegistryId:
-				formData?.buildRegistryId === "none" || !formData?.buildRegistryId
-					? null
-					: formData?.buildRegistryId,
+			buildServerId: formData.buildServerId,
+			buildRegistryId: formData.buildRegistryId,
 		})
 			.then(async () => {
 				toast.success("Build Server Settings Updated");
@@ -129,23 +106,33 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 			</CardHeader>
 			<CardContent className="flex flex-col gap-4">
 				<AlertBlock type="info">
-					Build servers offload the build process from your deployment servers.
-					Select a build server and registry to use for building your
-					application.
+					Every Application build runs on a dedicated Build Server. A Deploy
+					Server cannot be selected, and both a Build Server and registry are
+					required.
 				</AlertBlock>
 
 				<AlertBlock type="info">
-					📊 <strong>Important:</strong> Once the build finishes, you'll need to
-					wait a few seconds for the deployment server to download the image.
-					These download logs will <strong>NOT</strong> appear in the build
-					deployment logs. Check the <strong>Logs</strong> tab to see when the
-					container starts running.
+					<strong>Dockerfile zero-downtime contract:</strong> Git source, at
+					least one Dokploy Domain, a Docker Swarm health check, and a stop
+					grace period of at least 30 seconds are required. Published host
+					ports, mounts, custom Traefik labels and non-VIP routing are rejected.
+					Dokploy builds and pushes an immutable deployment image on this
+					server, pulls it before activation, then waits for a start-first Swarm
+					update and 30 seconds of stable health.
 				</AlertBlock>
 
-				<AlertBlock type="info">
-					<strong>Note:</strong> Build Server and Build Registry must be
-					configured together. You can either select both or set both to None.
-				</AlertBlock>
+				{!buildServers || buildServers.length === 0 ? (
+					<AlertBlock type="warning">
+						No active Build Server is available. Create one in{" "}
+						<Link
+							href="/dashboard/settings/servers"
+							className="text-primary underline"
+						>
+							Settings
+						</Link>{" "}
+						before building this Application.
+					</AlertBlock>
+				) : null}
 
 				{!registries || registries.length === 0 ? (
 					<AlertBlock type="warning">
@@ -172,16 +159,7 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 							render={({ field }) => (
 								<FormItem>
 									<FormLabel>Build Server</FormLabel>
-									<Select
-										onValueChange={(value) => {
-											field.onChange(value);
-											// If setting to "none", also reset build registry to "none"
-											if (value === "none") {
-												form.setValue("buildRegistryId", "none");
-											}
-										}}
-										value={field.value || "none"}
-									>
+									<Select onValueChange={field.onChange} value={field.value}>
 										<FormControl>
 											<SelectTrigger>
 												<SelectValue placeholder="Select a build server" />
@@ -189,11 +167,6 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 										</FormControl>
 										<SelectContent>
 											<SelectGroup>
-												<SelectItem value="none">
-													<span className="flex items-center gap-2">
-														<span>None</span>
-													</span>
-												</SelectItem>
 												{buildServers?.map((server) => (
 													<SelectItem
 														key={server.serverId}
@@ -201,6 +174,11 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 													>
 														<span className="flex items-center gap-2 justify-between w-full">
 															<span>{server.name}</span>
+															{server.isDefaultBuildServer ? (
+																<span className="text-primary text-xs">
+																	Default
+																</span>
+															) : null}
 															<span className="text-muted-foreground text-xs">
 																{server.ipAddress}
 															</span>
@@ -228,16 +206,7 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 							render={({ field }) => (
 								<FormItem>
 									<FormLabel>Build Registry</FormLabel>
-									<Select
-										onValueChange={(value) => {
-											field.onChange(value);
-											// If setting to "none", also reset build server to "none"
-											if (value === "none") {
-												form.setValue("buildServerId", "none");
-											}
-										}}
-										value={field.value || "none"}
-									>
+									<Select onValueChange={field.onChange} value={field.value}>
 										<FormControl>
 											<SelectTrigger>
 												<SelectValue placeholder="Select a registry" />
@@ -245,11 +214,6 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 										</FormControl>
 										<SelectContent>
 											<SelectGroup>
-												<SelectItem value="none">
-													<span className="flex items-center gap-2">
-														<span>None</span>
-													</span>
-												</SelectItem>
 												{registries?.map((registry) => (
 													<SelectItem
 														key={registry.registryId}
@@ -274,7 +238,11 @@ export const ShowBuildServer = ({ applicationId }: Props) => {
 						/>
 
 						<div className="flex w-full justify-end">
-							<Button isLoading={isPending} type="submit">
+							<Button
+								disabled={!buildServers?.length || !registries?.length}
+								isLoading={isPending}
+								type="submit"
+							>
 								Save
 							</Button>
 						</div>

@@ -8,9 +8,18 @@ const mocks = vi.hoisted(() => {
 	const returning = vi.fn(async () => [deleteResult]);
 	const deleteWhere = vi.fn(() => ({ returning }));
 	const deleteRow = vi.fn(() => ({ where: deleteWhere }));
+	const serverFindFirst = vi.fn(async () => ({
+		serverId: "build-1",
+		serverType: "build",
+		isDefaultBuildServer: false,
+	}));
 	const transaction = vi.fn(
 		async (callback: (tx: unknown) => Promise<unknown>) =>
-			await callback({ update, delete: deleteRow }),
+			await callback({
+				update,
+				delete: deleteRow,
+				query: { server: { findFirst: serverFindFirst } },
+			}),
 	);
 	const execAsync = vi.fn(async () => ({ stdout: "", stderr: "" }));
 
@@ -63,14 +72,14 @@ describe("Compose Build Server resource deletion", () => {
 			buildServerId: null,
 			buildRegistryId: null,
 		});
-		expect(mocks.updateWhere).toHaveBeenCalledOnce();
+		expect(mocks.updateWhere).toHaveBeenCalledTimes(2);
 		expect(mocks.deleteWhere).toHaveBeenCalledOnce();
 		expect(mocks.updateWhere.mock.invocationCallOrder[0]).toBeLessThan(
 			mocks.deleteWhere.mock.invocationCallOrder[0]!,
 		);
 	});
 
-	it("clears both Compose selections in the same transaction before deleting a registry", async () => {
+	it("clears Application and Compose selections in the same transaction before deleting a registry", async () => {
 		const deletedRegistry = {
 			registryId: "registry-1",
 			registryUrl: "registry.example.com",
@@ -86,7 +95,7 @@ describe("Compose Build Server resource deletion", () => {
 			buildServerId: null,
 			buildRegistryId: null,
 		});
-		expect(mocks.updateWhere).toHaveBeenCalledOnce();
+		expect(mocks.updateWhere).toHaveBeenCalledTimes(2);
 		expect(mocks.deleteWhere).toHaveBeenCalledOnce();
 		expect(mocks.updateWhere.mock.invocationCallOrder[0]).toBeLessThan(
 			mocks.deleteWhere.mock.invocationCallOrder[0]!,

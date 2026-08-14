@@ -1,4 +1,6 @@
 import {
+	assertApplicationBuildServerSelection,
+	assertApplicationRuntimeServerSelection,
 	createApplication,
 	createBackup,
 	createCompose,
@@ -18,6 +20,7 @@ import {
 	deleteProject,
 	findApplicationById,
 	findComposeById,
+	findDefaultBuildServer,
 	findEnvironmentById,
 	findLibsqlById,
 	findMariadbById,
@@ -27,6 +30,7 @@ import {
 	findProjectById,
 	findRedisById,
 	findUserById,
+	getAccessibleServerIds,
 	IS_CLOUD,
 	updateProjectById,
 } from "@dokploy/server";
@@ -879,9 +883,42 @@ export const projectRouter = createTRPCRouter({
 									0,
 									appName.lastIndexOf("-"),
 								);
+								const defaultBuildServer = await findDefaultBuildServer(
+									ctx.session.activeOrganizationId,
+								);
+								if (!defaultBuildServer) {
+									throw new TRPCError({
+										code: "BAD_REQUEST",
+										message:
+											"Create an active default Build Server before duplicating an Application",
+									});
+								}
+								try {
+									assertApplicationBuildServerSelection({
+										organizationId: ctx.session.activeOrganizationId,
+										accessibleServerIds: await getAccessibleServerIds(
+											ctx.session,
+										),
+										server: defaultBuildServer,
+									});
+									assertApplicationRuntimeServerSelection({
+										organizationId: ctx.session.activeOrganizationId,
+										buildServerId: defaultBuildServer.serverId,
+										runtimeServer: application.server,
+									});
+								} catch (error) {
+									throw new TRPCError({
+										code: "BAD_REQUEST",
+										message:
+											error instanceof Error
+												? error.message
+												: "Invalid Application server selection",
+									});
+								}
 
 								const newApplication = await createApplication({
 									...application,
+									buildServerId: defaultBuildServer.serverId,
 									appName: newAppName,
 									name: input.duplicateInSameProject
 										? `${application.name} (copy)`

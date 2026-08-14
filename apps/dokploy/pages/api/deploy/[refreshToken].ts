@@ -1,5 +1,6 @@
 import {
 	type Bitbucket,
+	ensureApplicationBuildServer,
 	getBitbucketHeaders,
 	IS_CLOUD,
 	shouldDeploy,
@@ -246,17 +247,35 @@ export default async function handler(
 		}
 
 		try {
+			let buildServerId: string | null = null;
+			try {
+				buildServerId = (
+					await ensureApplicationBuildServer(application.applicationId)
+				).buildServerId;
+			} catch {
+				res.status(409).json({
+					message:
+						"Application has no valid Build Server. Select an active default Build Server before building.",
+				});
+				return;
+			}
+			if (!buildServerId) {
+				res.status(409).json({
+					message:
+						"Application has no Build Server. Select an active default Build Server before building.",
+				});
+				return;
+			}
 			const jobData: DeploymentJob = {
 				applicationId: application.applicationId as string,
 				titleLog: deploymentTitle,
 				...(deploymentHash && { descriptionLog: `Hash: ${deploymentHash}` }),
 				type: "deploy",
 				applicationType: "application",
-				server: !!application.serverId,
+				server: true,
+				serverId: buildServerId,
 			};
-
-			if (IS_CLOUD && application.serverId) {
-				jobData.serverId = application.serverId;
+			if (IS_CLOUD) {
 				deploy(jobData).catch((error) => {
 					console.error("Background deployment failed:", error);
 				});
