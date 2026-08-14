@@ -75,9 +75,11 @@ export const removePreviewDeployment = async (previewDeploymentId: string) => {
 					application?.buildServerId,
 				),
 			async () => {
-				for (const serverId of checkoutServerIds) {
-					await removeDirectoryCode(application.appName, serverId);
-				}
+				await Promise.all(
+					[...checkoutServerIds].map((serverId) =>
+						removeDirectoryCode(application.appName, serverId),
+					),
+				);
 			},
 			async () =>
 				await removeTraefikConfig(application?.appName, application?.serverId),

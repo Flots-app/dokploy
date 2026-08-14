@@ -1032,14 +1032,14 @@ export const rebuildPreviewApplication = async ({
 	descriptionLog: string;
 	previewDeploymentId: string;
 }) => {
-	const application = await ensureApplicationBuildServer(applicationId);
-	const previewDeployment =
-		await findPreviewDeploymentById(previewDeploymentId);
-
+	const [application, previewDeployment] = await Promise.all([
+		ensureApplicationBuildServer(applicationId),
+		findPreviewDeploymentById(previewDeploymentId),
+	]);
 	const deployment = await createDeploymentPreview({
 		title: titleLog,
 		description: descriptionLog,
-		previewDeploymentId: previewDeploymentId,
+		previewDeploymentId: previewDeployment.previewDeploymentId,
 	});
 
 	const previewDomain = getDomainHost(previewDeployment?.domain as Domain);

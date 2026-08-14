@@ -118,28 +118,29 @@ export const serverRouter = createTRPCRouter({
 			return defaultCommand(isBuildServer);
 		}),
 	all: withPermission("server", "read").query(async ({ ctx }) => {
-		const accessibleIds = await getAccessibleServerIds(ctx.session);
-
-		const result = await db
-			.select({
-				...getTableColumns(server),
-				totalSum: sql<number>`cast(count(${applications.applicationId}) + count(${compose.composeId}) + count(${redis.redisId}) + count(${mariadb.mariadbId}) + count(${mongo.mongoId}) + count(${mysql.mysqlId}) + count(${postgres.postgresId}) as integer)`,
-				buildTotalSum: sql<number>`cast(
+		const [accessibleIds, result] = await Promise.all([
+			getAccessibleServerIds(ctx.session),
+			db
+				.select({
+					...getTableColumns(server),
+					totalSum: sql<number>`cast(count(${applications.applicationId}) + count(${compose.composeId}) + count(${redis.redisId}) + count(${mariadb.mariadbId}) + count(${mongo.mongoId}) + count(${mysql.mysqlId}) + count(${postgres.postgresId}) as integer)`,
+					buildTotalSum: sql<number>`cast(
 						(select count(*) from "application" where "application"."buildServerId" = ${server.serverId}) +
 						(select count(*) from "compose" where "compose"."buildServerId" = ${server.serverId})
 					as integer)`,
-			})
-			.from(server)
-			.leftJoin(applications, eq(applications.serverId, server.serverId))
-			.leftJoin(compose, eq(compose.serverId, server.serverId))
-			.leftJoin(redis, eq(redis.serverId, server.serverId))
-			.leftJoin(mariadb, eq(mariadb.serverId, server.serverId))
-			.leftJoin(mongo, eq(mongo.serverId, server.serverId))
-			.leftJoin(mysql, eq(mysql.serverId, server.serverId))
-			.leftJoin(postgres, eq(postgres.serverId, server.serverId))
-			.where(eq(server.organizationId, ctx.session.activeOrganizationId))
-			.orderBy(desc(server.createdAt))
-			.groupBy(server.serverId);
+				})
+				.from(server)
+				.leftJoin(applications, eq(applications.serverId, server.serverId))
+				.leftJoin(compose, eq(compose.serverId, server.serverId))
+				.leftJoin(redis, eq(redis.serverId, server.serverId))
+				.leftJoin(mariadb, eq(mariadb.serverId, server.serverId))
+				.leftJoin(mongo, eq(mongo.serverId, server.serverId))
+				.leftJoin(mysql, eq(mysql.serverId, server.serverId))
+				.leftJoin(postgres, eq(postgres.serverId, server.serverId))
+				.where(eq(server.organizationId, ctx.session.activeOrganizationId))
+				.orderBy(desc(server.createdAt))
+				.groupBy(server.serverId),
+		]);
 
 		return result.filter((s) => accessibleIds.has(s.serverId));
 	}),
@@ -227,17 +228,18 @@ export const serverRouter = createTRPCRouter({
 			return updated;
 		}),
 	buildServers: withPermission("server", "read").query(async ({ ctx }) => {
-		const accessibleIds = await getAccessibleServerIds(ctx.session);
-
-		const result = await db.query.server.findMany({
-			orderBy: [desc(server.isDefaultBuildServer), desc(server.createdAt)],
-			where: and(
-				isNotNull(server.sshKeyId),
-				eq(server.organizationId, ctx.session.activeOrganizationId),
-				eq(server.serverStatus, "active"),
-				eq(server.serverType, "build"),
-			),
-		});
+		const [accessibleIds, result] = await Promise.all([
+			getAccessibleServerIds(ctx.session),
+			db.query.server.findMany({
+				orderBy: [desc(server.isDefaultBuildServer), desc(server.createdAt)],
+				where: and(
+					isNotNull(server.sshKeyId),
+					eq(server.organizationId, ctx.session.activeOrganizationId),
+					eq(server.serverStatus, "active"),
+					eq(server.serverType, "build"),
+				),
+			}),
+		]);
 		return result.filter((s) => accessibleIds.has(s.serverId));
 	}),
 	setup: withPermission("server", "create")

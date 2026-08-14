@@ -297,12 +297,11 @@ export const applicationRouter = createTRPCRouter({
 				async () => await deleteAllMiddlewares(application),
 				async () => await removeDeployments(application),
 				async () => {
-					for (const serverId of new Set([
-						application.buildServerId,
-						application.serverId,
-					])) {
-						await removeDirectoryCode(application.appName, serverId);
-					}
+					await Promise.all(
+						[...new Set([application.buildServerId, application.serverId])].map(
+							(serverId) => removeDirectoryCode(application.appName, serverId),
+						),
+					);
 				},
 				async () =>
 					await removeMonitoringDirectory(
@@ -719,11 +718,24 @@ export const applicationRouter = createTRPCRouter({
 	updateBuildServer: protectedProcedure
 		.input(apiUpdateApplicationBuildServer)
 		.mutation(async ({ input, ctx }) => {
-			await checkServicePermissionAndAccess(ctx, input.applicationId, {
-				service: ["create"],
-			});
-			await checkPermission(ctx, { server: ["read"], registry: ["read"] });
-			const application = await findApplicationById(input.applicationId);
+			await Promise.all([
+				checkServicePermissionAndAccess(ctx, input.applicationId, {
+					service: ["create"],
+				}),
+				checkPermission(ctx, { server: ["read"], registry: ["read"] }),
+			]);
+			const [application, accessibleServerIds, buildServer, buildRegistry] =
+				await Promise.all([
+					findApplicationById(input.applicationId),
+					getAccessibleServerIds(ctx.session),
+					db.query.server.findFirst({
+						where: eq(server.serverId, input.buildServerId),
+					}),
+					db.query.registry.findFirst({
+						where: eq(registry.registryId, input.buildRegistryId),
+						columns: { password: false },
+					}),
+				]);
 			const organizationId = application.environment.project.organizationId;
 			if (organizationId !== ctx.session.activeOrganizationId) {
 				throw new TRPCError({
@@ -731,16 +743,6 @@ export const applicationRouter = createTRPCRouter({
 					message: "You are not authorized to update this Application",
 				});
 			}
-			const accessibleServerIds = await getAccessibleServerIds(ctx.session);
-			const [buildServer, buildRegistry] = await Promise.all([
-				db.query.server.findFirst({
-					where: eq(server.serverId, input.buildServerId),
-				}),
-				db.query.registry.findFirst({
-					where: eq(registry.registryId, input.buildRegistryId),
-					columns: { password: false },
-				}),
-			]);
 			try {
 				assertApplicationBuildServerSelection({
 					organizationId,
@@ -863,9 +865,11 @@ export const applicationRouter = createTRPCRouter({
 					(deployment) => deployment.buildServerId,
 				),
 			]);
-			for (const serverId of logServerIds) {
-				await clearOldDeployments(application.appName, serverId);
-			}
+			await Promise.all(
+				[...logServerIds].map((serverId) =>
+					clearOldDeployments(application.appName, serverId),
+				),
+			);
 			await audit(ctx, {
 				action: "delete",
 				resourceType: "application",

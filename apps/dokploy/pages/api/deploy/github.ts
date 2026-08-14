@@ -144,32 +144,34 @@ export default async function handler(
 				),
 			});
 
-			for (const app of apps) {
-				const buildServerId = await getEffectiveApplicationBuildServerId(app);
-				const jobData: DeploymentJob = {
-					applicationId: app.applicationId as string,
-					titleLog: deploymentTitle,
-					descriptionLog: `Hash: ${deploymentHash}`,
-					type: "deploy",
-					applicationType: "application",
-					server: true,
-					serverId: buildServerId,
-				};
-				if (IS_CLOUD) {
-					deploy(jobData).catch((error) => {
-						console.error("Background deployment failed:", error);
-					});
-					continue;
-				}
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
-			}
+			await Promise.all(
+				apps.map(async (app) => {
+					const buildServerId = await getEffectiveApplicationBuildServerId(app);
+					const jobData: DeploymentJob = {
+						applicationId: app.applicationId as string,
+						titleLog: deploymentTitle,
+						descriptionLog: `Hash: ${deploymentHash}`,
+						type: "deploy",
+						applicationType: "application",
+						server: true,
+						serverId: buildServerId,
+					};
+					if (IS_CLOUD) {
+						deploy(jobData).catch((error) => {
+							console.error("Background deployment failed:", error);
+						});
+						return;
+					}
+					await myQueue.add(
+						"deployments",
+						{ ...jobData },
+						{
+							removeOnComplete: true,
+							removeOnFail: true,
+						},
+					);
+				}),
+			);
 
 			// Find compose apps configured to deploy on tag
 			const composeApps = await db.query.compose.findMany({
@@ -256,41 +258,43 @@ export default async function handler(
 				),
 			});
 
-			for (const app of apps) {
-				const shouldDeployPaths = shouldDeploy(
-					app.watchPaths,
-					normalizedCommits,
-				);
+			await Promise.all(
+				apps.map(async (app) => {
+					const shouldDeployPaths = shouldDeploy(
+						app.watchPaths,
+						normalizedCommits,
+					);
 
-				if (!shouldDeployPaths) {
-					continue;
-				}
+					if (!shouldDeployPaths) {
+						return;
+					}
 
-				const buildServerId = await getEffectiveApplicationBuildServerId(app);
-				const jobData: DeploymentJob = {
-					applicationId: app.applicationId as string,
-					titleLog: deploymentTitle,
-					descriptionLog: `Hash: ${deploymentHash}`,
-					type: "deploy",
-					applicationType: "application",
-					server: true,
-					serverId: buildServerId,
-				};
-				if (IS_CLOUD) {
-					deploy(jobData).catch((error) => {
-						console.error("Background deployment failed:", error);
-					});
-					continue;
-				}
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
-			}
+					const buildServerId = await getEffectiveApplicationBuildServerId(app);
+					const jobData: DeploymentJob = {
+						applicationId: app.applicationId as string,
+						titleLog: deploymentTitle,
+						descriptionLog: `Hash: ${deploymentHash}`,
+						type: "deploy",
+						applicationType: "application",
+						server: true,
+						serverId: buildServerId,
+					};
+					if (IS_CLOUD) {
+						deploy(jobData).catch((error) => {
+							console.error("Background deployment failed:", error);
+						});
+						return;
+					}
+					await myQueue.add(
+						"deployments",
+						{ ...jobData },
+						{
+							removeOnComplete: true,
+							removeOnFail: true,
+						},
+					);
+				}),
+			);
 
 			const composeApps = await db.query.compose.findMany({
 				where: and(

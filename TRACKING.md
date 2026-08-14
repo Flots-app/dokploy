@@ -69,6 +69,9 @@
   and the complete non-real suite (85 files, 797 tests). The local real test
   file requires the external `nixpacks` binary; its Dockerfile prerequisite
   case passes and CI remains responsible for the provisioned real environment.
+- [x] Resolve the 11 React Doctor warnings reported on PR #22; React Doctor
+  0.9.12 reports no changed-scope issues against `origin/canary`, and the full
+  797-test suite still passes after the concurrency refactor.
 - [x] Commit, push and open the draft PR.
 
 ---

@@ -688,13 +688,17 @@ export const removeDeployments = async (application: Application) => {
 			].filter((value): value is string => Boolean(value)),
 		),
 	];
-	for (const serverId of remoteServerIds) {
-		const logsPath = path.join(paths(true).LOGS_PATH, appName);
-		await execAsyncRemote(serverId, `rm -rf ${quote([logsPath])}`);
-	}
+	const remoteLogsPath = path.join(paths(true).LOGS_PATH, appName);
+	await Promise.all(
+		remoteServerIds.map((serverId) =>
+			execAsyncRemote(serverId, `rm -rf ${quote([remoteLogsPath])}`),
+		),
+	);
 	const localLogsPath = path.join(paths(false).LOGS_PATH, appName);
-	await removeDirectoryIfExistsContent(localLogsPath);
-	await removeDeploymentsByApplicationId(applicationId);
+	await Promise.all([
+		removeDirectoryIfExistsContent(localLogsPath),
+		removeDeploymentsByApplicationId(applicationId),
+	]);
 };
 
 const removeLastTenDeployments = async (
@@ -745,14 +749,17 @@ export const removeDeploymentsByPreviewDeploymentId = async (
 			(deployment) => deployment.buildServerId || deployment.serverId,
 		),
 	]);
-	for (const logServerId of logServerIds) {
-		const logsPath = path.join(paths(Boolean(logServerId)).LOGS_PATH, appName);
-		if (logServerId) {
-			await execAsyncRemote(logServerId, `rm -rf ${quote([logsPath])}`);
-		} else {
-			await removeDirectoryIfExistsContent(logsPath);
-		}
-	}
+	await Promise.all(
+		[...logServerIds].map((logServerId) => {
+			const logsPath = path.join(
+				paths(Boolean(logServerId)).LOGS_PATH,
+				appName,
+			);
+			return logServerId
+				? execAsyncRemote(logServerId, `rm -rf ${quote([logsPath])}`)
+				: removeDirectoryIfExistsContent(logsPath);
+		}),
+	);
 
 	await db
 		.delete(deployments)
