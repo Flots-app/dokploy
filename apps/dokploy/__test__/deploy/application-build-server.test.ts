@@ -200,6 +200,9 @@ describe("Application Build Server commands", () => {
 		);
 		expect(wait).toContain("rollback_started");
 		expect(wait).toContain("Candidate release became unhealthy");
+		expect(wait).toContain("docker service inspect --format '{{.ID}}'");
+		expect(wait).toContain('docker service ls --filter "id=$service_id"');
+		expect(wait).not.toContain('docker service ls --filter "name=^');
 		const rollback = getRollbackApplicationServiceCommand(
 			"app-test",
 			"registry.example.com/team/app-test:deployment-123",
@@ -207,5 +210,8 @@ describe("Application Build Server commands", () => {
 		);
 		expect(rollback).toContain("docker service update --rollback");
 		expect(rollback).toContain("rollback did not converge");
+		expect(rollback).toContain("docker service inspect --format '{{.ID}}'");
+		expect(rollback).toContain('docker service ls --filter "id=$service_id"');
+		expect(rollback).not.toContain('docker service ls --filter "name=^');
 	});
 });

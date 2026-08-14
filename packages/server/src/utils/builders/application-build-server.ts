@@ -298,7 +298,9 @@ deadline=$(( $(date +%s) + ${readinessTimeoutSeconds} ))
 check_release() {
   update_state="$(docker service inspect --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}' "$service_name" 2>/dev/null || true)"
   case "$update_state" in paused|rollback_started|rollback_paused|rollback_completed) echo "Swarm activation failed with state $update_state" >&2; return 2;; esac
-  replicas="$(docker service ls --filter "name=^${appName}$" --format '{{.Replicas}}' | head -n 1)"
+  service_id="$(docker service inspect --format '{{.ID}}' "$service_name" 2>/dev/null || true)"
+  [ -n "$service_id" ] || return 1
+  replicas="$(docker service ls --filter "id=$service_id" --format '{{.Replicas}}' | head -n 1)"
   running="\${replicas%/*}"
   desired="\${replicas#*/}"
   actual_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$service_name" 2>/dev/null || true)"
@@ -361,7 +363,8 @@ case "$update_state" in rollback_started) ;; *) docker service update --rollback
 deadline=$(( $(date +%s) + ${readinessTimeoutSeconds} ))
 while true; do
   current_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$service_name" 2>/dev/null || true)"
-  replicas="$(docker service ls --filter "name=^${appName}$" --format '{{.Replicas}}' | head -n 1)"
+  service_id="$(docker service inspect --format '{{.ID}}' "$service_name" 2>/dev/null || true)"
+  replicas="$(docker service ls --filter "id=$service_id" --format '{{.Replicas}}' | head -n 1)"
   running="\${replicas%/*}"
   desired="\${replicas#*/}"
   if matches_image "$current_image" "$previous_image" && [ -n "$running" ] && [ "$running" = "$desired" ] && [ "$desired" -gt 0 ]; then
