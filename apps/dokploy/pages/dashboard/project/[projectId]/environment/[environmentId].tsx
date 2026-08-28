@@ -25,7 +25,7 @@ import type {
 } from "next";
 import Head from "next/head";
 import Link from "next/link";
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useReducer } from "react";
 import { toast } from "sonner";
 import superjson from "superjson";
 import { AddAiAssistant } from "@/components/dashboard/project/add-ai-assistant";
@@ -131,6 +131,48 @@ export type Services = {
 	lastDeployDate?: Date | null;
 	icon?: string | null;
 };
+
+type EnvironmentPageState = {
+	deleteVolumes: boolean;
+	isBulkActionLoading: boolean;
+	isBulkDeleteDialogOpen: boolean;
+	isDropdownOpen: boolean;
+	isMoveDialogOpen: boolean;
+	openCombobox: boolean;
+	searchQuery: string;
+	selectedServerId: string;
+	selectedServices: string[];
+	selectedTargetEnvironment: string;
+	selectedTargetProject: string;
+	selectedTypes: string[];
+	serviceToDelete: Services | null;
+	sortBy: string;
+};
+
+const createEnvironmentPageState = (): EnvironmentPageState => ({
+	deleteVolumes: false,
+	isBulkActionLoading: false,
+	isBulkDeleteDialogOpen: false,
+	isDropdownOpen: false,
+	isMoveDialogOpen: false,
+	openCombobox: false,
+	searchQuery: "",
+	selectedServerId: "all",
+	selectedServices: [],
+	selectedTargetEnvironment: "",
+	selectedTargetProject: "",
+	selectedTypes: [],
+	serviceToDelete: null,
+	sortBy:
+		typeof window !== "undefined"
+			? localStorage.getItem("servicesSort") || "lastDeploy-desc"
+			: "lastDeploy-desc",
+});
+
+const environmentPageStateReducer = (
+	state: EnvironmentPageState,
+	update: Partial<EnvironmentPageState>,
+) => ({ ...state, ...update });
 
 type Environment = Awaited<ReturnType<typeof findEnvironmentById>>;
 
@@ -296,7 +338,54 @@ const EnvironmentPage = (
 	props: InferGetServerSidePropsType<typeof getServerSideProps>,
 ) => {
 	const utils = api.useUtils();
-	const [isBulkActionLoading, setIsBulkActionLoading] = useState(false);
+	const [pageState, updatePageState] = useReducer(
+		environmentPageStateReducer,
+		undefined,
+		createEnvironmentPageState,
+	);
+	const {
+		deleteVolumes,
+		isBulkActionLoading,
+		isBulkDeleteDialogOpen,
+		isDropdownOpen,
+		isMoveDialogOpen,
+		openCombobox,
+		searchQuery,
+		selectedServerId,
+		selectedServices,
+		selectedTargetEnvironment,
+		selectedTargetProject,
+		selectedTypes,
+		serviceToDelete,
+		sortBy,
+	} = pageState;
+	const setDeleteVolumes = (deleteVolumes: boolean) =>
+		updatePageState({ deleteVolumes });
+	const setIsBulkActionLoading = (isBulkActionLoading: boolean) =>
+		updatePageState({ isBulkActionLoading });
+	const setIsBulkDeleteDialogOpen = (isBulkDeleteDialogOpen: boolean) =>
+		updatePageState({ isBulkDeleteDialogOpen });
+	const setIsDropdownOpen = (isDropdownOpen: boolean) =>
+		updatePageState({ isDropdownOpen });
+	const setIsMoveDialogOpen = (isMoveDialogOpen: boolean) =>
+		updatePageState({ isMoveDialogOpen });
+	const setOpenCombobox = (openCombobox: boolean) =>
+		updatePageState({ openCombobox });
+	const setSearchQuery = (searchQuery: string) =>
+		updatePageState({ searchQuery });
+	const setSelectedServerId = (selectedServerId: string) =>
+		updatePageState({ selectedServerId });
+	const setSelectedServices = (selectedServices: string[]) =>
+		updatePageState({ selectedServices });
+	const setSelectedTargetEnvironment = (selectedTargetEnvironment: string) =>
+		updatePageState({ selectedTargetEnvironment });
+	const setSelectedTargetProject = (selectedTargetProject: string) =>
+		updatePageState({ selectedTargetProject });
+	const setSelectedTypes = (selectedTypes: string[]) =>
+		updatePageState({ selectedTypes });
+	const setServiceToDelete = (serviceToDelete: Services | null) =>
+		updatePageState({ serviceToDelete });
+	const setSortBy = (sortBy: string) => updatePageState({ sortBy });
 	const { projectId, environmentId } = props;
 	const { data: auth } = api.user.get.useQuery();
 	const { data: permissions } = api.user.getPermissions.useQuery();
@@ -309,13 +398,6 @@ const EnvironmentPage = (
 			name: env.name,
 			href: `/dashboard/project/${projectId}/environment/${env.environmentId}`,
 		})) || [];
-
-	const [sortBy, setSortBy] = useState<string>(() => {
-		if (typeof window !== "undefined") {
-			return localStorage.getItem("servicesSort") || "lastDeploy-desc";
-		}
-		return "lastDeploy-desc";
-	});
 
 	useEffect(() => {
 		localStorage.setItem("servicesSort", sortBy);
@@ -388,12 +470,6 @@ const EnvironmentPage = (
 	});
 	const { data: allProjects } = api.project.all.useQuery();
 
-	const [isMoveDialogOpen, setIsMoveDialogOpen] = useState(false);
-	const [selectedTargetProject, setSelectedTargetProject] =
-		useState<string>("");
-	const [selectedTargetEnvironment, setSelectedTargetEnvironment] =
-		useState<string>("");
-
 	const { data: selectedProjectEnvironments } =
 		api.environment.byProjectId.useQuery(
 			{ projectId: selectedTargetProject },
@@ -415,7 +491,6 @@ const EnvironmentPage = (
 
 	const applications = extractServicesFromEnvironment(currentEnvironment);
 
-	const [searchQuery, setSearchQuery] = useState("");
 	const serviceTypes = [
 		{ value: "application", label: "Application", icon: GlobeIcon },
 		{ value: "postgres", label: "PostgreSQL", icon: PostgresqlIcon },
@@ -426,15 +501,6 @@ const EnvironmentPage = (
 		{ value: "compose", label: "Compose", icon: CircuitBoard },
 		{ value: "libsql", label: "Libsql", icon: LibsqlIcon },
 	];
-
-	const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
-	const [openCombobox, setOpenCombobox] = useState(false);
-	const [selectedServices, setSelectedServices] = useState<string[]>([]);
-	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-	const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
-	const [deleteVolumes, setDeleteVolumes] = useState(false);
-	const [selectedServerId, setSelectedServerId] = useState<string>("all");
-	const [serviceToDelete, setServiceToDelete] = useState<Services | null>(null);
 
 	const handleSelectAll = () => {
 		if (selectedServices.length === filteredServices.length) {
@@ -447,10 +513,10 @@ const EnvironmentPage = (
 	const handleServiceSelect = (serviceId: string, event: React.MouseEvent) => {
 		event.preventDefault();
 		event.stopPropagation();
-		setSelectedServices((prev) =>
-			prev.includes(serviceId)
-				? prev.filter((id) => id !== serviceId)
-				: [...prev, serviceId],
+		setSelectedServices(
+			selectedServices.includes(serviceId)
+				? selectedServices.filter((id) => id !== serviceId)
+				: [...selectedServices, serviceId],
 		);
 	};
 
@@ -1528,10 +1594,12 @@ const EnvironmentPage = (
 															<CommandItem
 																key={type.value}
 																onSelect={() => {
-																	setSelectedTypes((prev) =>
-																		prev.includes(type.value)
-																			? prev.filter((t) => t !== type.value)
-																			: [...prev, type.value],
+																	setSelectedTypes(
+																		selectedTypes.includes(type.value)
+																			? selectedTypes.filter(
+																					(t) => t !== type.value,
+																				)
+																			: [...selectedTypes, type.value],
 																	);
 																	setOpenCombobox(false);
 																}}
