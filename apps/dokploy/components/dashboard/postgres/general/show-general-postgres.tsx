@@ -2,6 +2,7 @@ import { Ban, CheckCircle2, RefreshCcw, Rocket, Terminal } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DeploymentConfirmation } from "@/components/shared/deployment-confirmation";
 import { DialogAction } from "@/components/shared/dialog-action";
 import { DrawerLogs } from "@/components/shared/drawer-logs";
 import { Button } from "@/components/ui/button";
@@ -76,11 +77,14 @@ export const ShowGeneralPostgres = ({ postgresId }: Props) => {
 					<CardContent className="flex flex-row gap-4 flex-wrap">
 						<TooltipProvider disableHoverableContent={false}>
 							{canDeploy && (
-								<DialogAction
+								<DeploymentConfirmation
 									title="Deploy PostgreSQL"
 									description="Are you sure you want to deploy this postgres?"
-									type="default"
-									onClick={async () => {
+									environmentName={data?.environment.name ?? ""}
+									requireConfirmation={
+										data?.environment.project.requireDeploymentConfirmation
+									}
+									onConfirm={async () => {
 										setIsDeploying(true);
 										await new Promise((resolve) => setTimeout(resolve, 1000));
 										refetch();
@@ -105,7 +109,7 @@ export const ShowGeneralPostgres = ({ postgresId }: Props) => {
 											</TooltipPrimitive.Portal>
 										</Tooltip>
 									</Button>
-								</DialogAction>
+								</DeploymentConfirmation>
 							)}
 							{canDeploy && (
 								<DialogAction

@@ -1,0 +1,1 @@
+ALTER TABLE "project" ADD COLUMN "requireDeploymentConfirmation" boolean DEFAULT false NOT NULL;

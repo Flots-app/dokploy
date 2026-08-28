@@ -3,6 +3,7 @@ import { TrashIcon } from "lucide-react";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { DeploymentConfirmation } from "@/components/shared/deployment-confirmation";
 import { Button } from "@/components/ui/button";
 import { Dropzone } from "@/components/ui/dropzone";
 import {
@@ -63,7 +64,7 @@ export const SaveDragNDrop = ({ applicationId }: Props) => {
 	return (
 		<Form {...form}>
 			<form
-				onSubmit={form.handleSubmit(onSubmit)}
+				onSubmit={(event) => event.preventDefault()}
 				className="flex flex-col gap-4"
 			>
 				<div className="grid md:grid-cols-2 gap-4 ">
@@ -126,14 +127,24 @@ export const SaveDragNDrop = ({ applicationId }: Props) => {
 				</div>
 
 				<div className="flex flex-row justify-end">
-					<Button
-						type="submit"
-						className="w-fit"
-						isLoading={isPending}
-						disabled={!zip || isPending}
+					<DeploymentConfirmation
+						description="Are you sure you want to deploy this application archive?"
+						environmentName={data?.environment.name ?? ""}
+						onConfirm={form.handleSubmit(onSubmit)}
+						requireConfirmation={
+							data?.environment.project.requireDeploymentConfirmation
+						}
+						title="Deploy Application"
 					>
-						Deploy{" "}
-					</Button>
+						<Button
+							type="button"
+							className="w-fit"
+							isLoading={isPending}
+							disabled={!zip || isPending}
+						>
+							Deploy
+						</Button>
+					</DeploymentConfirmation>
 				</div>
 			</form>
 		</Form>

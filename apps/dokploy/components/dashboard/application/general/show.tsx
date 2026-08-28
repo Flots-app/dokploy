@@ -11,6 +11,7 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { toast } from "sonner";
 import { ShowBuildChooseForm } from "@/components/dashboard/application/build/show";
 import { ShowProviderForm } from "@/components/dashboard/application/general/generic/show";
+import { DeploymentConfirmation } from "@/components/shared/deployment-confirmation";
 import { DialogAction } from "@/components/shared/dialog-action";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -61,11 +62,14 @@ export const ShowGeneralApplication = ({ applicationId }: Props) => {
 				<CardContent className="grid grid-cols-2 lg:flex lg:flex-row lg:flex-wrap gap-4">
 					<TooltipProvider delayDuration={0} disableHoverableContent={false}>
 						{canDeploy && (
-							<DialogAction
+							<DeploymentConfirmation
 								title="Deploy Application"
 								description="Are you sure you want to deploy this application?"
-								type="default"
-								onClick={async () => {
+								environmentName={data?.environment.name ?? ""}
+								requireConfirmation={
+									data?.environment.project.requireDeploymentConfirmation
+								}
+								onConfirm={async () => {
 									await deploy({
 										applicationId: applicationId,
 									})
@@ -103,7 +107,7 @@ export const ShowGeneralApplication = ({ applicationId }: Props) => {
 										</TooltipPrimitive.Portal>
 									</Tooltip>
 								</Button>
-							</DialogAction>
+							</DeploymentConfirmation>
 						)}
 						{canDeploy && (
 							<DialogAction
