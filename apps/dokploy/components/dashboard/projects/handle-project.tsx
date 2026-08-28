@@ -22,12 +22,14 @@ import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
 	Form,
 	FormControl,
+	FormDescription,
 	FormField,
 	FormItem,
 	FormLabel,
 	FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/utils/api";
 
@@ -52,6 +54,7 @@ const AddProjectSchema = z.object({
 		})
 		.transform((name) => name.trim()),
 	description: z.string().optional(),
+	requireDeploymentConfirmation: z.boolean(),
 });
 
 type AddProject = z.infer<typeof AddProjectSchema>;
@@ -86,6 +89,7 @@ export const HandleProject = ({ projectId }: Props) => {
 		defaultValues: {
 			description: "",
 			name: "",
+			requireDeploymentConfirmation: false,
 		},
 		resolver: standardSchemaResolver(AddProjectSchema),
 	});
@@ -94,6 +98,8 @@ export const HandleProject = ({ projectId }: Props) => {
 		form.reset({
 			description: data?.description ?? "",
 			name: data?.name ?? "",
+			requireDeploymentConfirmation:
+				data?.requireDeploymentConfirmation ?? false,
 		});
 		// Load existing tags when editing a project
 		if (data?.projectTags) {
@@ -108,6 +114,7 @@ export const HandleProject = ({ projectId }: Props) => {
 		await mutateAsync({
 			name: data.name,
 			description: data.description,
+			requireDeploymentConfirmation: data.requireDeploymentConfirmation,
 			projectId: projectId || "",
 		})
 			.then(async (data) => {
@@ -231,6 +238,31 @@ export const HandleProject = ({ projectId }: Props) => {
 								placeholder="Select tags..."
 							/>
 						</div>
+
+						{projectId && (
+							<FormField
+								control={form.control}
+								name="requireDeploymentConfirmation"
+								render={({ field }) => (
+									<FormItem className="flex items-center justify-between gap-4 rounded-lg border p-4">
+										<div className="space-y-1">
+											<FormLabel>Deployment confirmation</FormLabel>
+											<FormDescription>
+												Require users to type the environment name before
+												deploying.
+											</FormDescription>
+										</div>
+										<FormControl>
+											<Switch
+												aria-label="Require deployment confirmation"
+												checked={field.value}
+												onCheckedChange={field.onChange}
+											/>
+										</FormControl>
+									</FormItem>
+								)}
+							/>
+						)}
 					</form>
 
 					<DialogFooter>

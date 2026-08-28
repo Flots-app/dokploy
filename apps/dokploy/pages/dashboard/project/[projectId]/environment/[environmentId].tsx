@@ -50,6 +50,7 @@ import { DashboardLayout } from "@/components/layouts/dashboard-layout";
 import { AdvanceBreadcrumb } from "@/components/shared/advance-breadcrumb";
 import { AlertBlock } from "@/components/shared/alert-block";
 import { DateTooltip } from "@/components/shared/date-tooltip";
+import { DeploymentConfirmation } from "@/components/shared/deployment-confirmation";
 import { DialogAction } from "@/components/shared/dialog-action";
 import { FocusShortcutInput } from "@/components/shared/focus-shortcut-input";
 import { StatusTooltip } from "@/components/shared/status-tooltip";
@@ -1156,11 +1157,14 @@ const EnvironmentPage = (
 														Start
 													</Button>
 												</DialogAction>
-												<DialogAction
+												<DeploymentConfirmation
 													title="Deploy Services"
 													description={`Are you sure you want to deploy ${selectedServices.length} service${selectedServices.length !== 1 ? "s" : ""}? This will redeploy/restart the selected services.`}
-													onClick={handleBulkDeploy}
-													type="default"
+													environmentName={currentEnvironment?.name ?? ""}
+													onConfirm={handleBulkDeploy}
+													requireConfirmation={
+														projectData?.requireDeploymentConfirmation
+													}
 													disabled={
 														selectedServices.length === 0 || isBulkActionLoading
 													}
@@ -1172,7 +1176,7 @@ const EnvironmentPage = (
 														<Play className="mr-2 h-4 w-4" />
 														Deploy
 													</Button>
-												</DialogAction>
+												</DeploymentConfirmation>
 												<DialogAction
 													title="Stop Services"
 													description={`Are you sure you want to stop ${selectedServices.length} services?`}
@@ -1744,15 +1748,40 @@ const EnvironmentPage = (
 																	<Play className="size-4" />
 																	Start
 																</ContextMenuItem>
-																<ContextMenuItem
-																	className="flex items-center gap-2"
-																	onClick={() =>
-																		handleServiceAction(service, "deploy")
-																	}
-																>
-																	<RefreshCw className="size-4" />
-																	Deploy
-																</ContextMenuItem>
+																{projectData?.requireDeploymentConfirmation ? (
+																	<DeploymentConfirmation
+																		description={`Are you sure you want to deploy ${service.name}?`}
+																		environmentName={
+																			currentEnvironment?.name ?? ""
+																		}
+																		onConfirm={() =>
+																			handleServiceAction(service, "deploy")
+																		}
+																		requireConfirmation
+																		title={`Deploy ${service.name}`}
+																	>
+																		<ContextMenuItem
+																			className="flex items-center gap-2"
+																			onSelect={(event) =>
+																				event.preventDefault()
+																			}
+																		>
+																			<RefreshCw className="size-4" />
+																			Deploy
+																		</ContextMenuItem>
+																	</DeploymentConfirmation>
+																) : (
+																	<ContextMenuItem
+																		className="flex items-center gap-2"
+																		disabled={!projectData}
+																		onClick={() =>
+																			handleServiceAction(service, "deploy")
+																		}
+																	>
+																		<RefreshCw className="size-4" />
+																		Deploy
+																	</ContextMenuItem>
+																)}
 																<ContextMenuItem
 																	className="flex items-center gap-2 text-orange-500 focus:text-orange-500"
 																	onClick={() =>

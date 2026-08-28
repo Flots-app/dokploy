@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm";
-import { pgTable, text } from "drizzle-orm/pg-core";
+import { boolean, pgTable, text } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -15,6 +15,9 @@ export const projects = pgTable("project", {
 		.$defaultFn(() => nanoid()),
 	name: text("name").notNull(),
 	description: text("description"),
+	requireDeploymentConfirmation: boolean("requireDeploymentConfirmation")
+		.notNull()
+		.default(false),
 	createdAt: text("createdAt")
 		.notNull()
 		.$defaultFn(() => new Date().toISOString()),
@@ -45,6 +48,7 @@ export const apiCreateProject = createSchema.pick({
 	name: true,
 	description: true,
 	env: true,
+	requireDeploymentConfirmation: true,
 });
 
 export const apiFindOneProject = z.object({
