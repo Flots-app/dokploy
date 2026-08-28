@@ -50,8 +50,7 @@ import { DashboardLayout } from "@/components/layouts/dashboard-layout";
 import { AdvanceBreadcrumb } from "@/components/shared/advance-breadcrumb";
 import { AlertBlock } from "@/components/shared/alert-block";
 import { DateTooltip } from "@/components/shared/date-tooltip";
-import { DeploymentConfirmation } from "@/components/shared/deployment-confirmation";
-import { DialogAction } from "@/components/shared/dialog-action";
+import { DeployGuard, DialogAction } from "@/components/shared/dialog-action";
 import { FocusShortcutInput } from "@/components/shared/focus-shortcut-input";
 import { StatusTooltip } from "@/components/shared/status-tooltip";
 import { Button } from "@/components/ui/button";
@@ -1157,7 +1156,7 @@ const EnvironmentPage = (
 														Start
 													</Button>
 												</DialogAction>
-												<DeploymentConfirmation
+												<DeployGuard
 													title="Deploy Services"
 													description={`Are you sure you want to deploy ${selectedServices.length} service${selectedServices.length !== 1 ? "s" : ""}? This will redeploy/restart the selected services.`}
 													environmentName={currentEnvironment?.name ?? ""}
@@ -1176,7 +1175,7 @@ const EnvironmentPage = (
 														<Play className="mr-2 h-4 w-4" />
 														Deploy
 													</Button>
-												</DeploymentConfirmation>
+												</DeployGuard>
 												<DialogAction
 													title="Stop Services"
 													description={`Are you sure you want to stop ${selectedServices.length} services?`}
@@ -1749,7 +1748,7 @@ const EnvironmentPage = (
 																	Start
 																</ContextMenuItem>
 																{projectData?.requireDeploymentConfirmation ? (
-																	<DeploymentConfirmation
+																	<DeployGuard
 																		description={`Are you sure you want to deploy ${service.name}?`}
 																		environmentName={
 																			currentEnvironment?.name ?? ""
@@ -1769,7 +1768,7 @@ const EnvironmentPage = (
 																			<RefreshCw className="size-4" />
 																			Deploy
 																		</ContextMenuItem>
-																	</DeploymentConfirmation>
+																	</DeployGuard>
 																) : (
 																	<ContextMenuItem
 																		className="flex items-center gap-2"

@@ -10,6 +10,8 @@ import {
 	AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
+export { DeploymentConfirmation as DeployGuard } from "./deployment-confirmation";
+
 interface Props {
 	title?: string | React.ReactNode;
 	description?: string | React.ReactNode;
