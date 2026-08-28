@@ -108,8 +108,13 @@
   `desired-state=running` task checks for activation and rollback, and merge
   [Flots-app/dokploy#28](https://github.com/Flots-app/dokploy/pull/28) at
   `bdab8b3c92759220a7408186f246ce89a8b553f3`.
-- [ ] Publish `v0.29.14-flots.9`, activate the current website release, and
-  prove the immutable amd64 task remains stable with no failed HTTP probes.
+- [x] Publish `v0.29.14-flots.9`.
+- [ ] Activate `v0.29.14-flots.9` on the current website and prove the
+  immutable amd64 task remains stable with no failed HTTP probes.
+- [x] Merge the deployment-confirmation guard in
+  [Flots-app/dokploy#30](https://github.com/Flots-app/dokploy/pull/30) at
+  `bfa92b355a752ae4b984dc51e924c81c8bac7f66`.
+- [ ] Publish `v0.29.14-flots.10` from `canary`.
 - [x] Commit, push and open the draft PR.
 
 ---
