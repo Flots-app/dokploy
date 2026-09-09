@@ -64,6 +64,7 @@ import {
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
 import { sendBuildErrorNotifications } from "@dokploy/server/utils/notifications/build-error";
 import { sendBuildSuccessNotifications } from "@dokploy/server/utils/notifications/build-success";
+import { formatDeploymentError } from "@dokploy/server/utils/process/deployment-error";
 import {
 	ExecError,
 	execAsync,
@@ -1449,32 +1450,29 @@ export const deployCompose = async ({
 			environmentName: compose.environment.name,
 		});
 	} catch (error) {
-		let command = "";
-
-		// Only log details for non-ExecError errors
-		if (!(error instanceof ExecError)) {
-			const message = error instanceof Error ? error.message : String(error);
-			const encodedMessage = encodeBase64(message);
-			command += `echo "${encodedMessage}" | base64 -d >> "${deployment.logPath}";`;
-		}
-
-		command += `echo "\nError occurred ❌, check the logs for details." >> ${deployment.logPath};`;
-		const logServerId = compose.buildServerId || compose.serverId;
-		if (logServerId) {
-			await execAsyncRemote(logServerId, command);
-		} else {
-			await execAsync(command);
-		}
-		await updateDeploymentStatus(deployment.deploymentId, "error");
+		const errorMessage = formatDeploymentError(error);
+		await updateDeployment(deployment.deploymentId, {
+			status: "error",
+			finishedAt: new Date().toISOString(),
+			errorMessage,
+		});
 		await updateCompose(composeId, {
 			composeStatus: "error",
 		});
+		try {
+			await appendDeploymentLog(
+				compose.buildServerId || compose.serverId,
+				deployment.logPath,
+				`\n❌ Deployment failed\n${errorMessage}\n`,
+			);
+		} catch {
+			// The persisted error remains available when the log server is unreachable.
+		}
 		await sendBuildErrorNotifications({
 			projectName: compose.environment.project.name,
 			applicationName: compose.name,
 			applicationType: "compose",
-			// @ts-ignore
-			errorMessage: error?.message || "Error building",
+			errorMessage,
 			buildLink,
 			organizationId: compose.environment.project.organizationId,
 		});
@@ -1563,26 +1561,24 @@ export const rebuildCompose = async ({
 			composeStatus: "done",
 		});
 	} catch (error) {
-		let command = "";
-
-		// Only log details for non-ExecError errors
-		if (!(error instanceof ExecError)) {
-			const message = error instanceof Error ? error.message : String(error);
-			const encodedMessage = encodeBase64(message);
-			command += `echo "${encodedMessage}" | base64 -d >> "${deployment.logPath}";`;
-		}
-
-		command += `echo "\nError occurred ❌, check the logs for details." >> ${deployment.logPath};`;
-		const logServerId = compose.buildServerId || compose.serverId;
-		if (logServerId) {
-			await execAsyncRemote(logServerId, command);
-		} else {
-			await execAsync(command);
-		}
-		await updateDeploymentStatus(deployment.deploymentId, "error");
+		const errorMessage = formatDeploymentError(error);
+		await updateDeployment(deployment.deploymentId, {
+			status: "error",
+			finishedAt: new Date().toISOString(),
+			errorMessage,
+		});
 		await updateCompose(composeId, {
 			composeStatus: "error",
 		});
+		try {
+			await appendDeploymentLog(
+				compose.buildServerId || compose.serverId,
+				deployment.logPath,
+				`\n❌ Deployment failed\n${errorMessage}\n`,
+			);
+		} catch {
+			// The persisted error remains available when the log server is unreachable.
+		}
 		throw error;
 	}
 

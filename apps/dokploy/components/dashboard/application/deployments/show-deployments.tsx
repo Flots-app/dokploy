@@ -75,6 +75,11 @@ export const ShowDeployments = ({
 			},
 		);
 
+	const currentLog =
+		deployments?.find(
+			(deployment) => deployment.deploymentId === activeLog?.deploymentId,
+		) ?? activeLog;
+
 	const { data: isCloud } = api.settings.isCloud.useQuery();
 
 	const { mutateAsync: rollback, isPending: isRollingBack } =
@@ -485,7 +490,7 @@ export const ShowDeployments = ({
 					open={Boolean(activeLog && activeLog.logPath !== null)}
 					onClose={() => setActiveLog(null)}
 					logPath={activeLog?.logPath || ""}
-					errorMessage={activeLog?.errorMessage || ""}
+					errorMessage={currentLog?.errorMessage || ""}
 				/>
 			</CardContent>
 		</Card>
