@@ -114,7 +114,10 @@
 - [x] Merge the deployment-confirmation guard in
   [Flots-app/dokploy#30](https://github.com/Flots-app/dokploy/pull/30) at
   `bfa92b355a752ae4b984dc51e924c81c8bac7f66`.
-- [ ] Publish `v0.29.14-flots.10` from `canary`.
+- [x] Publish `v0.29.14-flots.10` from `canary`.
+- [x] Merge Compose deployment error diagnostics in
+  [Flots-app/dokploy#32](https://github.com/Flots-app/dokploy/pull/32).
+- [ ] Publish `v0.29.14-flots.11` from `canary`.
 - [x] Commit, push and open the draft PR.
 
 ---
