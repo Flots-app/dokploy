@@ -124,8 +124,6 @@ export const ShowDeployment = ({
 		}
 	};
 
-	const optionalErrors = parseLogs(errorMessage || "");
-
 	return (
 		<Dialog
 			open={open}
@@ -188,37 +186,37 @@ export const ShowDeployment = ({
 					</DialogDescription>
 				</DialogHeader>
 
+				{errorMessage && (
+					<div
+						role="alert"
+						className="rounded border border-destructive/50 p-4"
+					>
+						<p className="font-medium text-destructive">Deployment failed</p>
+						<pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-sm">
+							{errorMessage}
+						</pre>
+					</div>
+				)}
+
 				<div
 					ref={scrollRef}
 					onScroll={handleScroll}
 					className="h-[720px] overflow-y-auto space-y-0 border p-4 bg-background rounded custom-logs-scrollbar"
 				>
 					{" "}
-					{filteredLogs.length > 0 ? (
-						filteredLogs.map((log: LogLine, index: number) => (
-							<TerminalLine
-								key={`${log.rawTimestamp ?? ""}-${index}`}
-								log={log}
-								noTimestamp
-							/>
-						))
-					) : (
-						<>
-							{optionalErrors.length > 0 ? (
-								optionalErrors.map((log: LogLine, index: number) => (
-									<TerminalLine
-										key={`extra-${log.rawTimestamp ?? ""}-${index}`}
-										log={log}
-										noTimestamp
-									/>
-								))
-							) : (
+					{filteredLogs.length > 0
+						? filteredLogs.map((log: LogLine, index: number) => (
+								<TerminalLine
+									key={`${log.rawTimestamp ?? ""}-${index}`}
+									log={log}
+									noTimestamp
+								/>
+							))
+						: !errorMessage && (
 								<div className="flex justify-center items-center h-full text-muted-foreground">
 									<Loader2 className="h-6 w-6 animate-spin" />
 								</div>
 							)}
-						</>
-					)}
 				</div>
 			</DialogContent>
 		</Dialog>

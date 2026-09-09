@@ -54,6 +54,35 @@ export const formatDuration = (seconds: number) => {
 	return `${minutes}m ${remainingSeconds}s`;
 };
 
+type Deployment = RouterOutputs["deployment"]["all"][number];
+
+const SelectedDeploymentLog = ({
+	deployments,
+	selected,
+	serverId,
+	onClose,
+}: {
+	deployments: Deployment[] | undefined;
+	selected: Deployment | null;
+	serverId?: string;
+	onClose: () => void;
+}) => {
+	const current =
+		deployments?.find(
+			(deployment) => deployment.deploymentId === selected?.deploymentId,
+		) ?? selected;
+
+	return (
+		<ShowDeployment
+			serverId={current?.buildServerId || serverId}
+			open={Boolean(current && current.logPath !== null)}
+			onClose={onClose}
+			logPath={current?.logPath || ""}
+			errorMessage={current?.errorMessage || ""}
+		/>
+	);
+};
+
 export const ShowDeployments = ({
 	id,
 	type,
@@ -157,13 +186,11 @@ export const ShowDeployments = ({
 				</div>
 				<div className="flex flex-row items-center flex-wrap gap-2">
 					{(type === "application" || type === "compose") && (
-						<ClearDeployments id={id} type={type} />
-					)}
-					{(type === "application" || type === "compose") && (
-						<KillBuild id={id} type={type} />
-					)}
-					{(type === "application" || type === "compose") && (
-						<CancelQueues id={id} type={type} />
+						<>
+							<ClearDeployments id={id} type={type} />
+							<KillBuild id={id} type={type} />
+							<CancelQueues id={id} type={type} />
+						</>
 					)}
 					{type === "application" && (
 						<ShowRollbackSettings applicationId={id}>
@@ -480,12 +507,11 @@ export const ShowDeployments = ({
 						})}
 					</div>
 				)}
-				<ShowDeployment
-					serverId={activeLog?.buildServerId || serverId}
-					open={Boolean(activeLog && activeLog.logPath !== null)}
+				<SelectedDeploymentLog
+					deployments={deployments}
+					selected={activeLog}
+					serverId={serverId}
 					onClose={() => setActiveLog(null)}
-					logPath={activeLog?.logPath || ""}
-					errorMessage={activeLog?.errorMessage || ""}
 				/>
 			</CardContent>
 		</Card>
