@@ -54,6 +54,16 @@ export const formatDuration = (seconds: number) => {
 	return `${minutes}m ${remainingSeconds}s`;
 };
 
+type Deployment = RouterOutputs["deployment"]["all"][number];
+
+const getCurrentDeployment = (
+	deployments: Deployment[] | undefined,
+	selected: Deployment | null,
+) =>
+	deployments?.find(
+		(deployment) => deployment.deploymentId === selected?.deploymentId,
+	) ?? selected;
+
 export const ShowDeployments = ({
 	id,
 	type,
@@ -75,10 +85,7 @@ export const ShowDeployments = ({
 			},
 		);
 
-	const currentLog =
-		deployments?.find(
-			(deployment) => deployment.deploymentId === activeLog?.deploymentId,
-		) ?? activeLog;
+	const currentLog = getCurrentDeployment(deployments, activeLog);
 
 	const { data: isCloud } = api.settings.isCloud.useQuery();
 
