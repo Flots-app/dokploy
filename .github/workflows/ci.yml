@@ -106,3 +106,7 @@ jobs:
 
       - name: Run ${{ matrix.job }}
         run: pnpm ${{ matrix.command }}
+
+      - name: Test build server watchdog
+        if: matrix.job == 'test'
+        run: node --test ops/build-server-watchdog/*.test.mjs
