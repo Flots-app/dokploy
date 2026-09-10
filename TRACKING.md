@@ -117,7 +117,10 @@
 - [x] Publish `v0.29.14-flots.10` from `canary`.
 - [x] Merge Compose deployment error diagnostics in
   [Flots-app/dokploy#32](https://github.com/Flots-app/dokploy/pull/32).
-- [ ] Publish `v0.29.14-flots.11` from `canary`.
+- [x] Publish `v0.29.14-flots.11` from `canary`.
+- [x] Merge build-server alerting and Colima recovery in
+  [Flots-app/dokploy#34](https://github.com/Flots-app/dokploy/pull/34).
+- [ ] Publish `v0.29.14-flots.12` from `canary`.
 - [x] Commit, push and open the draft PR.
 
 ---
