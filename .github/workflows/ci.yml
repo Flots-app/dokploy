@@ -109,4 +109,4 @@ jobs:
 
       - name: Test build server watchdog
         if: matrix.job == 'test'
-        run: node --test ops/build-server-watchdog/state.test.mjs
+        run: node --test ops/build-server-watchdog/*.test.mjs

@@ -13,14 +13,16 @@ recovery notification is sent. It never deletes VMs/volumes and never restarts a
 Linux deployment server. Services already deployed on the VPS are unaffected.
 
 Recovery is limited to three attempts, at least five minutes apart. Failed
-delivery is retried on later checks, preserving delivery progress per channel.
+delivery is retried on later checks, preserving delivery progress and event order
+per channel. Destinations are processed concurrently so an unavailable channel
+cannot block recovery messages on a healthy channel.
 Healthy checks are silent. Incidents, attempts, and pending notifications persist
 in `state.json` across job/container restarts. A lost network connection is
 reported from Dokploy, even if the Mac cannot execute the recovery command.
 
 ## Installation
 
-Copy `run.mjs` and `state.mjs` into a persistent directory, for example
+Copy `run.mjs`, `state.mjs`, and `delivery.mjs` into a persistent directory, for example
 `/etc/dokploy/watchdogs/build-server`, visible inside the Dokploy container.
 Create a root-readable `config.json` alongside them:
 
@@ -45,7 +47,10 @@ flock -n -E 0 /etc/dokploy/watchdogs/build-server/run.lock \
 
 `flock` prevents overlapping recovery, including manual schedule runs. SSH
 handshakes, probes, recovery commands, notification requests, and the whole job
-have time limits. Recovery budgets are committed before issuing commands.
+have time limits. Recovery budgets are committed immediately before issuing commands, after
+notification delivery. Notifications have a shared 10-second budget before
+recovery and 20 seconds afterwards. An interrupted final recovery attempt is
+reconciled on the next check so the intervention alert cannot be lost.
 Use the scheduled-job logs for execution diagnostics and `state.json` for
 incident/delivery status. Schedule success means the check ran; an outage is
 tracked by the incident and notified separately.
@@ -64,7 +69,7 @@ test. Do not leave validation mode enabled.
 
 ## Tests and sources
 
-`node --test ops/build-server-watchdog/state.test.mjs`
+`node --test ops/build-server-watchdog/*.test.mjs`
 
 - [Dokploy scheduler](../../packages/server/src/utils/schedules/utils.ts)
 - [Dokploy Discord transport](../../packages/server/src/utils/notifications/utils.ts)

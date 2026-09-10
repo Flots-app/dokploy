@@ -1,7 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createNotifier } from "./delivery.mjs";
 import { checkServer } from "./state.mjs";
 
 const configPath = process.argv[2];
@@ -119,29 +121,34 @@ const titles = {
 	recovered: "✅ Serveur de build rétabli",
 	failed: "🚨 Récupération automatique impossible",
 };
-const notify = async (event, persist) => {
-	// Read destinations from Dokploy every time: no copied webhook or SSH key,
-	// and existing notification switches continue to control delivery.
-	const notifications = await db.query.notifications.findMany({
-		where: (n, { and, eq }) =>
-			and(
-				eq(n.organizationId, config.organizationId),
-				eq(n.appBuildError, true),
-			),
-		with: { discord: true },
+const requestTimeout = new AsyncLocalStorage();
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (url, options = {}) =>
+	nativeFetch(url, {
+		...options,
+		signal: AbortSignal.timeout(requestTimeout.getStore() ?? 15_000),
 	});
-	const destinations = notifications.filter((n) => n.discord);
-	if (!destinations.length)
-		throw new Error("No enabled Dokploy Discord build-error notification");
-	const errors = [];
-	for (const destination of destinations) {
-		if (event.delivered.includes(destination.notificationId)) continue;
-		try {
-			const url = new URL(destination.discord.webhookUrl);
-			// Discord confirms message creation with wait=true rather than silently
-			// discarding an unsuccessful fire-and-forget delivery.
-			url.searchParams.set("wait", "true");
-			await sendDiscordNotification(
+
+const notify = createNotifier({
+	// Load the current Dokploy destinations without copying credentials.
+	destinations: async () => {
+		const notifications = await db.query.notifications.findMany({
+			where: (n, { and, eq }) =>
+				and(
+					eq(n.organizationId, config.organizationId),
+					eq(n.appBuildError, true),
+				),
+			with: { discord: true },
+		});
+		return notifications.filter((n) => n.discord);
+	},
+	send: async (destination, event, timeoutMs) => {
+		const url = new URL(destination.discord.webhookUrl);
+		url.searchParams.set("wait", "true");
+		// This dedicated process uses the native Dokploy transport, with a
+		// deadline for each request so notification retries cannot starve recovery.
+		return requestTimeout.run(timeoutMs, () =>
+			sendDiscordNotification(
 				{ ...destination.discord, webhookUrl: url.href },
 				{
 					title: `${config.validation ? "[TEST CONTRÔLÉ] " : ""}${titles[event.kind]}`,
@@ -154,26 +161,20 @@ const notify = async (event, persist) => {
 					timestamp: new Date(event.at).toISOString(),
 					footer: { text: "Dokploy · surveillance du serveur de build" },
 				},
-			);
-			event.delivered.push(destination.notificationId);
-			await persist();
-			log(
-				`Discord a confirmé la notification ${event.kind} (${destination.notificationId}).`,
-			);
-		} catch {
-			errors.push(destination.notificationId);
-		}
-	}
-	if (errors.length) throw new Error("Notification delivery pending");
-};
-
-// Bound notification requests too. This process is dedicated to the watchdog;
-// the native Dokploy sender itself has no network timeout.
-const nativeFetch = globalThis.fetch;
-globalThis.fetch = (url, options = {}) =>
-	nativeFetch(url, { ...options, signal: AbortSignal.timeout(15_000) });
+			),
+		);
+	},
+	log,
+});
 try {
-	await checkServer(state, { probe, recover, notify, save, log });
+	await checkServer(state, {
+		probe,
+		recover,
+		notify,
+		save,
+		log,
+		now: Date.now,
+	});
 	log(
 		`Docker ${state.healthy ? "disponible" : "indisponible"}; notifications en attente : ${state.pending.length}.`,
 	);

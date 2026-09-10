@@ -36,12 +36,13 @@ export async function checkServer(state, io, now = Date.now()) {
 			incident.attempts < 3 &&
 			(!incident.lastAttempt || now - incident.lastAttempt >= 5 * 60_000)
 		) {
+			await io.save(state);
+			await flushNotifications(state, io, 10_000);
 			incident.attempts++;
-			incident.lastAttempt = now;
+			incident.lastAttempt = io.now?.() ?? now;
 			// Record attempts before running commands: a killed process must not
 			// repeatedly restart the machine on the next scheduled invocation.
 			await io.save(state);
-			await flushNotifications(state, io);
 			try {
 				await io.recover();
 				await io.probe();
@@ -53,12 +54,21 @@ export async function checkServer(state, io, now = Date.now()) {
 				);
 				delete state.incident;
 			} catch {
-				if (incident.attempts === 3) {
-					enqueue(
-						"failed",
-						"Docker reste indisponible après trois tentatives espacées de cinq minutes. Les relances automatiques sont suspendues pour cet incident ; intervention nécessaire. La surveillance continue.",
-					);
-				}
+				// Reconcile exhaustion below, also when the previous process died
+				// after persisting its final attempt but before reporting the result.
+			}
+		}
+		if (state.incident?.attempts >= 3 && !state.incident.exhaustionQueued) {
+			state.incident.exhaustionQueued = true;
+			if (
+				!state.pending.some(
+					(event) => event.kind === "failed" && event.at >= incident.since,
+				)
+			) {
+				enqueue(
+					"failed",
+					"Docker reste indisponible après trois tentatives espacées de cinq minutes. Les relances automatiques sont suspendues pour cet incident ; intervention nécessaire. La surveillance continue.",
+				);
 			}
 		}
 	}
@@ -69,18 +79,16 @@ export async function checkServer(state, io, now = Date.now()) {
 	return state;
 }
 
-async function flushNotifications(state, io) {
-	while (state.pending.length) {
-		const event = state.pending[0];
-		try {
-			// The transport persists each successful destination independently.
-			// Failed deliveries are retried on the next check, including recovery.
-			await io.notify(event, () => io.save(state));
-			state.pending.shift();
-			await io.save(state);
-		} catch {
-			io.log("Notification en attente : nouvel essai au prochain contrôle.");
-			break;
-		}
+async function flushNotifications(state, io, budgetMs = 20_000) {
+	try {
+		const completed = await io.notify(
+			state.pending,
+			() => io.save(state),
+			budgetMs,
+		);
+		state.pending = state.pending.filter((event) => !completed.includes(event));
+		await io.save(state);
+	} catch {
+		io.log("Notification en attente : nouvel essai au prochain contrôle.");
 	}
 }
