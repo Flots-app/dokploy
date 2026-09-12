@@ -5,6 +5,9 @@ GitHub pull request. A source Compose keeps its branch, environment and runtime.
 Images are built on the preview worker, pushed to the configured registry and
 referenced by digest in Swarm. Every service is pinned to the selected worker.
 
+See [the acceptance record](ACCEPTANCE.md) for the two concurrent Flots monorepo
+tests, cleanup results, installed infrastructure and release handoff.
+
 ## Rollout without interrupting existing applications
 
 1. Back up Dokploy's database and record existing service placements and public
@@ -188,3 +191,4 @@ dedicated sandbox integration credentials explicitly when testing those features
 - [Official Docker-in-Docker wrapper](https://github.com/moby/moby/blob/master/hack/dind)
 - [GitHub pull_request events](https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request)
 - [Dokploy application previews](https://docs.dokploy.com/docs/core/applications/preview-deployments)
+- [Mailpit SMTP settings](https://mailpit.axllent.org/docs/configuration/smtp/)

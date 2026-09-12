@@ -2,71 +2,64 @@
 
 ## MEMORY
 
-- Production is an explicit no-impact constraint for all remaining work. Validate against a separate Dokploy instance; do not reinitialize the manager or redeploy production.
-- User requirements: real Docker Swarm worker, all added worker components run in Docker, preserve every pre-existing colleague resource. Dashboard must configure reservation and capacity. Include Swarm/Dokploy firewall layers.
-- Architecture: dedicated Docker-in-Docker engine on the colleague host (outer engine remains outside Swarm), SSH key authentication on Tailscale port 2222; build on worker, immutable image digests in registry, manager deploys stacks pinned to worker node ID.
-- Source: Flots-app/dokploy, branch `codex/compose-preview-environments`, base `07c4c8d1c` / `v0.29.14-flots.12`.
-- SSH credentials and registry credentials are excluded from source control. Existing dedicated native SSH service was disabled when execution moved into Docker.
-- Swarm manager was readdressed from its Docker bridge IP to Tailscale. A root-only service/configuration export, database dump and hot Swarm snapshot exist on the manager. The reinitialization restarted Swarm tasks; all services returned to their previous replica counts. Existing standalone Compose applications remained running.
-- Production incident (2026-09-12): readdressing the manager with `swarm init --force-new-cluster` removed DNS registrations of existing standalone containers on `dokploy-network`. Container health and replica counts alone missed this failure. Traefik returned 503 for production monorepo hostnames. Repaired by temporarily routing to verified container IPs, reattaching affected application endpoints with their original IPs/aliases, then restoring the original DNS-based Traefik configuration. API, dashboard and collaboration endpoints return 200 externally. Staging, back-office and Passbolt application aliases were repaired too. Do not reinitialize the manager again as part of this task; verify public endpoints and proxy-to-upstream DNS after every network change. The proxy container itself has not been reattached to avoid interrupting all ingress; its own name is not an upstream.
-- Never mark this work complete until migration, regressions, two concurrent real previews, lifecycle cleanup, routing and firewall behavior have been verified and the PR is open.
+- Objective: one Docker Swarm stack per trusted GitHub PR, multiple PRs concurrently, configurable worker reservation/capacity, lifetime and firewall policy in Dokploy.
+- The colleague's existing Docker engine and resources must be preserved. All added worker components run in Docker. A dedicated Docker-in-Docker engine joins the existing Swarm; the outer engine remains outside Swarm.
+- Production is a no-impact constraint. Do not reinitialize the manager or redeploy production applications to test this feature. Public ingress must be verified in addition to container health.
+- Branch: `codex/compose-preview-environments`, base `07c4c8d1c` / `v0.29.14-flots.12`. PR: [#36](https://github.com/Flots-app/dokploy/pull/36), targeting `canary`.
+- Production Dokploy's image and schema remain unchanged. Acceptance used a separate controller/database; production release and source activation follow the normal release process after review.
+- Credentials are excluded from the repository. The temporary validation manager key, controller, database, database volume and local credential files were removed. The dedicated operational worker key remains configured in Dokploy.
+- DinD shares the host kernel; it is not VM isolation for hostile tenants. Registry retention and hard storage quotas require separate configuration.
 
 ## TODO
 
-- Complete public/API/database checks for the second full monorepo preview.
-- Finish review and CI; open the pull request against canary.
-- Remove temporary validation credentials/resources after completing the acceptance tests.
+- No implementation or live acceptance task remains. Production rollout instructions are in `ops/compose-preview/README.md` and `ACCEPTANCE.md`.
 
 ## IN PROGRESS
 
-- Two real monorepo PRs from an isolated local Dokploy/database. PR #801 is ready with seven services; #800 is building. Production Dokploy's image/schema remain unchanged.
-- Reviewing resource ownership, API access and operational rollout instructions.
+- None. Implementation and live acceptance are complete; delivery is tracked in PR #36.
 
 ## TO VERIFY
 
-- Public production health after each infrastructure/network change.
-- CI in its configured Linux Swarm environment. Local regression suite has 868 passing tests, 3 real deployment tests fail because Docker Desktop is not a Swarm manager, and 1 test is skipped. Nixpacks itself now builds successfully; do not initialize the user's existing local engine just for this suite.
-- Registry image retention is separate from local resource cleanup. DinD shares the host kernel and does not provide VM isolation or a hard disk quota.
+- On the future production release: apply additive migration 0179, configure the existing worker's reservation/capacity and source PR settings, verify firewall indicators and one new preview. This release was not deployed during acceptance.
 
 ## DONE
 
-- Cloudflare MCP reconnected. Added a proxied wildcard record for `*.flots.app`; existing explicit records were preserved. Both smoke previews returned HTTPS 200 through Cloudflare, main Traefik and the worker proxy.
-- Updated PR #801 while PR #800 kept the same Swarm task IDs. Removed #801's smoke stack while #800 remained reachable. Expired #800 afterward; cleanup succeeded and the full #801 monorepo kept all seven task IDs.
-- Real capacity check at three allocated previews refused a fourth allocation before creating resources.
-- Full monorepo PR #801: backend, scheduler, frontend, back-office, private Postgres, Redis and Mailpit are 1/1 on the worker. API health, frontend and back-office return HTTPS 200. No production or staging variables were inherited.
-- Rebuilt and restarted only the dedicated worker container with GNU coreutils, no-new-privileges by default, log rotation and BuildKit GC. Worker rejoined with its original node ID; persisted firewall policy reapplied and preview services recovered. All pre-existing colleague container IDs were preserved.
-- Deployed the reviewed firewall script to manager, outer worker host and inner engine agents. Their policy hashes and freshness checks are healthy.
-- Added 16 lifecycle regression tests (closure/draft/base/labels, TTL, disabled source, failed cleanup retention, author access, retries and locking) plus manifest tests for multiple routes and immutable configs/secrets. Targeted suite: 72 passing tests. Typecheck, shared server build and repository-wide Biome pass.
-- Dashboard verified in the browser: preview settings/list and a dedicated child view with URLs, deployments and container logs; mutation controls stay on the source.
+- Inspected the live staging monorepo through Dokploy MCP; confirmed the single mutable branch limitation and the user's requirement for a real Swarm worker.
+- Added schemas/migration, GitHub lifecycle reconciliation, explicit preview variables and Compose overrides, immutable commit/image references, capacity locking and ownership checks.
+- Added dashboard worker reservation, capacity and firewall settings; source PR configuration/list; dedicated child view for routes, deployments and container logs. Children inherit source read access and reject direct mutations.
+- Installed the dedicated worker, worker proxy and three Dockerized firewall agents. Worker is Ready/Active with preview-only label. Every pre-existing colleague container retained its identity and state.
+- Worker restart preserved node identity; saved firewall policy and preview services recovered. Agents report matching expected policy hashes and fresh status.
+- Persisted preview exclusion constraints in existing website application settings through Dokploy without redeployment. Reservation refuses unsafe existing placements without changing them.
+- Cloudflare MCP added a proxied `*.flots.app` wildcard; explicit existing records were preserved. Full HTTP and WSS routing verified through Cloudflare, main ingress and the private worker proxy.
+- Monorepo PRs #800 and #801 ran concurrently, seven services each: backend, scheduler, frontend, back-office, Postgres, Redis and Mailpit. Both APIs, frontends and back-offices returned HTTPS 200; both WSS upgrades succeeded.
+- Separate databases applied 110 and 114 migrations respectively. PR #801 retained marker 801 after redeployment; #800 retained marker 800 and all seven task IDs. Removing #801 left #800's tasks unchanged and API reachable.
+- Capacity three rejected a fourth allocation before resource creation. A separate smoke preview expired and cleaned up while the full monorepo stayed unchanged.
+- Verified per-service resource limits and absence of inherited source/project/environment sentinel variables. Own database and public HTTPS reachable; cross-PR database, manager, metadata and production origin IP blocked.
+- Verified private Mailpit SMTP authentication using the example settings in an isolated probe; no mail sent.
+- Both full and both smoke previews were removed. Verified removal of owned stacks, ingress routes, networks, volumes and unused labelled image tags. Fixed cleanup for multiple tags sharing an image ID, with ownership regression tests.
+- Migration 0179 applied successfully to an isolated PostgreSQL database. App typecheck and Biome pass; 113 targeted tests pass. React Doctor 0.9.14 reports zero new diagnostics locally and in GitHub CI.
+- All GitHub checks passed on implementation commit `33ff49019`: full tests, typecheck, build, quality, React Doctor and Plumber. Current commit checks are linked from the PR. Local Docker Desktop is not a Swarm manager, so three pre-existing real deployment tests rely on CI's configured environment.
+- Temporary acceptance resources and credentials removed. Worker, proxy, firewalls and wildcard DNS remain installed for the release.
+- Final public production API and dashboard probes returned HTTP 200 after cleanup.
 
-- Migration 0179 applied successfully to a fresh, isolated PostgreSQL database. Production schema and Dokploy image remain unchanged.
-- Repeated API and dashboard public health checks return 200 after recovery.
-- Worker reconnection repaired without manager restart: its firewall translates only dockerd TCP 2377 from the manager’s stale advertised bridge address to its Tailscale address. Swarm TLS remains end-to-end.
-- Persisted the existing preview exclusion constraint in the staging and production website application settings via the Dokploy API, without redeployment, so later deployments retain placement.
-- Actual GitHub PRs #801 and #800 each run an independent two-service Swarm stack on the worker, with immutable GHCR image digests and healthy Postgres volumes. Both return their own PR number through the private proxy. CPU=1, memory=512 MiB and PID=512 limits verified on all four containers. Distinct database markers verified. Cross-PR database, manager, metadata and production-IP connections rejected; public HTTPS egress works. Project/environment/source sentinel variables do not appear in task environments.
-- Temporary traefik.me routing was replaced by Cloudflare-backed preview hostnames after its shared certificate quota prevented reliable HTTPS.
+## Production incident — 12 September 2026
 
-- Full regression run: 848 passing tests, 3 existing real Nixpacks tests fail because Nixpacks is absent locally, 1 skipped. New reservation tests: 2 passing; reservation now refuses unsafe existing placements without mutating any service.
-- Worker cgroup nesting uses the official Docker-in-Docker initialization; a container with 64 MiB / 0.25 CPU limits starts successfully.
-- Real firewall test: public HTTPS works, tailnet/metadata connections are rejected and corresponding iptables counters increment. Host and engine agents report matching active policy hashes.
+Initial manager readdressing used `docker swarm init --force-new-cluster` and removed DNS registrations of existing standalone Compose containers on `dokploy-network`. Healthy containers and replica counts hid broken ingress; production monorepo domains returned 503. This was caused by the setup work.
 
-- Inspected live Dokploy through its MCP: staging monorepo is a single Compose service with a mutable branch; existing previews only support applications.
-- Created the implementation branch `codex/compose-preview-environments`.
-- Fast-forwarded the implementation base to `origin/canary` / `v0.29.14-flots.12` (`07c4c8d1c`).
-- SSH authenticated through Tailscale. Worker inventory: 16 CPUs, 27 GiB RAM, Docker 29.8.0, Compose 5.5.1; existing services and proxy on ports 80/443.
-- User confirmed: a real Swarm worker, not standalone Compose execution; preserve all colleague resources.
-- Main Dokploy host can reach the worker through Tailscale.
-- Started the dedicated Docker-in-Docker worker with key-authenticated SSH on Tailscale port 2222. Existing colleague Docker daemon, containers and proxy are preserved.
-- Backed up manager configuration and database; readdressed its single-manager Swarm to Tailscale and verified restored service replica counts.
-- Implemented initial schemas, explicit preview variables, commit-pinned clones, per-PR networks/resources, lifecycle queue and dashboard forms (validation ongoing).
+Recovery temporarily routed to verified container IPs, reattached affected application endpoints with original IPs/aliases, and restored the original DNS-based Traefik configuration. API, dashboard and collaboration returned 200. Staging, back-office and Passbolt aliases were repaired too. The main proxy itself was not reattached, avoiding a global ingress interruption; its own name is not used as an upstream.
+
+Root-only configuration/database backups and a hot Swarm snapshot remain on the manager under `/root/dokploy-preview-backup-20260912`. A hot snapshot is not a guaranteed cold recovery backup. Never repeat manager reinitialization for worker enrollment. The worker's firewall now translates only its dockerd control-plane connection from the manager's stale bridge address to Tailscale, preserving Swarm TLS and workload isolation.
 
 ## Sources
 
-- Project source: `packages/server/src/services/compose.ts`, `apps/dokploy/pages/api/deploy/github.ts`, database schemas and deployment queue.
-- [Dokploy preview deployments](https://docs.dokploy.com/docs/core/applications/preview-deployments).
-- [Dokploy remote deployment servers](https://docs.dokploy.com/docs/core/remote-servers/deployments).
-- [Docker Compose project isolation](https://docs.docker.com/compose/intro/compose-application-model/).
-- [Docker Compose networks](https://docs.docker.com/compose/how-tos/networking/).
-- [Docker Compose volume ownership](https://docs.docker.com/reference/compose-file/volumes/).
+- [Implementation and CI, PR #36](https://github.com/Flots-app/dokploy/pull/36).
+- [Acceptance evidence](ops/compose-preview/ACCEPTANCE.md): direct Docker/Swarm inspection, PostgreSQL queries, public HTTP/WSS probes and browser validation.
+- [Docker Swarm administration](https://docs.docker.com/engine/swarm/admin_guide/).
+- [Docker stack deployment](https://docs.docker.com/engine/swarm/stack-deploy/).
+- [Docker firewall and DOCKER-USER](https://docs.docker.com/engine/network/firewall-iptables/).
+- [GitHub PR webhook events](https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request).
+- [Cloudflare wildcard precedence](https://developers.cloudflare.com/dns/manage-dns-records/reference/wildcard-dns-records/).
+- [Cloudflare Universal SSL coverage](https://developers.cloudflare.com/ssl/edge-certificates/universal-ssl/limitations/).
+- [Mailpit SMTP configuration](https://mailpit.axllent.org/docs/configuration/smtp/).
 
 Credentials and private configuration must not be recorded in this log or the PR.
