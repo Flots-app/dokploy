@@ -93,6 +93,7 @@ import {
 } from "./deployment";
 import { generateApplyPatchesCommand } from "./patch";
 import { validUniqueServerAppName } from "./project";
+import { assertServerAllowsRegularService } from "./server";
 
 export type Compose = typeof compose.$inferSelect;
 
@@ -479,6 +480,7 @@ const removeActiveRuntimeManifest = async (
 export const createCompose = async (
 	input: z.infer<typeof apiCreateCompose>,
 ) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("compose", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -495,6 +497,11 @@ export const createCompose = async (
 			...input,
 			composeFile: input.composeFile || "",
 			appName,
+			previewParentId: null,
+			previewCommitSha: null,
+			previewSettings: null,
+			previewEnv: "",
+			previewComposeFile: "",
 		})
 		.returning()
 		.then((value) => value[0]);
@@ -512,6 +519,7 @@ export const createCompose = async (
 export const createComposeByTemplate = async (
 	input: typeof compose.$inferInsert,
 ) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = cleanAppName(input.appName);
 	if (appName) {
 		const valid = await validUniqueServerAppName(appName);
@@ -586,6 +594,11 @@ export const findComposeById = async (composeId: string) => {
 			message: "Compose not found",
 		});
 	}
+	// Preview variables are explicit. Never inherit project/staging secrets.
+	if (result.previewParentId) {
+		result.environment.env = "";
+		result.environment.project.env = "";
+	}
 	return result;
 };
 
@@ -638,6 +651,7 @@ export const updateCompose = async (
 	composeId: string,
 	composeData: Partial<Compose>,
 ) => {
+	await assertServerAllowsRegularService(composeData.serverId);
 	const { appName, ...rest } = composeData;
 	const composeResult = await db
 		.update(compose)
@@ -1367,6 +1381,11 @@ export const deployCompose = async ({
 	descriptionLog: string;
 }) => {
 	const compose = await findComposeById(composeId);
+	if (compose.previewParentId)
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Use the preview deployment lifecycle for this Compose",
+		});
 
 	const buildLink = `${await getDokployUrl()}/dashboard/project/${
 		compose.environment.projectId
@@ -1589,6 +1608,19 @@ export const removeCompose = async (
 	compose: Compose,
 	deleteVolumes: boolean,
 ) => {
+	if (compose.previewParentId)
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Remove this preview from the source Compose Previews tab",
+		});
+	const activePreview = await db.query.compose.findFirst({
+		where: (fields, { eq }) => eq(fields.previewParentId, compose.composeId),
+	});
+	if (activePreview)
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Remove active previews before deleting their source Compose",
+		});
 	try {
 		const { COMPOSE_PATH } = paths(!!compose.serverId);
 		const projectPath = join(COMPOSE_PATH, compose.appName);

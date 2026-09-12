@@ -208,6 +208,8 @@ export const composeRouter = createTRPCRouter({
 
 			return {
 				...compose,
+				previewEnv: undefined,
+				previewComposeFile: undefined,
 				hasGitProviderAccess,
 				unauthorizedProvider,
 			};
@@ -339,7 +341,18 @@ export const composeRouter = createTRPCRouter({
 		.input(apiDeleteCompose)
 		.mutation(async ({ input, ctx }) => {
 			await checkServiceAccess(ctx, input.composeId, "delete");
-			const composeResult = await findComposeById(input.composeId);
+			const [composeResult, activePreview] = await Promise.all([
+				findComposeById(input.composeId),
+				db.query.compose.findFirst({
+					where: eq(composeTable.previewParentId, input.composeId),
+				}),
+			]);
+			if (composeResult.previewParentId || activePreview)
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message:
+						"Remove active previews from their source PR environments tab first",
+				});
 
 			if (
 				composeResult.environment.project.organizationId !==
@@ -540,6 +553,11 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
+			if (compose.previewParentId)
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Manage this preview from the source Compose Previews tab",
+				});
 			assertBuildServerDeploymentReady(compose);
 
 			const jobData: DeploymentJob = {
@@ -591,6 +609,11 @@ export const composeRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
+			if (compose.previewParentId)
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Manage this preview from the source Compose Previews tab",
+				});
 			assertBuildServerDeploymentReady(compose);
 			const jobData: DeploymentJob = {
 				composeId: input.composeId,

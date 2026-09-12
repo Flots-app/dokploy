@@ -9,10 +9,25 @@ import {
 } from "@dokploy/server/db/schema";
 import { hasValidLicense } from "@dokploy/server/services/proprietary/license-key";
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNotNull, ne } from "drizzle-orm";
+import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import type { z } from "zod";
 
 export type Server = typeof server.$inferSelect;
+
+export async function assertServerAllowsRegularService(
+	serverId?: string | null,
+) {
+	if (!serverId) return;
+	const worker = await db.query.server.findFirst({
+		where: eq(server.serverId, serverId),
+		columns: { previewOnly: true },
+	});
+	if (worker?.previewOnly)
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "This server is reserved for Compose preview environments",
+		});
+}
 
 export const createServer = async (
 	input: z.infer<typeof apiCreateServer>,
@@ -218,6 +233,34 @@ export const updateServerById = async (
 		if (!current) return undefined;
 
 		let isDefaultBuildServer = current.isDefaultBuildServer;
+		let clearSwarmNode = false;
+		const endpointFields = [
+			"ipAddress",
+			"port",
+			"username",
+			"sshKeyId",
+			"serverType",
+		] as const;
+		if (
+			endpointFields.some(
+				(key) =>
+					serverData[key] !== undefined && serverData[key] !== current[key],
+			)
+		) {
+			const active = await tx.execute(sql`
+				select 1 from compose c join server w on w."serverId" = c."serverId"
+				where c."previewParentId" is not null
+				and (w."serverId" = ${serverId} or w."swarmManagerId" = ${serverId}) limit 1
+			`);
+			if (active.length)
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message:
+						"Remove active previews before changing a worker or manager SSH endpoint",
+				});
+			// Reconfiguration must validate the new engine before it can deploy.
+			clearSwarmNode = !!current.swarmNodeId;
+		}
 		const desiredServerType = serverData.serverType ?? current.serverType;
 		const desiredServerStatus = serverData.serverStatus ?? current.serverStatus;
 		const desiredSshKeyId =
@@ -287,7 +330,11 @@ export const updateServerById = async (
 
 		return await tx
 			.update(server)
-			.set({ ...serverData, isDefaultBuildServer })
+			.set({
+				...serverData,
+				...(clearSwarmNode ? { swarmNodeId: null } : {}),
+				isDefaultBuildServer,
+			})
 			.where(eq(server.serverId, serverId))
 			.returning()
 			.then((res) => res[0]);

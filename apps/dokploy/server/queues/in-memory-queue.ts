@@ -46,6 +46,8 @@ export const getPartition = (data: DeploymentJob): string =>
 
 /** Resolve the FIFO group a job belongs to (the service being deployed). */
 export const getGroup = (data: DeploymentJob): string => {
+	if (data.applicationType === "compose-preview")
+		return `compose-preview:${data.previewId}`;
 	if (data.applicationType === "compose") {
 		return `compose:${data.composeId}`;
 	}

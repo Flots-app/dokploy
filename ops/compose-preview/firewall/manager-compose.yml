@@ -1,0 +1,16 @@
+name: dokploy-preview-manager-firewall
+services:
+  firewall:
+    build: .
+    image: dokploy-preview-firewall:1
+    container_name: dokploy-preview-firewall
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    security_opt: ['no-new-privileges:true']
+    environment:
+      PREVIEW_FIREWALL_ROLE: manager
+    volumes: ['/etc/dokploy/preview-firewall:/policy']
+    labels:
+      com.dokploy.preview-infrastructure: 'true'

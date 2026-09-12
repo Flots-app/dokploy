@@ -1,5 +1,13 @@
 type DeployJob =
 	| {
+			applicationType: "compose-preview";
+			previewId: string;
+			serverId?: string;
+			type: "deploy";
+			titleLog: string;
+			descriptionLog: string;
+	  }
+	| {
 			applicationId: string;
 			titleLog: string;
 			descriptionLog: string;

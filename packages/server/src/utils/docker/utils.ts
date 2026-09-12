@@ -645,16 +645,16 @@ export const generateConfigContainer = (
 		...(restartPolicySwarm && {
 			RestartPolicy: restartPolicySwarm,
 		}),
-		...(placementSwarm
-			? {
-					Placement: placementSwarm,
-				}
-			: {
-					// if app have mounts keep manager as constraint
-					Placement: {
-						Constraints: haveMounts ? ["node.role==manager"] : [],
-					},
-				}),
+		Placement: {
+			...placementSwarm,
+			Constraints: [
+				...new Set([
+					...(placementSwarm?.Constraints ||
+						(haveMounts ? ["node.role==manager"] : [])),
+					"node.labels.com.dokploy.preview-only!=true",
+				]),
+			],
+		},
 		...(labelsSwarm && {
 			Labels: labelsSwarm,
 		}),

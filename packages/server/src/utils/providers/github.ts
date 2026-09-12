@@ -124,6 +124,7 @@ interface CloneGithubRepository {
 	enableSubmodules: boolean;
 	serverId: string | null;
 	outputPathOverride?: string;
+	previewCommitSha?: string | null;
 }
 export const cloneGithubRepository = async ({
 	type = "application",
@@ -161,14 +162,39 @@ export const cloneGithubRepository = async ({
 	const basePath = isCompose ? COMPOSE_PATH : APPLICATIONS_PATH;
 	const outputPath = outputPathOverride ?? join(basePath, appName, "code");
 	const octokit = authGithub(githubProvider);
-	const token = await getGithubToken(octokit);
+	const token = entity.previewCommitSha
+		? (
+				(await octokit.auth({
+					type: "installation",
+					repositoryIds: [
+						(
+							await octokit.rest.repos.get({
+								owner: owner as string,
+								repo: repository as string,
+							})
+						).data.id,
+					],
+					permissions: { contents: "read" },
+				})) as { token: string }
+			).token
+		: await getGithubToken(octokit);
 	const repoclone = `github.com/${owner}/${repository}.git`;
 	command += `rm -rf ${outputPath};`;
 	command += `mkdir -p ${outputPath};`;
 	const cloneUrl = `https://oauth2:${token}@${repoclone}`;
 
 	command += `echo ${quote([`Cloning Repo ${repoclone} to ${outputPath}: ✅`])};`;
-	command += `git clone --branch ${quote([String(branch ?? "")])} --depth 1 ${enableSubmodules ? "--recurse-submodules" : ""} ${quote([String(cloneUrl ?? "")])} ${quote([String(outputPath ?? "")])} --progress;`;
+	if (entity.previewCommitSha) {
+		if (!/^[a-f0-9]{40}$/.test(entity.previewCommitSha))
+			throw new Error("Invalid preview commit SHA");
+		const authorization = `http.https://github.com/.extraheader=Authorization: Basic ${Buffer.from(`oauth2:${token}`).toString("base64")}`;
+		const git = `git -C ${quote([outputPath])} -c ${quote([authorization])} -c protocol.file.allow=never`;
+		command += `git init ${quote([outputPath])}; git -C ${quote([outputPath])} remote add origin ${quote([`https://${repoclone}`])}; ${git} fetch --depth 1 origin ${quote([entity.previewCommitSha])}; git -C ${quote([outputPath])} checkout --detach FETCH_HEAD;`;
+		if (enableSubmodules)
+			command += `${git} submodule update --init --recursive --depth 1;`;
+	} else {
+		command += `git clone --branch ${quote([String(branch ?? "")])} --depth 1 ${enableSubmodules ? "--recurse-submodules" : ""} ${quote([String(cloneUrl ?? "")])} ${quote([String(outputPath ?? "")])} --progress;`;
+	}
 
 	return command;
 };

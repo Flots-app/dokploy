@@ -48,6 +48,10 @@ export const server = pgTable(
 			.notNull()
 			.default(false),
 		buildsConcurrency: integer("buildsConcurrency").notNull().default(1),
+		previewOnly: boolean("previewOnly").notNull().default(false),
+		previewCapacity: integer("previewCapacity").notNull().default(3),
+		swarmNodeId: text("swarmNodeId"),
+		swarmManagerId: text("swarmManagerId"),
 		createdAt: text("createdAt").notNull(),
 		organizationId: text("organizationId")
 			.notNull()

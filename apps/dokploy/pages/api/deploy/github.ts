@@ -15,6 +15,7 @@ import { Webhooks } from "@octokit/webhooks";
 import { and, eq } from "drizzle-orm";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { applications, compose, github } from "@/server/db/schema";
+import { handleComposePreviewWebhook } from "@/server/queues/compose-previews";
 import type { DeploymentJob } from "@/server/queues/queue-types";
 import { myQueue } from "@/server/queues/queueSetup";
 import { deploy } from "@/server/utils/deploy";
@@ -99,6 +100,22 @@ export default async function handler(
 			.status(400)
 			.json({ message: "We only accept push events or pull_request events" });
 		return;
+	}
+
+	if (req.headers["x-github-event"] === "pull_request") {
+		try {
+			await handleComposePreviewWebhook({
+				githubId: githubResult.githubId,
+				owner:
+					githubBody?.repository?.owner?.login ??
+					getGithubRepositoryOwner(githubBody),
+				repository: githubBody?.repository?.name,
+				pullRequestNumber: githubBody?.pull_request?.number,
+			});
+		} catch {
+			res.status(500).json({ message: "Unable to queue Compose previews" });
+			return;
+		}
 	}
 
 	// skip workflow runs use keywords
