@@ -107,10 +107,12 @@ export const composePreviewRouter = createTRPCRouter({
 					message:
 						"Previews require a self-hosted GitHub Docker Compose source",
 				});
-			const accessible = await getAccessibleServerIds(ctx.session);
-			const worker = await db.query.server.findFirst({
-				where: eq(server.serverId, input.settings.serverId),
-			});
+			const [accessible, worker] = await Promise.all([
+				getAccessibleServerIds(ctx.session),
+				db.query.server.findFirst({
+					where: eq(server.serverId, input.settings.serverId),
+				}),
+			]);
 			if (
 				!worker ||
 				!accessible.has(worker.serverId) ||
@@ -145,13 +147,15 @@ export const composePreviewRouter = createTRPCRouter({
 				where: eq(composePreviews.sourceComposeId, input.composeId),
 			});
 			if (!input.settings.enabled)
-				for (const preview of previews) {
-					await requestComposePreview(
-						source.composeId,
-						preview.pullRequestNumber,
-					);
-					await enqueueComposePreview(preview.previewId);
-				}
+				await Promise.all(
+					previews.map(async (preview) => {
+						await requestComposePreview(
+							source.composeId,
+							preview.pullRequestNumber,
+						);
+						await enqueueComposePreview(preview.previewId);
+					}),
+				);
 			await audit(ctx, {
 				action: "update",
 				resourceType: "compose",

@@ -54,21 +54,23 @@ export async function handleComposePreviewWebhook(input: {
 			isNotNull(compose.previewSettings),
 		),
 	});
-	for (const source of sources) {
-		if (source.previewParentId) continue;
-		const existing = await db.query.composePreviews.findFirst({
-			where: and(
-				eq(composePreviews.sourceComposeId, source.composeId),
-				eq(composePreviews.pullRequestNumber, input.pullRequestNumber),
-			),
-		});
-		if (!source.previewSettings?.enabled && !existing) continue;
-		const preview = await requestComposePreview(
-			source.composeId,
-			input.pullRequestNumber,
-		);
-		await enqueueComposePreview(preview.previewId);
-	}
+	await Promise.all(
+		sources.map(async (source) => {
+			if (source.previewParentId) return;
+			const existing = await db.query.composePreviews.findFirst({
+				where: and(
+					eq(composePreviews.sourceComposeId, source.composeId),
+					eq(composePreviews.pullRequestNumber, input.pullRequestNumber),
+				),
+			});
+			if (!source.previewSettings?.enabled && !existing) return;
+			const preview = await requestComposePreview(
+				source.composeId,
+				input.pullRequestNumber,
+			);
+			await enqueueComposePreview(preview.previewId);
+		}),
+	);
 }
 
 const timers = globalThis as unknown as {
@@ -85,14 +87,16 @@ export function startComposePreviewReconciler() {
 		running = true;
 		try {
 			const previews = await db.query.composePreviews.findMany();
-			for (const preview of previews) {
-				if (
-					preview.status === "closed" &&
-					preview.reconciledAt === preview.requestedAt
-				)
-					continue;
-				await enqueueComposePreview(preview.previewId);
-			}
+			await Promise.all(
+				previews.map(async (preview) => {
+					if (
+						preview.status === "closed" &&
+						preview.reconciledAt === preview.requestedAt
+					)
+						return;
+					await enqueueComposePreview(preview.previewId);
+				}),
+			);
 		} catch {
 			console.error(
 				"Unable to reconcile Compose previews; retrying on next tick",

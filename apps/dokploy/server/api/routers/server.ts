@@ -92,8 +92,10 @@ export const serverRouter = createTRPCRouter({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
-			const accessibleIds = await getAccessibleServerIds(ctx.session);
-			const current = await findServerById(input.serverId);
+			const [accessibleIds, current] = await Promise.all([
+				getAccessibleServerIds(ctx.session),
+				findServerById(input.serverId),
+			]);
 			if (
 				!accessibleIds.has(input.serverId) ||
 				current.organizationId !== ctx.session.activeOrganizationId ||

@@ -140,24 +140,26 @@ async function allocatePreview(
 			where: eq(composePreviews.previewId, preview.previewId),
 		});
 		if (current?.composeId) return current;
-		const [used] = await tx
-			.select({ count: count() })
-			.from(composePreviews)
-			.where(
-				and(
-					eq(composePreviews.serverId, worker.serverId),
-					isNotNull(composePreviews.composeId),
+		const [[used], [sourceUsed]] = await Promise.all([
+			tx
+				.select({ count: count() })
+				.from(composePreviews)
+				.where(
+					and(
+						eq(composePreviews.serverId, worker.serverId),
+						isNotNull(composePreviews.composeId),
+					),
 				),
-			);
-		const [sourceUsed] = await tx
-			.select({ count: count() })
-			.from(composePreviews)
-			.where(
-				and(
-					eq(composePreviews.sourceComposeId, source.composeId),
-					isNotNull(composePreviews.composeId),
+			tx
+				.select({ count: count() })
+				.from(composePreviews)
+				.where(
+					and(
+						eq(composePreviews.sourceComposeId, source.composeId),
+						isNotNull(composePreviews.composeId),
+					),
 				),
-			);
+		]);
 		if (
 			(used?.count || 0) >= worker.previewCapacity ||
 			(sourceUsed?.count || 0) >= settings.limit
@@ -329,9 +331,10 @@ async function reconcile(previewId: string) {
 			repo: source.repository,
 			pull_number: preview.pullRequestNumber,
 		});
+		const requiredLabels = new Set(settings.labels);
 		const hasLabel =
-			!settings.labels.length ||
-			pr.labels.some((label) => settings.labels.includes(label.name));
+			!requiredLabels.size ||
+			pr.labels.some((label) => requiredLabels.has(label.name));
 		if (
 			pr.state !== "open" ||
 			pr.draft ||

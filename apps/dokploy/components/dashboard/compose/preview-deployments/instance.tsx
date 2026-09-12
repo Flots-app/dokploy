@@ -1,7 +1,7 @@
 import Head from "next/head";
 import Link from "next/link";
 import { useState } from "react";
-import { ShowDeployments } from "@/components/dashboard/application/deployments/show-deployments";
+import { ShowDeployment } from "@/components/dashboard/application/deployments/show-deployment";
 import { DockerLogs } from "@/components/dashboard/compose/logs/show-stack";
 import { AdvanceBreadcrumb } from "@/components/shared/advance-breadcrumb";
 import { Button } from "@/components/ui/button";
@@ -69,12 +69,7 @@ export function ShowPreviewInstance({
 					</p>
 				</CardContent>
 			</Card>
-			<ShowDeployments
-				id={compose.composeId}
-				type="compose"
-				serverId={compose.serverId || undefined}
-				readOnly
-			/>
+			<PreviewDeployments compose={compose} />
 			<Card>
 				<CardHeader>
 					<CardTitle>Containers and logs</CardTitle>
@@ -111,5 +106,50 @@ export function ShowPreviewInstance({
 				</CardContent>
 			</Card>
 		</div>
+	);
+}
+
+function PreviewDeployments({
+	compose,
+}: {
+	compose: RouterOutputs["compose"]["one"];
+}) {
+	const { data } = api.deployment.allByType.useQuery(
+		{ id: compose.composeId, type: "compose" },
+		{ refetchInterval: 5000 },
+	);
+	const [selected, setSelected] = useState<string>();
+	const deployment = data?.find((item) => item.deploymentId === selected);
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>Deployments</CardTitle>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				{data?.map((item) => (
+					<div
+						className="flex items-center justify-between gap-4 border-b pb-3"
+						key={item.deploymentId}
+					>
+						<div>
+							<p>{item.title}</p>
+							<p className="text-sm text-muted-foreground">
+								{item.status} · {item.description}
+							</p>
+						</div>
+						<Button onClick={() => setSelected(item.deploymentId)}>
+							View deployment log
+						</Button>
+					</div>
+				))}
+				<ShowDeployment
+					open={!!deployment}
+					onClose={() => setSelected(undefined)}
+					logPath={deployment?.logPath || null}
+					serverId={compose.serverId || undefined}
+					errorMessage={deployment?.errorMessage || ""}
+				/>
+			</CardContent>
+		</Card>
 	);
 }

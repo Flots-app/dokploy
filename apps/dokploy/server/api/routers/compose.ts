@@ -341,10 +341,12 @@ export const composeRouter = createTRPCRouter({
 		.input(apiDeleteCompose)
 		.mutation(async ({ input, ctx }) => {
 			await checkServiceAccess(ctx, input.composeId, "delete");
-			const composeResult = await findComposeById(input.composeId);
-			const activePreview = await db.query.compose.findFirst({
-				where: eq(composeTable.previewParentId, input.composeId),
-			});
+			const [composeResult, activePreview] = await Promise.all([
+				findComposeById(input.composeId),
+				db.query.compose.findFirst({
+					where: eq(composeTable.previewParentId, input.composeId),
+				}),
+			]);
 			if (composeResult.previewParentId || activePreview)
 				throw new TRPCError({
 					code: "BAD_REQUEST",

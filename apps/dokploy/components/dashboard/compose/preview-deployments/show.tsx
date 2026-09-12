@@ -1,6 +1,6 @@
 import type { ComposePreviewSettings } from "@dokploy/server/utils/docker/compose-preview";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,8 +14,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/utils/api";
+import { api, type RouterOutputs } from "@/utils/api";
 
 export function ShowComposePreviews({ composeId }: { composeId: string }) {
 	const { data: source } = api.compose.one.useQuery({ composeId });
@@ -192,7 +193,11 @@ export function ShowComposePreviews({ composeId }: { composeId: string }) {
 								)}
 								{preview.expiresAt && (
 									<span className="text-xs text-muted-foreground">
-										Expires {new Date(preview.expiresAt).toLocaleString()}
+										Expires{" "}
+										{new Date(preview.expiresAt).toLocaleString("en-GB", {
+											timeZone: "UTC",
+										})}{" "}
+										UTC
 									</span>
 								)}
 							</div>
@@ -213,39 +218,52 @@ function ComposePreviewSettingsForm({
 }) {
 	const { data: source } = api.compose.one.useQuery({ composeId });
 	const { data } = api.composePreview.settings.useQuery({ composeId });
+	if (!data || !source) return <p>Loading preview settings...</p>;
+	return (
+		<LoadedPreviewSettings
+			key={composeId}
+			composeId={composeId}
+			canEdit={canEdit}
+			initial={data}
+			composePath={source.composePath}
+		/>
+	);
+}
+
+function LoadedPreviewSettings({
+	composeId,
+	canEdit,
+	initial,
+	composePath,
+}: {
+	composeId: string;
+	canEdit: boolean;
+	initial: RouterOutputs["composePreview"]["settings"];
+	composePath: string;
+}) {
 	const { data: workers } = api.server.all.useQuery();
 	const { data: registries } = api.registry.all.useQuery();
 	const utils = api.useUtils();
-	const [settings, setSettings] = useState<ComposePreviewSettings>({
-		enabled: false,
-		serverId: "",
-		registryId: "",
-		baseBranch: "main",
-		composePath: "docker-compose.yml",
-		limit: 3,
-		ttlHours: 72,
-		domain: "",
-		https: true,
-		certificateType: "letsencrypt",
-		labels: [],
-		cpuLimit: 2,
-		memoryLimitMb: 1024,
-	});
-	const [env, setEnv] = useState("");
-	const [composeFile, setComposeFile] = useState("");
-	useEffect(() => {
-		if (data) {
-			setSettings(
-				(previous) =>
-					data.settings || {
-						...previous,
-						composePath: source?.composePath || previous.composePath,
-					},
-			);
-			setEnv(data.env);
-			setComposeFile(data.composeFile);
-		}
-	}, [data, source?.composePath]);
+	const [settings, setSettings] = useState<ComposePreviewSettings>(
+		initial.settings || {
+			enabled: false,
+			serverId: "",
+			registryId: "",
+			baseBranch: "main",
+			composePath,
+			limit: 3,
+			ttlHours: 72,
+			domain: "",
+			https: true,
+			certificateType: "letsencrypt",
+			labels: [],
+			cpuLimit: 2,
+			memoryLimitMb: 1024,
+		},
+	);
+	const [env, setEnv] = useState(initial.env);
+	const [composeFile, setComposeFile] = useState(initial.composeFile);
+
 	const mutation = api.composePreview.updateSettings.useMutation({
 		onSuccess: async () => {
 			await Promise.all([
@@ -475,4 +493,14 @@ function ComposePreviewSettingsForm({
 			</CardContent>
 		</Card>
 	);
+}
+
+export function ComposePreviewsTrigger({
+	sourceType,
+}: {
+	sourceType?: string;
+}) {
+	return sourceType === "github" ? (
+		<TabsTrigger value="previews">PR environments</TabsTrigger>
+	) : null;
 }

@@ -113,5 +113,8 @@ services:
       retries: 12
   mailpit:
     image: axllent/mailpit:v1.29
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 'true'
+      MP_SMTP_AUTH_ALLOW_INSECURE: 'true'
 volumes:
   database:

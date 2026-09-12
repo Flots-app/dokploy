@@ -10,8 +10,10 @@ export async function configurePreviewWorker(
 	managerId: string | null,
 	previewOnly: boolean,
 ) {
-	const worker = await findServerById(serverId);
-	const engine = await getRemoteDocker(serverId);
+	const [worker, engine] = await Promise.all([
+		findServerById(serverId),
+		getRemoteDocker(serverId),
+	]);
 	const info = await engine.info();
 	const nodeId = info.Swarm?.NodeID;
 	if (!worker.sshKeyId || !nodeId || info.Swarm?.ControlAvailable)
