@@ -1,0 +1,117 @@
+# Complete override for Flots-app/monorepo. Paste into PR environments settings.
+# Source routes: backend-staging:8080 and :1234, frontend-staging:80,
+# back-office-staging:3000. All data and credentials belong to this PR only.
+x-backend-env: &backend-env
+  NODE_ENV: production
+  TZ: Europe/Paris
+  HOST: 0.0.0.0
+  PORT: '8080'
+  LOG_LEVEL: info
+  APP_KEY: ${DOKPLOY_PREVIEW_PASSWORD}
+  APP_URL: ${PREVIEW_FRONTEND_URL}
+  FRONTEND_URL: ${PREVIEW_FRONTEND_URL}
+  BACKEND_URL: ${PREVIEW_BACKEND_URL}
+  CORS_ALLOWED_ORIGINS: ${PREVIEW_FRONTEND_URL},${PREVIEW_BACKOFFICE_URL}
+  SESSION_DRIVER: memory
+  DB_HOST: database
+  DB_PORT: '5432'
+  DB_USER: preview
+  DB_DATABASE: preview
+  DB_PASSWORD: ${DOKPLOY_PREVIEW_PASSWORD}
+  REDIS_HOST: redis
+  REDIS_PORT: '6379'
+  REDIS_PASSWORD: ${DOKPLOY_PREVIEW_PASSWORD}
+  LOCK_STORE: redis
+  LIMITER_STORE: redis
+  SMTP_HOST: mailpit
+  SMTP_PORT: '1025'
+  SMTP_USERNAME: preview@example.invalid
+  SMTP_PASSWORD: preview
+  SMTP_DESTINATION: preview@example.invalid
+  ADMIN_EMAIL_ACCOUNT: preview@example.invalid
+  TRIAL_DAYS: '30'
+  AUTO_START_TRIAL_ON_SIGNUP: 'true'
+  ENABLE_ONBOARDING_TEMPLATE: 'true'
+  AI_SERVICES_ACTIVATED: 'false'
+  GOOGLE_CALENDAR_INTEGRATION_ENABLED: 'false'
+  GOOGLE_CALENDAR_BACKGROUND_SYNC_ENABLED: 'false'
+  APPLE_IAP_ENABLED: 'false'
+  SENTRY_ENABLED: 'false'
+  OBJECT_STORAGE_ENABLED: 'false'
+  PADDLE_ENVIRONMENT: sandbox
+  MCP_SERVER_ENABLED: 'true'
+  MCP_BASE_URL: ${PREVIEW_BACKEND_URL}
+services:
+  backend-staging:
+    image: preview-backend:local
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      <<: *backend-env
+      COLLAB_ENABLED: 'true'
+      COLLAB_PORT: '1234'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:8080/healthz']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+  scheduler-staging:
+    image: preview-backend:local
+    command: ['node', './bin/scheduler.js']
+    environment:
+      <<: *backend-env
+      SKIP_MIGRATIONS: 'true'
+      COLLAB_ENABLED: 'false'
+  frontend-staging:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile.staging
+      args:
+        VITE_API_URL: ${PREVIEW_BACKEND_URL}
+        VITE_ENABLE_SOCIAL_LOGIN: 'false'
+        VITE_ENABLE_GOOGLE_CALENDAR_INTEGRATION: 'false'
+        VITE_ENABLE_APPLE_IAP: 'false'
+        VITE_PADDLE_ENVIRONMENT: sandbox
+        VITE_COLLAB_ENABLED: 'true'
+        VITE_COLLAB_WS_URL: ${PREVIEW_COLLAB_WS_URL}
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1/']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+  back-office-staging:
+    build:
+      context: .
+      dockerfile: apps/back-office/Dockerfile
+      args:
+        VITE_API_URL: ${PREVIEW_BACKEND_URL}
+  database:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM postgres:17-alpine
+        COPY apps/backend/database/init.sql /docker-entrypoint-initdb.d/00-preview.sql
+    environment:
+      POSTGRES_USER: preview
+      POSTGRES_DB: preview
+      POSTGRES_PASSWORD: ${DOKPLOY_PREVIEW_PASSWORD}
+    volumes: ['database:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'preview', '-d', 'preview']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--requirepass', '${DOKPLOY_PREVIEW_PASSWORD}']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${DOKPLOY_PREVIEW_PASSWORD}', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  mailpit:
+    image: axllent/mailpit:v1.29
+volumes:
+  database:

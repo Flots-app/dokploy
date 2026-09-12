@@ -241,6 +241,40 @@ export const checkProjectAccess = async (
 	}
 };
 
+/** Preview instances are managed by their source. Reading inherits current
+ * source access; direct mutations would bypass reconciliation and ownership. */
+const previewAccessId = async (
+	ctx: PermissionCtx,
+	serviceId: string,
+	readOnly: boolean,
+) => {
+	const preview = await db.query.compose.findFirst({
+		where: (fields, { eq }) => eq(fields.composeId, serviceId),
+		columns: { previewParentId: true },
+		with: {
+			environment: {
+				columns: {},
+				with: { project: { columns: { organizationId: true } } },
+			},
+		},
+	});
+	if (!preview?.previewParentId) return serviceId;
+	if (
+		preview.environment.project.organizationId !==
+		ctx.session.activeOrganizationId
+	)
+		throw new TRPCError({
+			code: "UNAUTHORIZED",
+			message: "You don't have access to this service",
+		});
+	if (!readOnly)
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Manage this preview from the source Compose Previews tab",
+		});
+	return preview.previewParentId;
+};
+
 export const checkServicePermissionAndAccess = async (
 	ctx: PermissionCtx,
 	serviceId: string,
@@ -250,8 +284,15 @@ export const checkServicePermissionAndAccess = async (
 	const organizationId = ctx.session.activeOrganizationId;
 	const memberRecord = await findMemberByUserId(userId, organizationId);
 	await checkPermission(ctx, permissions);
+	const accessId = await previewAccessId(
+		ctx,
+		serviceId,
+		Object.values(permissions).every((actions) =>
+			actions.every((action) => action === "read"),
+		),
+	);
 	if (memberRecord.role !== "owner" && memberRecord.role !== "admin") {
-		if (!memberRecord.accessedServices.includes(serviceId)) {
+		if (!memberRecord.accessedServices.includes(accessId)) {
 			throw new TRPCError({
 				code: "UNAUTHORIZED",
 				message: "You don't have access to this service",
@@ -270,6 +311,10 @@ export const checkServiceAccess = async (
 	const memberRecord = await findMemberByUserId(userId, organizationId);
 
 	await checkPermission(ctx, { service: [action] });
+	const accessId =
+		action === "create"
+			? serviceId
+			: await previewAccessId(ctx, serviceId, action === "read");
 
 	if (memberRecord.role !== "owner" && memberRecord.role !== "admin") {
 		if (action === "create") {
@@ -280,7 +325,7 @@ export const checkServiceAccess = async (
 				});
 			}
 		} else {
-			if (!memberRecord.accessedServices.includes(serviceId)) {
+			if (!memberRecord.accessedServices.includes(accessId)) {
 				throw new TRPCError({
 					code: "UNAUTHORIZED",
 					message: "You don't have access to this service",
@@ -307,6 +352,23 @@ export const checkEnvironmentAccess = async (
 		memberRecord.role !== "admin"
 	) {
 		if (!memberRecord.accessedEnvironments.includes(environmentId)) {
+			if (action === "read") {
+				const preview = await db.query.compose.findFirst({
+					where: (fields, { and, eq, isNotNull }) =>
+						and(
+							eq(fields.environmentId, environmentId),
+							isNotNull(fields.previewParentId),
+						),
+					columns: { composeId: true },
+				});
+				if (
+					preview &&
+					memberRecord.accessedServices.includes(
+						await previewAccessId(ctx, preview.composeId, true),
+					)
+				)
+					return;
+			}
 			throw new TRPCError({
 				code: "UNAUTHORIZED",
 				message: "You don't have access to this environment",

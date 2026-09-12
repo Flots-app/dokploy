@@ -28,6 +28,8 @@ import { DeleteService } from "@/components/dashboard/compose/delete-service";
 import { ShowGeneralCompose } from "@/components/dashboard/compose/general/show";
 import { ShowDockerLogsCompose } from "@/components/dashboard/compose/logs/show";
 import { ShowDockerLogsStack } from "@/components/dashboard/compose/logs/show-stack";
+import { ShowPreviewInstance } from "@/components/dashboard/compose/preview-deployments/instance";
+import { ShowComposePreviews } from "@/components/dashboard/compose/preview-deployments/show";
 import { UpdateCompose } from "@/components/dashboard/compose/update-compose";
 import { ShowBackups } from "@/components/dashboard/database/backups/show-backups";
 import { ComposeFreeMonitoring } from "@/components/dashboard/monitoring/free/container/show-free-compose-monitoring";
@@ -64,7 +66,8 @@ type TabState =
 	| "domains"
 	| "containers"
 	| "monitoring"
-	| "volumeBackups";
+	| "volumeBackups"
+	| "previews";
 
 const Service = (
 	props: InferGetServerSidePropsType<typeof getServerSideProps>,
@@ -97,6 +100,8 @@ const Service = (
 			name: env.name,
 			href: `/dashboard/project/${projectId}/environment/${env.environmentId}`,
 		})) || [];
+
+	if (data?.previewParentId) return <ShowPreviewInstance compose={data} />;
 
 	return (
 		<div className="pb-10">
@@ -223,6 +228,12 @@ const Service = (
 									<div className="flex flex-row items-center w-full overflow-auto">
 										<TabsList className="flex gap-8 max-md:gap-4 justify-start">
 											<TabsTrigger value="general">General</TabsTrigger>
+											{data?.sourceType === "github" &&
+												!data.previewParentId && (
+													<TabsTrigger value="previews">
+														PR environments
+													</TabsTrigger>
+												)}
 											{permissions?.envVars.read && (
 												<TabsTrigger value="environment">
 													Environment
@@ -265,6 +276,9 @@ const Service = (
 										</TabsList>
 									</div>
 
+									<TabsContent value="previews">
+										<ShowComposePreviews composeId={composeId} />
+									</TabsContent>
 									<TabsContent value="general">
 										<div className="flex flex-col gap-4 pt-2.5">
 											<ShowGeneralCompose composeId={composeId} />

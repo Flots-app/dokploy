@@ -15,10 +15,12 @@ import { eq, getTableColumns } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
+import { assertServerAllowsRegularService } from "./server";
 
 export type Mongo = typeof mongo.$inferSelect;
 
 export const createMongo = async (input: z.infer<typeof apiCreateMongo>) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("mongo", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -90,6 +92,7 @@ export const updateMongoById = async (
 	mongoId: string,
 	mongoData: Partial<Mongo>,
 ) => {
+	await assertServerAllowsRegularService(mongoData.serverId);
 	const { appName, ...rest } = mongoData;
 	const result = await db
 		.update(mongo)

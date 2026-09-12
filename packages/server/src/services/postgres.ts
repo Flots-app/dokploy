@@ -14,6 +14,7 @@ import { eq, getTableColumns } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
+import { assertServerAllowsRegularService } from "./server";
 
 export function getMountPath(dockerImage: string): string {
 	const versionMatch = dockerImage.match(/postgres:(\d+)/);
@@ -33,6 +34,7 @@ export type Postgres = typeof postgres.$inferSelect;
 export const createPostgres = async (
 	input: z.infer<typeof apiCreatePostgres>,
 ) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("postgres", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -122,6 +124,7 @@ export const updatePostgresById = async (
 	postgresId: string,
 	postgresData: Partial<Postgres>,
 ) => {
+	await assertServerAllowsRegularService(postgresData.serverId);
 	const { appName, ...rest } = postgresData;
 	const result = await db
 		.update(postgres)

@@ -1,0 +1,51 @@
+name: dokploy-preview-worker
+services:
+  worker:
+    build: .
+    image: dokploy-preview-worker:29.1.4
+    container_name: dokploy-preview-worker
+    hostname: dokploy-preview-sbr
+    privileged: true
+    restart: unless-stopped
+    cpus: 10
+    mem_limit: 16g
+    stop_grace_period: 90s
+    labels:
+      com.dokploy.preview-infrastructure: 'true'
+    ports:
+      - '${PREVIEW_TAILSCALE_IP:?}:2222:2222'
+      - '${PREVIEW_TAILSCALE_IP:?}:2377:2377'
+      - '${PREVIEW_TAILSCALE_IP:?}:7946:7946'
+      - '${PREVIEW_TAILSCALE_IP:?}:7946:7946/udp'
+      - '${PREVIEW_TAILSCALE_IP:?}:4789:4789/udp'
+      - '${PREVIEW_TAILSCALE_IP:?}:9080:9080'
+      - '${PREVIEW_TAILSCALE_IP:?}:9443:9443'
+    volumes:
+      - docker:/var/lib/docker
+      - state:/etc/dokploy
+      - '${PREVIEW_PUBLIC_KEY_FILE:?}:/run/dokploy-public-key:ro'
+    healthcheck:
+      test: ['CMD', 'docker', 'info']
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+  firewall:
+    build: ../firewall
+    image: dokploy-preview-firewall:1
+    container_name: dokploy-preview-firewall
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    security_opt: ['no-new-privileges:true']
+    environment:
+      PREVIEW_FIREWALL_ROLE: worker-host
+      PREVIEW_FIREWALL_POLICY: /policy/firewall.json
+    volumes:
+      - state:/policy
+    labels:
+      com.dokploy.preview-infrastructure: 'true'
+volumes:
+  docker:
+  state:

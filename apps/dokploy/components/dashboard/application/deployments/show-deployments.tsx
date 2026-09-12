@@ -34,6 +34,7 @@ import { RefreshToken } from "./refresh-token";
 import { ShowDeployment } from "./show-deployment";
 
 interface Props {
+	readOnly?: boolean;
 	id: string;
 	type:
 		| "application"
@@ -84,6 +85,7 @@ const SelectedDeploymentLog = ({
 };
 
 export const ShowDeployments = ({
+	readOnly = false,
 	id,
 	type,
 	refreshToken,
@@ -185,14 +187,14 @@ export const ShowDeployments = ({
 					</CardDescription>
 				</div>
 				<div className="flex flex-row items-center flex-wrap gap-2">
-					{(type === "application" || type === "compose") && (
+					{!readOnly && (type === "application" || type === "compose") && (
 						<>
 							<ClearDeployments id={id} type={type} />
 							<KillBuild id={id} type={type} />
 							<CancelQueues id={id} type={type} />
 						</>
 					)}
-					{type === "application" && (
+					{!readOnly && type === "application" && (
 						<ShowRollbackSettings applicationId={id}>
 							<Button variant="outline">
 								Configure Rollbacks <Settings className="size-4" />
@@ -202,55 +204,59 @@ export const ShowDeployments = ({
 				</div>
 			</CardHeader>
 			<CardContent className="flex flex-col gap-4">
-				{stuckDeployment && (type === "application" || type === "compose") && (
-					<AlertBlock
-						type="warning"
-						className="flex-col items-start w-full p-4"
-					>
-						<div className="flex flex-col gap-3">
-							<div>
-								<div className="font-medium text-sm mb-1">
-									Build appears to be stuck
+				{!readOnly &&
+					stuckDeployment &&
+					(type === "application" || type === "compose") && (
+						<AlertBlock
+							type="warning"
+							className="flex-col items-start w-full p-4"
+						>
+							<div className="flex flex-col gap-3">
+								<div>
+									<div className="font-medium text-sm mb-1">
+										Build appears to be stuck
+									</div>
+									<p className="text-sm">
+										Hey! Looks like the build has been running for more than 10
+										minutes. Would you like to cancel this deployment?
+									</p>
 								</div>
-								<p className="text-sm">
-									Hey! Looks like the build has been running for more than 10
-									minutes. Would you like to cancel this deployment?
-								</p>
-							</div>
-							<Button
-								variant="destructive"
-								size="sm"
-								className="w-fit"
-								isLoading={
-									type === "application" ? isCancellingApp : isCancellingCompose
-								}
-								onClick={async () => {
-									try {
-										if (type === "application") {
-											await cancelApplicationDeployment({
-												applicationId: id,
-											});
-										} else if (type === "compose") {
-											await cancelComposeDeployment({
-												composeId: id,
-											});
-										}
-										toast.success("Deployment cancellation requested");
-									} catch (error) {
-										toast.error(
-											error instanceof Error
-												? error.message
-												: "Failed to cancel deployment",
-										);
+								<Button
+									variant="destructive"
+									size="sm"
+									className="w-fit"
+									isLoading={
+										type === "application"
+											? isCancellingApp
+											: isCancellingCompose
 									}
-								}}
-							>
-								Cancel Deployment
-							</Button>
-						</div>
-					</AlertBlock>
-				)}
-				{refreshToken && (
+									onClick={async () => {
+										try {
+											if (type === "application") {
+												await cancelApplicationDeployment({
+													applicationId: id,
+												});
+											} else if (type === "compose") {
+												await cancelComposeDeployment({
+													composeId: id,
+												});
+											}
+											toast.success("Deployment cancellation requested");
+										} catch (error) {
+											toast.error(
+												error instanceof Error
+													? error.message
+													: "Failed to cancel deployment",
+											);
+										}
+									}}
+								>
+									Cancel Deployment
+								</Button>
+							</div>
+						</AlertBlock>
+					)}
+				{!readOnly && refreshToken && (
 					<div className="flex flex-col gap-2 text-sm">
 						<span>
 							If you want to re-deploy this application use this URL in the
@@ -279,9 +285,10 @@ export const ShowDeployments = ({
 									{webhookUrl}
 									<Copy className="h-4 w-4 ml-2" />
 								</Badge>
-								{(type === "application" || type === "compose") && (
-									<RefreshToken id={id} type={type} />
-								)}
+								{!readOnly &&
+									(type === "application" || type === "compose") && (
+										<RefreshToken id={id} type={type} />
+									)}
 							</div>
 						</div>
 					</div>
@@ -393,33 +400,35 @@ export const ShowDeployments = ({
 										</div>
 
 										<div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
-											{deployment.pid && deployment.status === "running" && (
-												<DialogAction
-													title="Kill Process"
-													description="Are you sure you want to kill the process?"
-													type="default"
-													onClick={async () => {
-														await killProcess({
-															deploymentId: deployment.deploymentId,
-														})
-															.then(() => {
-																toast.success("Process killed successfully");
+											{!readOnly &&
+												deployment.pid &&
+												deployment.status === "running" && (
+													<DialogAction
+														title="Kill Process"
+														description="Are you sure you want to kill the process?"
+														type="default"
+														onClick={async () => {
+															await killProcess({
+																deploymentId: deployment.deploymentId,
 															})
-															.catch(() => {
-																toast.error("Error killing process");
-															});
-													}}
-												>
-													<Button
-														variant="destructive"
-														size="sm"
-														isLoading={isKillingProcess}
-														className="w-full sm:w-auto"
+																.then(() => {
+																	toast.success("Process killed successfully");
+																})
+																.catch(() => {
+																	toast.error("Error killing process");
+																});
+														}}
 													>
-														Kill Process
-													</Button>
-												</DialogAction>
-											)}
+														<Button
+															variant="destructive"
+															size="sm"
+															isLoading={isKillingProcess}
+															className="w-full sm:w-auto"
+														>
+															Kill Process
+														</Button>
+													</DialogAction>
+												)}
 											<Button
 												onClick={() => {
 													setActiveLog(deployment);
@@ -429,7 +438,7 @@ export const ShowDeployments = ({
 												View
 											</Button>
 
-											{canDelete && (
+											{!readOnly && canDelete && (
 												<DialogAction
 													title="Delete Deployment"
 													description="Are you sure you want to delete this deployment? This action cannot be undone."
@@ -456,7 +465,8 @@ export const ShowDeployments = ({
 												</DialogAction>
 											)}
 
-											{deployment?.rollback &&
+											{!readOnly &&
+												deployment?.rollback &&
 												deployment.status === "done" &&
 												type === "application" && (
 													<DialogAction

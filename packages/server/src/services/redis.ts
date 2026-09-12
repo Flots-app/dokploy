@@ -13,11 +13,13 @@ import { eq } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
+import { assertServerAllowsRegularService } from "./server";
 
 export type Redis = typeof redis.$inferSelect;
 
 // https://github.com/drizzle-team/drizzle-orm/discussions/1483#discussioncomment-7523881
 export const createRedis = async (input: z.infer<typeof apiCreateRedis>) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("redis", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -76,6 +78,7 @@ export const updateRedisById = async (
 	redisId: string,
 	redisData: Partial<Redis>,
 ) => {
+	await assertServerAllowsRegularService(redisData.serverId);
 	const { appName, ...rest } = redisData;
 	const result = await db
 		.update(redis)

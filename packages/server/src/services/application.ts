@@ -75,12 +75,16 @@ import {
 } from "./preview-deployment";
 import { validUniqueServerAppName } from "./project";
 import { findRegistryByIdWithCredentials } from "./registry";
-import { findDefaultBuildServer } from "./server";
+import {
+	assertServerAllowsRegularService,
+	findDefaultBuildServer,
+} from "./server";
 export type Application = typeof applications.$inferSelect;
 
 export const createApplication = async (
 	input: z.infer<typeof apiCreateApplication> & { buildServerId: string },
 ) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("app", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -209,6 +213,7 @@ export const updateApplication = async (
 	applicationId: string,
 	applicationData: Partial<Application>,
 ) => {
+	await assertServerAllowsRegularService(applicationData.serverId);
 	const { appName, ...rest } = applicationData;
 	const application = await db
 		.update(applications)

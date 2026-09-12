@@ -73,6 +73,10 @@ void app.prepare().then(async () => {
 			console.log("Starting Deployment Worker");
 			const { startDeploymentWorker } = await import("./queues/queueSetup");
 			await startDeploymentWorker();
+			const { startComposePreviewReconciler } = await import(
+				"./queues/compose-previews"
+			);
+			startComposePreviewReconciler();
 		}
 	} catch (e) {
 		console.error("Main Server Error", e);

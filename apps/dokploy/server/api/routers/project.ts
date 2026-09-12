@@ -140,6 +140,7 @@ export const projectRouter = createTRPCRouter({
 									),
 								},
 								compose: {
+									columns: { previewEnv: false, previewComposeFile: false },
 									where: buildServiceFilter(
 										compose.composeId,
 										accessedServices,
