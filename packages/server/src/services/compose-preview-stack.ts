@@ -9,6 +9,7 @@ import { isolatePreviewCompose } from "../utils/docker/compose-preview";
 import {
 	assignPreviewImages,
 	createPreviewStack,
+	previewImageRemovalReferences,
 } from "../utils/docker/compose-preview-stack";
 import { loadDockerComposeRemote } from "../utils/docker/domain";
 import type { ComposeSpecification } from "../utils/docker/types";
@@ -35,8 +36,7 @@ async function removeIfPresent(remove: () => Promise<unknown>) {
 
 // Finish every independent operation before releasing the lifecycle lock,
 // including when one fails. Dependent phases remain sequential.
-async function completeOperations(operations: Promise<unknown>[]) {
-	const results = await Promise.allSettled(operations);
+function assertCompleted(results: PromiseSettledResult<unknown>[]) {
 	const failure = results.find((result) => result.status === "rejected");
 	if (failure?.status === "rejected") throw failure.reason;
 }
@@ -99,10 +99,12 @@ export async function cleanupComposePreviewStack(
 			(container) => container.State === "running",
 		);
 		if (!running.length) {
-			await completeOperations(
-				remaining.map((container) =>
-					removeIfPresent(() =>
-						engine.getContainer(container.Id).remove({ v: true }),
+			assertCompleted(
+				await Promise.allSettled(
+					remaining.map((container) =>
+						removeIfPresent(() =>
+							engine.getContainer(container.Id).remove({ v: true }),
+						),
 					),
 				),
 			);
@@ -117,17 +119,21 @@ export async function cleanupComposePreviewStack(
 			label: [`com.docker.stack.namespace=${instance.appName}`],
 		}),
 	});
-	await completeOperations(
-		leftover.map((entry) =>
-			removeIfPresent(() => manager.getNetwork(entry.Id).remove()),
+	assertCompleted(
+		await Promise.allSettled(
+			leftover.map((entry) =>
+				removeIfPresent(() => manager.getNetwork(entry.Id).remove()),
+			),
 		),
 	);
 	const volumes = await engine.listVolumes({
 		filters: JSON.stringify({ label: [`com.dokploy.preview-id=${previewId}`] }),
 	});
-	await completeOperations(
-		(volumes.Volumes || []).map((volume) =>
-			removeIfPresent(() => engine.getVolume(volume.Name).remove()),
+	assertCompleted(
+		await Promise.allSettled(
+			(volumes.Volumes || []).map((volume) =>
+				removeIfPresent(() => engine.getVolume(volume.Name).remove()),
+			),
 		),
 	);
 	await cleanupUnusedPreviewResources(
@@ -319,24 +325,26 @@ export async function deployComposePreviewStack(
 			),
 		];
 		phase = "image publishing";
-		await completeOperations(
-			builtImages.map(async (image) => {
-				await log(`docker push ${quote([image])}`);
-				const inspected = await execAsyncRemote(
-					instance.serverId,
-					`docker image inspect ${quote([image])} --format '{{json .RepoDigests}}'`,
-				);
-				const digest = (JSON.parse(inspected.stdout) as string[]).find(
-					(value) =>
-						value.startsWith(`${image.slice(0, image.lastIndexOf(":"))}@`),
-				);
-				if (!digest)
-					throw new Error(
-						"Registry did not return an immutable preview image digest",
+		assertCompleted(
+			await Promise.allSettled(
+				builtImages.map(async (image) => {
+					await log(`docker push ${quote([image])}`);
+					const inspected = await execAsyncRemote(
+						instance.serverId,
+						`docker image inspect ${quote([image])} --format '{{json .RepoDigests}}'`,
 					);
-				for (const service of Object.values(config.services || {}))
-					if (service.image === image) service.image = digest;
-			}),
+					const digest = (JSON.parse(inspected.stdout) as string[]).find(
+						(value) =>
+							value.startsWith(`${image.slice(0, image.lastIndexOf(":"))}@`),
+					);
+					if (!digest)
+						throw new Error(
+							"Registry did not return an immutable preview image digest",
+						);
+					for (const service of Object.values(config.services || {}))
+						if (service.image === image) service.image = digest;
+				}),
+			),
 		);
 		phase = "Swarm manifest preparation";
 		const stack = createPreviewStack(config, {
@@ -346,12 +354,19 @@ export async function deployComposePreviewStack(
 			generation,
 			domains: instance.domains,
 		});
-		await completeOperations(
-			Object.entries({
-				configs: stack.configs,
-				secrets: stack.secrets,
-			}).flatMap(([kind, entries]) =>
-				Object.entries(entries || {}).map(async ([name, entry]) => {
+		const repositoryEntries = Object.entries({
+			configs: stack.configs,
+			secrets: stack.secrets,
+		}).flatMap(([kind, entries]) =>
+			Object.entries(entries || {}).map(([name, entry]) => ({
+				kind,
+				name,
+				entry,
+			})),
+		);
+		assertCompleted(
+			await Promise.allSettled(
+				repositoryEntries.map(async ({ kind, name, entry }) => {
 					if (!entry || typeof entry.file !== "string")
 						throw new Error(
 							"Preview configs and secrets must use repository files",
@@ -407,14 +422,16 @@ export async function deployComposePreviewStack(
 			)
 		)
 			throw new Error("Preview stack ownership mismatch before activation");
-		await completeOperations(
-			services.map(async (service) => {
-				if (!service.ID) throw new Error("Preview service has no identity");
-				await runPreviewManager(
-					worker.swarmManagerId,
-					`docker service update --detach --with-registry-auth --limit-pids 512 --replicas 1 ${quote([service.ID])}`,
-				);
-			}),
+		assertCompleted(
+			await Promise.allSettled(
+				services.map(async (service) => {
+					if (!service.ID) throw new Error("Preview service has no identity");
+					await runPreviewManager(
+						worker.swarmManagerId,
+						`docker service update --detach --with-registry-auth --limit-pids 512 --replicas 1 ${quote([service.ID])}`,
+					);
+				}),
+			),
 		);
 		phase = "Swarm task health checks";
 		await waitForPreviewStack(
@@ -466,22 +483,33 @@ async function cleanupUnusedPreviewResources(
 	previewId: string,
 ) {
 	const engine = await getRemoteDocker(workerId);
-	const images = await engine.listImages({
-		filters: JSON.stringify({ label: [`com.dokploy.preview-app=${appName}`] }),
-	});
-	await completeOperations(
-		images.map(async (image) => {
-			try {
-				await engine.getImage(image.Id).remove();
-			} catch (error) {
-				if (
-					![404, 409].includes(
-						(error as { statusCode?: number }).statusCode || 0,
-					)
-				)
-					throw error;
-			}
+	const [images, containers] = await Promise.all([
+		engine.listImages({
+			filters: JSON.stringify({
+				label: [`com.dokploy.preview-app=${appName}`],
+			}),
 		}),
+		engine.listContainers({ all: true }),
+	]);
+	const inUse = new Set(containers.map((container) => container.ImageID));
+	const references = images.flatMap((image) =>
+		previewImageRemovalReferences(image, appName, inUse),
+	);
+	assertCompleted(
+		await Promise.allSettled(
+			references.map(async (reference) => {
+				try {
+					await engine.getImage(reference).remove();
+				} catch (error) {
+					if (
+						![404, 409].includes(
+							(error as { statusCode?: number }).statusCode || 0,
+						)
+					)
+						throw error;
+				}
+			}),
+		),
 	);
 	const manager = await getRemoteDocker(managerId);
 	const filters = JSON.stringify({
@@ -491,27 +519,29 @@ async function cleanupUnusedPreviewResources(
 		manager.listConfigs({ filters }),
 		manager.listSecrets({ filters }),
 	]);
-	await completeOperations(
-		[
-			...configs.map((entry) =>
-				entry.ID ? manager.getConfig(entry.ID) : null,
-			),
-			...secrets.map((entry) =>
-				entry.ID ? manager.getSecret(entry.ID) : null,
-			),
-		].map(async (resource) => {
-			if (!resource) return;
-			try {
-				await resource.remove();
-			} catch (error) {
-				if (
-					![400, 404, 409].includes(
-						(error as { statusCode?: number }).statusCode || 0,
+	assertCompleted(
+		await Promise.allSettled(
+			[
+				...configs.map((entry) =>
+					entry.ID ? manager.getConfig(entry.ID) : null,
+				),
+				...secrets.map((entry) =>
+					entry.ID ? manager.getSecret(entry.ID) : null,
+				),
+			].map(async (resource) => {
+				if (!resource) return;
+				try {
+					await resource.remove();
+				} catch (error) {
+					if (
+						![400, 404, 409].includes(
+							(error as { statusCode?: number }).statusCode || 0,
+						)
 					)
-				)
-					throw error;
-			}
-		}),
+						throw error;
+				}
+			}),
+		),
 	);
 }
 

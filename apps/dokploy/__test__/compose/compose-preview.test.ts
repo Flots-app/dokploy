@@ -8,9 +8,62 @@ import {
 import {
 	assignPreviewImages,
 	createPreviewStack,
+	previewImageRemovalReferences,
 } from "@dokploy/server/utils/docker/compose-preview-stack";
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
 import { describe, expect, it } from "vitest";
+
+describe("preview image cleanup ownership", () => {
+	const appName = "preview-example-pr-80";
+	const owned = `ghcr.io/team/${appName}-1234abcd:first`;
+	const image = {
+		Id: "sha256:example",
+		Labels: { "com.dokploy.preview-app": appName },
+		RepoTags: [owned, owned.replace(":first", ":second")],
+	};
+	it("removes every owned tag when rebuilds share one image ID", () => {
+		expect(previewImageRemovalReferences(image, appName, new Set())).toEqual(
+			image.RepoTags,
+		);
+	});
+	it("preserves images referenced by running or stopped containers", () => {
+		expect(
+			previewImageRemovalReferences(image, appName, new Set([image.Id])),
+		).toEqual([]);
+	});
+	it("preserves unrelated tags and PRs with matching prefixes", () => {
+		expect(
+			previewImageRemovalReferences(
+				{
+					...image,
+					RepoTags: [
+						owned,
+						"ghcr.io/team/keep:latest",
+						owned.replace("pr-80-", "pr-800-"),
+					],
+				},
+				appName,
+				new Set(),
+			),
+		).toEqual([owned]);
+	});
+	it("requires the ownership label even for dangling images", () => {
+		expect(
+			previewImageRemovalReferences(
+				{ ...image, Labels: {} },
+				appName,
+				new Set(),
+			),
+		).toEqual([]);
+		expect(
+			previewImageRemovalReferences(
+				{ ...image, RepoTags: [] },
+				appName,
+				new Set(),
+			),
+		).toEqual([image.Id]);
+	});
+});
 
 const settings = composePreviewSettingsSchema.parse({
 	serverId: "worker",

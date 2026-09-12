@@ -4,6 +4,27 @@ import type { Registry } from "../../services/registry";
 import { createDomainLabels } from "./domain";
 import type { ComposeSpecification } from "./types";
 
+export function previewImageRemovalReferences(
+	image: { Id: string; RepoTags?: string[]; Labels?: Record<string, string> },
+	appName: string,
+	inUse: Set<string>,
+) {
+	if (
+		image.Labels?.["com.dokploy.preview-app"] !== appName ||
+		inUse.has(image.Id)
+	)
+		return [];
+	const tags = (image.RepoTags || []).filter((tag) => tag !== "<none>:<none>");
+	if (!tags.length) return [image.Id];
+	return tags.filter((tag) => {
+		const leaf = tag.slice(tag.lastIndexOf("/") + 1);
+		return (
+			leaf.startsWith(`${appName}-`) &&
+			/^[a-f0-9]{8}:[^/]+$/.test(leaf.slice(appName.length + 1))
+		);
+	});
+}
+
 export function assignPreviewImages(
 	spec: ComposeSpecification,
 	appName: string,
