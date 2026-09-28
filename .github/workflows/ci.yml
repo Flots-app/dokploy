@@ -107,6 +107,6 @@ jobs:
       - name: Run ${{ matrix.job }}
         run: pnpm ${{ matrix.command }}
 
-      - name: Test build server watchdog
+      - name: Test the build server and CI pool watchdogs
         if: matrix.job == 'test'
-        run: node --test ops/build-server-watchdog/*.test.mjs
+        run: node --test ops/build-server-watchdog/*.test.mjs ops/ci-pool-watchdog/*.test.mjs
