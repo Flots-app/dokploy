@@ -120,7 +120,12 @@
 - [x] Publish `v0.29.14-flots.11` from `canary`.
 - [x] Merge build-server alerting and Colima recovery in
   [Flots-app/dokploy#34](https://github.com/Flots-app/dokploy/pull/34).
-- [ ] Publish `v0.29.14-flots.12` from `canary`.
+- [x] Publish `v0.29.14-flots.12` from `canary`.
+- [x] Merge the Mac CI pool watchdog in
+  [Flots-app/dokploy#37](https://github.com/Flots-app/dokploy/pull/37).
+- [x] Merge Compose candidate container diagnostics in
+  [Flots-app/dokploy#38](https://github.com/Flots-app/dokploy/pull/38).
+- [ ] Publish `v0.29.14-flots.13` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
