@@ -56,10 +56,7 @@ import {
 	validateComposeBuildServerSpecification,
 } from "@dokploy/server/utils/builders/compose-build-server";
 import { randomizeSpecificationFile } from "@dokploy/server/utils/docker/compose";
-import {
-	chunkLogContent,
-	collectComposeReleaseDiagnostics,
-} from "@dokploy/server/utils/docker/deployment-diagnostics";
+import { collectComposeReleaseDiagnostics } from "@dokploy/server/utils/docker/deployment-diagnostics";
 import {
 	cloneCompose,
 	loadDockerCompose,
@@ -92,7 +89,6 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
-import { encodeBase64 } from "../utils/docker/utils";
 import { getDokployUrl } from "./admin";
 import {
 	createDeploymentCompose,
@@ -114,12 +110,13 @@ const appendDeploymentLog = async (
 		await fsPromises.appendFile(logPath, content);
 		return;
 	}
-	for (const chunk of chunkLogContent(content)) {
-		await execAsyncRemote(
-			serverId,
-			`echo ${quote([encodeBase64(chunk)])} | base64 -d >> ${quote([logPath])}`,
-		);
-	}
+	// Streamed through stdin: a command argument is capped at 128 KiB on Linux.
+	await execAsyncRemote(
+		serverId,
+		`cat >> ${quote([logPath])}`,
+		undefined,
+		content,
+	);
 };
 
 const executeOnServer = async (serverId: string | null, command: string) => {
@@ -1282,9 +1279,11 @@ const deployComposeWithBuildServer = async (
 					candidateState.projectName,
 				);
 				attachDeploymentDiagnostics(error, diagnostics.summary);
-				for (const section of diagnostics.sections) {
-					await appendDeploymentLog(buildServerId, deployment.logPath, section);
-				}
+				await appendDeploymentLog(
+					buildServerId,
+					deployment.logPath,
+					diagnostics.report,
+				);
 			} catch {
 				// Preserve the original deployment failure.
 			}

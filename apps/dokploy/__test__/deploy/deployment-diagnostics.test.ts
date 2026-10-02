@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import {
-	chunkLogContent,
 	collectComposeReleaseDiagnostics,
 	collectContainerDiagnostics,
 	getComposeProjectContainersInspectCommand,
@@ -187,12 +186,12 @@ describe("collectComposeReleaseDiagnostics", () => {
 		expect(logCommands[1]).toContain("release-worker-1");
 		expect(logCommands[2]).toContain("release-frontend-1");
 
-		const report = result.sections.join("");
-		expect(result.sections[0]).toContain(
+		const report = result.report;
+		expect(result.report).toContain(
 			"===== Diagnostics: candidate containers =====",
 		);
-		expect(result.sections[0]).toMatch(/✗ backend\s+running, unhealthy/);
-		expect(result.sections[0]).toMatch(/✓ frontend\s+running, healthy/);
+		expect(result.report).toMatch(/✗ backend\s+running, unhealthy/);
+		expect(result.report).toMatch(/✓ frontend\s+running, healthy/);
 		expect(report).toContain(
 			"----- backend (release-backend-1): running, unhealthy -----",
 		);
@@ -241,7 +240,7 @@ describe("collectComposeReleaseDiagnostics", () => {
 		expect(result.summary).toBe(
 			"Container diagnostics could not be collected: Command failed (exit code 1). Cannot connect to the Docker daemon",
 		);
-		expect(result.sections.join("")).toContain(result.summary);
+		expect(result.report).toContain(result.summary);
 	});
 
 	it("selects containers by every label and maps their service name", async () => {
@@ -274,11 +273,21 @@ describe("collectComposeReleaseDiagnostics", () => {
 		expect(
 			spawnSync("bash", ["-n", "-c", inspect], { encoding: "utf8" }).status,
 		).toBe(0);
-		expect(result.sections[0]).toContain(
+		expect(result.report).toContain(
 			"===== Diagnostics: preview containers =====",
 		);
 		expect(result.summary).toContain("- backend: exited (code 1)");
 		expect(result.summary).toContain("boot failure");
+	});
+
+	it("reports unexpected inspect output instead of throwing", async () => {
+		const result = await collectComposeReleaseDiagnostics(
+			async () => ({ stdout: '{"Name":"/x"}\n', stderr: "" }),
+			"app-zdt-abc123",
+		);
+		expect(result.summary).toBe(
+			"Container diagnostics could not be collected: Unexpected docker inspect output",
+		);
 	});
 
 	it("reports a release without containers", async () => {
@@ -286,42 +295,12 @@ describe("collectComposeReleaseDiagnostics", () => {
 			async () => ({ stdout: "", stderr: "" }),
 			"app-zdt-abc123",
 		);
-		expect(result.sections.join("")).toContain(
+		expect(result.report).toContain(
 			"No containers were found for this release.",
 		);
 		expect(result.summary).toContain(
 			"- No containers were found for this release.",
 		);
-	});
-});
-
-describe("chunkLogContent", () => {
-	it("keeps small content in one piece", () => {
-		expect(chunkLogContent("one\ntwo\n")).toEqual(["one\ntwo\n"]);
-	});
-
-	it("splits on line boundaries within the byte budget", () => {
-		const content = Array.from({ length: 50 }, (_, i) => `line ${i}`).join(
-			"\n",
-		);
-		const chunks = chunkLogContent(content, 64);
-		expect(chunks.join("")).toBe(content);
-		for (const chunk of chunks) {
-			expect(Buffer.byteLength(chunk)).toBeLessThanOrEqual(64);
-		}
-		for (const chunk of chunks.slice(0, -1)) {
-			expect(chunk.endsWith("\n")).toBe(true);
-		}
-	});
-
-	it("splits an oversized line without breaking multi-byte characters", () => {
-		const content = `${"é✓".repeat(40)}\nend`;
-		const chunks = chunkLogContent(content, 16);
-		expect(chunks.join("")).toBe(content);
-		for (const chunk of chunks) {
-			expect(Buffer.byteLength(chunk)).toBeLessThanOrEqual(16);
-			expect(chunk).not.toContain("�");
-		}
 	});
 });
 

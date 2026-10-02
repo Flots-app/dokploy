@@ -120,13 +120,10 @@ const isCancellationCheck = (command: string) =>
 	command.startsWith("if [ -f ") &&
 	command.includes("Compose deployment cancellation requested");
 
-const decodedLog = () =>
-	commands()
-		.filter((command) => command.includes("/logs/deployment.log"))
-		.map((command) => {
-			const encoded = command.match(/^echo '?([A-Za-z0-9+/=]+)'?/)?.[1];
-			return encoded ? Buffer.from(encoded, "base64").toString("utf8") : "";
-		})
+const appendedLog = () =>
+	mocks.exec.mock.calls
+		.filter(([, command]) => String(command) === "cat >> /logs/deployment.log")
+		.map(([, , , input]) => String(input))
 		.join("");
 
 describe("Build Server Compose candidate diagnostics", () => {
@@ -194,7 +191,7 @@ describe("Build Server Compose candidate diagnostics", () => {
 		expect(logs).toBeGreaterThan(inspect);
 		expect(teardown).toBeGreaterThan(logs);
 
-		const log = decodedLog();
+		const log = appendedLog();
 		expect(log).toContain("===== Diagnostics: candidate containers =====");
 		expect(log).toContain("Error: DATABASE_URL is not defined");
 		expect(log.indexOf("Diagnostics: candidate containers")).toBeLessThan(
@@ -238,7 +235,7 @@ describe("Build Server Compose candidate diagnostics", () => {
 		expect(
 			commands().some((command) => command.includes("down --remove-orphans")),
 		).toBe(true);
-		expect(decodedLog()).toContain(
+		expect(appendedLog()).toContain(
 			"Container diagnostics could not be collected: docker daemon unreachable",
 		);
 	});

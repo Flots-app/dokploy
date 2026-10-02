@@ -41,8 +41,8 @@ export type DiagnosticsExecutor = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export interface DiagnosticsResult {
-	/** Full report appended to the deployment log, one chunk per section. */
-	sections: string[];
+	/** Full report appended to the deployment log. */
+	report: string;
 	/** Short digest of the failing units, shown in the deployment error. */
 	summary: string;
 }
@@ -155,7 +155,10 @@ export const parseContainersInspect = (
 		.map((line) => line.trim())
 		.filter(Boolean)
 		.map((line) => {
-			const [name, service, restartCount, state] = JSON.parse(line) as [
+			const parsed: unknown = JSON.parse(line);
+			if (!Array.isArray(parsed) || parsed.length !== 4)
+				throw new Error("Unexpected docker inspect output");
+			const [name, service, restartCount, state] = parsed as [
 				string,
 				string | null,
 				number | null,
@@ -245,12 +248,12 @@ const indent = (value: string, prefix = "  ") =>
 export const formatDiagnosticsReport = (
 	title: string,
 	entries: DiagnosticsEntry[],
-): string[] => {
+): string => {
 	const sorted = sortDiagnosticsEntries(entries);
 	const header = [`\n===== ${title} =====`];
 	if (sorted.length === 0) {
 		header.push("No containers were found for this release.");
-		return [`${header.join("\n")}\n`];
+		return `${header.join("\n")}\n`;
 	}
 	const width = Math.max(...sorted.map((entry) => entry.service.length));
 	header.push(
@@ -280,7 +283,7 @@ export const formatDiagnosticsReport = (
 			);
 			return `${lines.join("\n")}\n`;
 		}),
-	];
+	].join("");
 };
 
 export const summarizeDiagnostics = (
@@ -326,42 +329,6 @@ export const summarizeDiagnostics = (
 	return lines.join("\n");
 };
 
-// Remote appends pass the content as one base64 shell argument, and Linux
-// caps a single argument at 128 KiB (MAX_ARG_STRLEN).
-const MAX_SHELL_APPEND_BYTES = 48 * 1024;
-
-/** Split log content on line boundaries into shell-argument-sized pieces. */
-export const chunkLogContent = (
-	content: string,
-	maxBytes = MAX_SHELL_APPEND_BYTES,
-): string[] => {
-	const chunks: string[] = [];
-	let current = "";
-	let currentBytes = 0;
-	const flush = () => {
-		if (current) chunks.push(current);
-		current = "";
-		currentBytes = 0;
-	};
-	for (const line of content.split(/(?<=\n)/)) {
-		const lineBytes = Buffer.byteLength(line);
-		if (currentBytes + lineBytes > maxBytes) flush();
-		if (lineBytes <= maxBytes) {
-			current += line;
-			currentBytes += lineBytes;
-			continue;
-		}
-		for (const character of line) {
-			const characterBytes = Buffer.byteLength(character);
-			if (currentBytes + characterBytes > maxBytes) flush();
-			current += character;
-			currentBytes += characterBytes;
-		}
-	}
-	flush();
-	return chunks;
-};
-
 const describeCollectionError = (error: unknown) =>
 	formatDeploymentError(error).replace(/\n+/g, " ");
 
@@ -398,7 +365,7 @@ export const collectContainerDiagnostics = async (
 	} catch (error) {
 		const message = `Container diagnostics could not be collected: ${describeCollectionError(error)}`;
 		return {
-			sections: [`\n===== ${title} =====\n${message}\n`],
+			report: `\n===== ${title} =====\n${message}\n`,
 			summary: message,
 		};
 	}
@@ -417,7 +384,7 @@ export const collectContainerDiagnostics = async (
 	}
 
 	return {
-		sections: formatDiagnosticsReport(title, entries),
+		report: formatDiagnosticsReport(title, entries),
 		summary: summarizeDiagnostics(title, entries),
 	};
 };
