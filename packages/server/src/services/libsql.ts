@@ -14,10 +14,12 @@ import { eq, getTableColumns } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
+import { assertServerAllowsRegularService } from "./server";
 
 export type Libsql = typeof libsql.$inferSelect;
 
 export const createLibsql = async (input: z.infer<typeof apiCreateLibsql>) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("libsql", input.appName);
 
 	const valid = await validUniqueServerAppName(input.appName);
@@ -90,6 +92,7 @@ export const updateLibsqlById = async (
 	libsqlId: string,
 	libsqlData: Partial<Libsql>,
 ) => {
+	await assertServerAllowsRegularService(libsqlData.serverId);
 	const { appName, ...rest } = libsqlData;
 	const result = await db
 		.update(libsql)

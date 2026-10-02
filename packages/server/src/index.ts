@@ -14,6 +14,7 @@ export * from "./services/bitbucket";
 export * from "./services/certificate";
 export * from "./services/cluster";
 export * from "./services/compose";
+export * from "./services/compose-preview";
 export * from "./services/deployment";
 export * from "./services/destination";
 export * from "./services/docker";

@@ -15,6 +15,9 @@ import {
 	getStackContainersByAppName,
 	uploadFileToContainer,
 } from "@dokploy/server";
+import { db } from "@dokploy/server/db";
+import { checkServiceAccess } from "@dokploy/server/services/permission";
+import { getRemoteDocker } from "@dokploy/server/utils/servers/remote-docker";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { audit } from "@/server/api/utils/audit";
@@ -207,6 +210,28 @@ export const dockerRouter = createTRPCRouter({
 					ctx.session?.activeOrganizationId
 				) {
 					throw new TRPCError({ code: "UNAUTHORIZED" });
+				}
+				if (compose.previewParentId) {
+					await checkServiceAccess(ctx, input.composeId, "read");
+					const preview = await db.query.composePreviews.findFirst({
+						where: (t, { eq }) => eq(t.composeId, input.composeId!),
+					});
+					if (!preview || !compose.serverId)
+						throw new TRPCError({ code: "NOT_FOUND" });
+					const engine = await getRemoteDocker(compose.serverId);
+					return (
+						await engine.listContainers({
+							all: true,
+							filters: JSON.stringify({
+								label: [`com.dokploy.preview-id=${preview.previewId}`],
+							}),
+						})
+					).map((container) => ({
+						containerId: container.Id,
+						name: container.Names[0]?.replace(/^\//, "") || container.Id,
+						state: container.State,
+						status: container.Status,
+					}));
 				}
 				const runtimeSelector =
 					compose.composeType === "docker-compose"

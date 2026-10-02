@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 	applicationsFindMany: vi.fn(),
 	composeFindMany: vi.fn(),
 	queueAdd: vi.fn(),
+	composePreviewWebhook: vi.fn(),
 	verify: vi.fn(),
 	shouldDeploy: vi.fn(),
 	ensureApplicationBuildServer: vi.fn(),
@@ -81,6 +82,10 @@ vi.mock("@octokit/webhooks", () => ({
 			verify: mocks.verify,
 		};
 	}),
+}));
+
+vi.mock("@/server/queues/compose-previews", () => ({
+	handleComposePreviewWebhook: mocks.composePreviewWebhook,
 }));
 
 vi.mock("@/server/queues/queueSetup", () => ({
@@ -401,5 +406,33 @@ describe("GitHub app webhook auto-deploy", () => {
 		expect(mocks.queueAdd).not.toHaveBeenCalled();
 		expect(res.status).toHaveBeenCalledWith(200);
 		expect(res.json).toHaveBeenCalledWith({ message: "No apps to deploy" });
+	});
+	it("does not dispatch previews before signature verification", async () => {
+		mocks.verify.mockResolvedValue(false);
+		const req = createPushRequest("feature");
+		req.headers["x-github-event"] = "pull_request";
+		req.body.pull_request = { number: 42 };
+		const res = createResponse();
+		await handler(req, res);
+		expect(res.status).toHaveBeenCalledWith(401);
+		expect(mocks.composePreviewWebhook).not.toHaveBeenCalled();
+	});
+
+	it("dispatches PR cleanup even when the commit contains skip-ci", async () => {
+		const req = createPushRequest("feature", {
+			login: "agentHits",
+			name: "Display name",
+		});
+		req.headers["x-github-event"] = "pull_request";
+		req.body.action = "closed";
+		req.body.pull_request = { number: 42 };
+		req.body.head_commit.message = "[skip ci]";
+		await handler(req, createResponse());
+		expect(mocks.composePreviewWebhook).toHaveBeenCalledWith({
+			githubId: "github-provider-id",
+			owner: "agentHits",
+			repository: "dokploy",
+			pullRequestNumber: 42,
+		});
 	});
 });

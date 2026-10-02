@@ -1,0 +1,36 @@
+# Run with Docker inside the dedicated worker, after installing the firewall image.
+name: dokploy-preview-engine
+services:
+  firewall:
+    image: dokploy-preview-firewall:1
+    container_name: dokploy-preview-firewall
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    security_opt: ['no-new-privileges:true']
+    environment:
+      PREVIEW_FIREWALL_ROLE: worker-engine
+    volumes: ['/etc/dokploy:/policy']
+    labels:
+      com.dokploy.preview-infrastructure: 'true'
+  proxy:
+    image: traefik:v3.6.7
+    container_name: dokploy-traefik
+    restart: unless-stopped
+    command:
+      - --entrypoints.web.address=:80
+      - '--entrypoints.web.forwardedheaders.trustedips=${PREVIEW_MANAGER_IP:?}/32'
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - '--providers.docker.constraints=Label(`com.dokploy.preview`,`true`)'
+      - --ping=true
+    ports: ['9080:80']
+    volumes: ['/var/run/docker.sock:/var/run/docker.sock:ro']
+    labels:
+      com.dokploy.preview-infrastructure: 'true'
+    healthcheck:
+      test: ['CMD', 'traefik', 'healthcheck', '--ping']
+      interval: 15s
+      timeout: 5s
+      retries: 3

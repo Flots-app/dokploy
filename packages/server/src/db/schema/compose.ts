@@ -1,8 +1,17 @@
 import { relations } from "drizzle-orm";
-import { boolean, integer, pgEnum, pgTable, text } from "drizzle-orm/pg-core";
+import {
+	type AnyPgColumn,
+	boolean,
+	integer,
+	jsonb,
+	pgEnum,
+	pgTable,
+	text,
+} from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import type { composePreviewSettingsSchema } from "../validations/compose-preview";
 import { backups } from "./backups";
 import { bitbucket } from "./bitbucket";
 import { deployments } from "./deployment";
@@ -46,6 +55,17 @@ export const compose = pgTable("compose", {
 		.$defaultFn(() => generateAppName("compose")),
 	description: text("description"),
 	env: encryptedText("env"),
+	previewSettings:
+		jsonb("previewSettings").$type<
+			z.infer<typeof composePreviewSettingsSchema>
+		>(),
+	previewEnv: encryptedText("previewEnv").notNull().default(""),
+	previewComposeFile: text("previewComposeFile").notNull().default(""),
+	previewParentId: text("previewParentId").references(
+		(): AnyPgColumn => compose.composeId,
+		{ onDelete: "restrict" },
+	),
+	previewCommitSha: text("previewCommitSha"),
 	composeFile: text("composeFile").notNull().default(""),
 	refreshToken: text("refreshToken").$defaultFn(() => nanoid()),
 	sourceType: sourceTypeCompose("sourceType").notNull().default("github"),
@@ -249,7 +269,16 @@ export const apiUpdateCompose = createSchema
 		composeFile: z.string().optional(),
 		command: z.string().optional(),
 	})
-	.omit({ serverId: true, buildServerId: true, buildRegistryId: true });
+	.omit({
+		serverId: true,
+		buildServerId: true,
+		buildRegistryId: true,
+		previewSettings: true,
+		previewEnv: true,
+		previewComposeFile: true,
+		previewParentId: true,
+		previewCommitSha: true,
+	});
 
 export const apiUpdateComposeBuildServer = z
 	.object({

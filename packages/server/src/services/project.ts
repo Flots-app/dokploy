@@ -2,6 +2,7 @@ import { db } from "@dokploy/server/db";
 import {
 	type apiCreateProject,
 	applications,
+	environments,
 	libsql,
 	mariadb,
 	mongo,
@@ -54,7 +55,9 @@ export const findProjectById = async (projectId: string) => {
 			environments: {
 				with: {
 					applications: true,
-					compose: true,
+					compose: {
+						columns: { previewEnv: false, previewComposeFile: false },
+					},
 					libsql: true,
 					mariadb: true,
 					mongo: true,
@@ -80,6 +83,24 @@ export const findProjectById = async (projectId: string) => {
 };
 
 export const deleteProject = async (projectId: string) => {
+	const preview = await db.query.compose.findFirst({
+		where: (fields, { and, isNotNull, inArray }) =>
+			and(
+				isNotNull(fields.previewParentId),
+				inArray(
+					fields.environmentId,
+					db
+						.select({ id: environments.environmentId })
+						.from(environments)
+						.where(eq(environments.projectId, projectId)),
+				),
+			),
+	});
+	if (preview)
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Remove active Compose previews before deleting this project",
+		});
 	const project = await db
 		.delete(projects)
 		.where(eq(projects.projectId, projectId))

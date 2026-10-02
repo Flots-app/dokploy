@@ -14,10 +14,12 @@ import { eq, getTableColumns } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
+import { assertServerAllowsRegularService } from "./server";
 
 export type MySql = typeof mysql.$inferSelect;
 
 export const createMysql = async (input: z.infer<typeof apiCreateMySql>) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("mysql", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -93,6 +95,7 @@ export const updateMySqlById = async (
 	mysqlId: string,
 	mysqlData: Partial<MySql>,
 ) => {
+	await assertServerAllowsRegularService(mysqlData.serverId);
 	const { appName, ...rest } = mysqlData;
 	const result = await db
 		.update(mysql)

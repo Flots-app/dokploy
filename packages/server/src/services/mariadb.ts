@@ -14,12 +14,14 @@ import { eq, getTableColumns } from "drizzle-orm";
 import { quote } from "shell-quote";
 import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
+import { assertServerAllowsRegularService } from "./server";
 
 export type Mariadb = typeof mariadb.$inferSelect;
 
 export const createMariadb = async (
 	input: z.infer<typeof apiCreateMariaDB>,
 ) => {
+	await assertServerAllowsRegularService(input.serverId);
 	const appName = buildAppName("mariadb", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -95,6 +97,7 @@ export const updateMariadbById = async (
 	mariadbId: string,
 	mariadbData: Partial<Mariadb>,
 ) => {
+	await assertServerAllowsRegularService(mariadbData.serverId);
 	const { appName, ...rest } = mariadbData;
 	const result = await db
 		.update(mariadb)

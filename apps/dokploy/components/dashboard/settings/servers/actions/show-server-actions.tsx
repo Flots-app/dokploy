@@ -9,6 +9,8 @@ import {
 	DialogTrigger,
 } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { PreviewFirewallSettings } from "./preview-firewall";
+import { PreviewWorkerPolicy } from "./preview-policy";
 import { ShowStorageActions } from "./show-storage-actions";
 import { ShowTraefikActions } from "./show-traefik-actions";
 import { ToggleDockerCleanup } from "./toggle-docker-cleanup";
@@ -39,7 +41,7 @@ export const ShowServerActions = ({ serverId, asButton = false }: Props) => {
 					View Actions
 				</DropdownMenuItem>
 			)}
-			<DialogContent className="sm:max-w-xl">
+			<DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
 				<div className="flex flex-col gap-1">
 					<DialogTitle className="text-xl">Web server settings</DialogTitle>
 					<DialogDescription>Reload or clean the web server.</DialogDescription>
@@ -49,6 +51,8 @@ export const ShowServerActions = ({ serverId, asButton = false }: Props) => {
 					<ShowTraefikActions serverId={serverId} />
 					<ShowStorageActions serverId={serverId} />
 					<ToggleDockerCleanup serverId={serverId} />
+					<PreviewWorkerPolicy serverId={serverId} />
+					<PreviewFirewallSettings serverId={serverId} />
 				</div>
 			</DialogContent>
 		</Dialog>

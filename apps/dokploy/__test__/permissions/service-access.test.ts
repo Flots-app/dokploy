@@ -26,12 +26,20 @@ const mockMemberData = (
 	user: { id: "user-1", email: "test@test.com" },
 });
 
+let previewToReturn:
+	| {
+			previewParentId: string;
+			environment: { project: { organizationId: string } };
+	  }
+	| undefined;
+
 let memberToReturn: ReturnType<typeof mockMemberData> =
 	mockMemberData("member");
 
 vi.mock("@dokploy/server/db", () => ({
 	db: {
 		query: {
+			compose: { findFirst: vi.fn(() => Promise.resolve(previewToReturn)) },
 			member: {
 				findFirst: vi.fn(() => Promise.resolve(memberToReturn)),
 				findMany: vi.fn(() => Promise.resolve([])),
@@ -59,6 +67,7 @@ const ctx = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	previewToReturn = undefined;
 });
 
 describe("checkServicePermissionAndAccess", () => {
@@ -128,5 +137,47 @@ describe("checkServiceAccess", () => {
 		await expect(
 			checkServiceAccess(ctx, "project-1", "create"),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("managed Compose preview permissions", () => {
+	beforeEach(() => {
+		previewToReturn = {
+			previewParentId: "source-compose",
+			environment: { project: { organizationId: "org-1" } },
+		};
+	});
+	it("inherits read access from the source", async () => {
+		memberToReturn = mockMemberData("member", ["source-compose"]);
+		await expect(
+			checkServiceAccess(ctx, "preview-compose", "read"),
+		).resolves.toBeUndefined();
+		await expect(
+			checkServicePermissionAndAccess(ctx, "preview-compose", {
+				deployment: ["read"],
+			}),
+		).resolves.toBeUndefined();
+	});
+	it("revokes preview reads when source access is revoked", async () => {
+		memberToReturn = mockMemberData("member", ["preview-compose"]);
+		await expect(
+			checkServiceAccess(ctx, "preview-compose", "read"),
+		).rejects.toThrow("access");
+	});
+	it("prevents direct mutations even for owners", async () => {
+		memberToReturn = mockMemberData("owner");
+		await expect(
+			checkServicePermissionAndAccess(ctx, "preview-compose", {
+				deployment: ["create"],
+			}),
+		).rejects.toThrow("source Compose Previews");
+	});
+	it("denies cross-organization preview reads even for owners", async () => {
+		memberToReturn = mockMemberData("owner");
+		if (previewToReturn)
+			previewToReturn.environment.project.organizationId = "other-org";
+		await expect(
+			checkServiceAccess(ctx, "preview-compose", "read"),
+		).rejects.toThrow("access");
 	});
 });
