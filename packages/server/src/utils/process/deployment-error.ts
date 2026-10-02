@@ -26,3 +26,31 @@ export const formatDeploymentError = (error: unknown): string => {
 		.filter(Boolean)
 		.join("\n");
 };
+
+const deploymentDiagnostics = new WeakMap<object, string>();
+
+/** Attach a runtime diagnostics digest to a deployment failure. */
+export const attachDeploymentDiagnostics = (
+	error: unknown,
+	summary: string,
+) => {
+	if (typeof error === "object" && error !== null && summary) {
+		deploymentDiagnostics.set(error, summary);
+	}
+};
+
+/**
+ * The persisted deployment error: the formatted cause plus the diagnostics
+ * digest. Notifications keep using `formatDeploymentError` so application
+ * logs are never forwarded to third-party channels.
+ */
+export const formatDeploymentErrorWithDiagnostics = (
+	error: unknown,
+	errorMessage = formatDeploymentError(error),
+): string => {
+	const summary =
+		typeof error === "object" && error !== null
+			? deploymentDiagnostics.get(error)
+			: undefined;
+	return summary ? `${errorMessage}\n\n${summary}` : errorMessage;
+};
