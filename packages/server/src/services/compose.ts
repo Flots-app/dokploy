@@ -57,6 +57,10 @@ import {
 } from "@dokploy/server/utils/builders/compose-build-server";
 import { randomizeSpecificationFile } from "@dokploy/server/utils/docker/compose";
 import {
+	chunkLogContent,
+	collectComposeReleaseDiagnostics,
+} from "@dokploy/server/utils/docker/deployment-diagnostics";
+import {
 	cloneCompose,
 	loadDockerCompose,
 	loadDockerComposeRemote,
@@ -64,7 +68,11 @@ import {
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
 import { sendBuildErrorNotifications } from "@dokploy/server/utils/notifications/build-error";
 import { sendBuildSuccessNotifications } from "@dokploy/server/utils/notifications/build-success";
-import { formatDeploymentError } from "@dokploy/server/utils/process/deployment-error";
+import {
+	attachDeploymentDiagnostics,
+	formatDeploymentError,
+	formatDeploymentErrorWithDiagnostics,
+} from "@dokploy/server/utils/process/deployment-error";
 import {
 	ExecError,
 	execAsync,
@@ -102,13 +110,15 @@ const appendDeploymentLog = async (
 	content: string,
 ) => {
 	if (!content) return;
-	const command = `echo ${quote([encodeBase64(content)])} | base64 -d >> ${quote(
-		[logPath],
-	)}`;
-	if (serverId) {
-		await execAsyncRemote(serverId, command);
-	} else {
+	if (!serverId) {
 		await fsPromises.appendFile(logPath, content);
+		return;
+	}
+	for (const chunk of chunkLogContent(content)) {
+		await execAsyncRemote(
+			serverId,
+			`echo ${quote([encodeBase64(chunk)])} | base64 -d >> ${quote([logPath])}`,
+		);
 	}
 };
 
@@ -338,6 +348,10 @@ const assertComposeDeploymentNotCancelled = async (
 		throw error;
 	}
 };
+
+const isComposeDeploymentCancellation = (error: unknown) =>
+	error instanceof Error &&
+	error.message === "Compose deployment cancellation requested";
 
 const runBuildServerStage = async (
 	serverId: string,
@@ -1254,6 +1268,27 @@ const deployComposeWithBuildServer = async (
 				// references it, and the next activation can retry recovery safely.
 			}
 		}
+		if (
+			!promoted &&
+			candidateState &&
+			runtimeMutationAttempted &&
+			!isComposeDeploymentCancellation(error)
+		) {
+			// Capture container state and logs before the candidate is torn down:
+			// `docker compose down` deletes them with the containers.
+			try {
+				const diagnostics = await collectComposeReleaseDiagnostics(
+					(command) => executeOnServer(runtimeServerId, command),
+					candidateState.projectName,
+				);
+				attachDeploymentDiagnostics(error, diagnostics.summary);
+				for (const section of diagnostics.sections) {
+					await appendDeploymentLog(buildServerId, deployment.logPath, section);
+				}
+			} catch {
+				// Preserve the original deployment failure.
+			}
+		}
 		if (!promoted && candidateState && !routeSwitched) {
 			try {
 				if (runtimeMutationAttempted) {
@@ -1454,7 +1489,7 @@ export const deployCompose = async ({
 		await updateDeployment(deployment.deploymentId, {
 			status: "error",
 			finishedAt: new Date().toISOString(),
-			errorMessage,
+			errorMessage: formatDeploymentErrorWithDiagnostics(error, errorMessage),
 		});
 		await updateCompose(composeId, {
 			composeStatus: "error",
@@ -1565,7 +1600,7 @@ export const rebuildCompose = async ({
 		await updateDeployment(deployment.deploymentId, {
 			status: "error",
 			finishedAt: new Date().toISOString(),
-			errorMessage,
+			errorMessage: formatDeploymentErrorWithDiagnostics(error, errorMessage),
 		});
 		await updateCompose(composeId, {
 			composeStatus: "error",
