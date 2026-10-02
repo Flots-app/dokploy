@@ -14,10 +14,7 @@ import {
 	previewImageRemovalReferences,
 	previewServiceName,
 } from "../utils/docker/compose-preview-stack";
-import {
-	chunkLogContent,
-	collectContainerDiagnostics,
-} from "../utils/docker/deployment-diagnostics";
+import { collectContainerDiagnostics } from "../utils/docker/deployment-diagnostics";
 import { loadDockerComposeRemote } from "../utils/docker/domain";
 import type { ComposeSpecification } from "../utils/docker/types";
 import { encodeBase64 } from "../utils/docker/utils";
@@ -252,13 +249,14 @@ export async function deployComposePreviewStack(
 			instance.serverId,
 			`(${command}) >> ${quote([deployment.logPath])} 2>&1`,
 		);
-	const appendLog = async (content: string) => {
-		for (const chunk of chunkLogContent(content))
-			await execAsyncRemote(
-				instance.serverId,
-				`printf %s ${quote([encodeBase64(chunk)])} | base64 -d >> ${quote([deployment.logPath])}`,
-			);
-	};
+	// Streamed through stdin: a command argument is capped at 128 KiB on Linux.
+	const appendLog = (content: string) =>
+		execAsyncRemote(
+			instance.serverId,
+			`cat >> ${quote([deployment.logPath])}`,
+			undefined,
+			content,
+		);
 	let phase = "initialization";
 	let stackDeployed = false;
 	try {
@@ -515,7 +513,7 @@ async function capturePreviewDiagnostics(
 	managerId: string | null,
 	previewId: string,
 	generation: string,
-	appendLog: (content: string) => Promise<void>,
+	appendLog: (content: string) => Promise<unknown>,
 ) {
 	const summaries: string[] = [];
 	try {
@@ -548,7 +546,7 @@ async function capturePreviewDiagnostics(
 			},
 		);
 		summaries.push(containers.summary);
-		for (const section of containers.sections) await appendLog(section);
+		await appendLog(containers.report);
 	} catch {
 		// Preserve the original deployment failure.
 	}

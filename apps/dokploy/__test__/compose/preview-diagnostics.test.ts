@@ -165,12 +165,9 @@ describe("preview stack failure diagnostics", () => {
 	const commands = () =>
 		m.exec.mock.calls.map(([, command]) => String(command));
 	const appendedLog = () =>
-		commands()
-			.filter((command) => command.includes("/logs/pr-7.log"))
-			.map((command) => {
-				const encoded = command.match(/^printf %s '?([A-Za-z0-9+/=]+)'?/)?.[1];
-				return encoded ? Buffer.from(encoded, "base64").toString("utf8") : "";
-			})
+		m.exec.mock.calls
+			.filter(([, command]) => String(command) === "cat >> /logs/pr-7.log")
+			.map(([, , , input]) => String(input))
 			.join("");
 
 	beforeEach(() => {

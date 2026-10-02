@@ -200,7 +200,12 @@ export function formatPreviewStackTasks(stdout: string, appName: string) {
 		.split("\n")
 		.map((line) => line.trim())
 		.filter(Boolean)
-		.map((line) => JSON.parse(line) as PreviewStackTask);
+		.map((line) => {
+			const parsed: unknown = JSON.parse(line);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+				throw new Error("Unexpected docker stack ps output");
+			return parsed as PreviewStackTask;
+		});
 	if (!tasks.length)
 		return {
 			section: `\n===== ${PREVIEW_TASKS_TITLE} =====\nNo Swarm tasks were found for this preview.\n`,
