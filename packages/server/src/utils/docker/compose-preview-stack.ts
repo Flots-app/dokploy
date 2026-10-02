@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { quote } from "shell-quote";
 import type { Domain } from "../../services/domain";
 import type { Registry } from "../../services/registry";
 import { createDomainLabels } from "./domain";
@@ -172,4 +173,80 @@ export function createPreviewStack(
 		}
 	}
 	return spec;
+}
+
+const PREVIEW_TASKS_TITLE = "Diagnostics: Swarm tasks";
+const PREVIEW_TASK_SUMMARY_LIMIT = 8;
+
+interface PreviewStackTask {
+	Name?: string;
+	Node?: string;
+	CurrentState?: string;
+	DesiredState?: string;
+	Error?: string;
+}
+
+/** Swarm task history, including tasks that never got a container. */
+export function getPreviewStackTasksCommand(appName: string) {
+	return `docker stack ps --no-trunc --format '{{json .}}' ${quote([appName])}`;
+}
+
+export function previewServiceName(appName: string, name: string) {
+	return name.startsWith(`${appName}_`) ? name.slice(appName.length + 1) : name;
+}
+
+export function formatPreviewStackTasks(stdout: string, appName: string) {
+	const tasks = stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as PreviewStackTask);
+	if (!tasks.length)
+		return {
+			section: `\n===== ${PREVIEW_TASKS_TITLE} =====\nNo Swarm tasks were found for this preview.\n`,
+			summary: "",
+		};
+	const rows = tasks.map((task) => {
+		const state = task.CurrentState || "unknown";
+		return {
+			// History rows are indented with "\_" by the Docker CLI.
+			name: previewServiceName(
+				appName,
+				(task.Name || "unknown").replace(/^[\s\\_]+/, ""),
+			),
+			state,
+			failing: Boolean(task.Error) || /^(Failed|Rejected)/.test(state),
+			running: state.startsWith("Running"),
+			task,
+		};
+	});
+	const width = Math.max(...rows.map((row) => row.name.length));
+	const lines = rows.map(
+		(row) =>
+			`${row.failing ? "✗" : row.running ? "✓" : "!"} ${row.name.padEnd(width)}  ${row.state} (desired: ${row.task.DesiredState || "unknown"})${row.task.Node ? ` on ${row.task.Node}` : ""}${row.task.Error ? `\n    ${row.task.Error}` : ""}`,
+	);
+	const errors = [
+		...new Set(
+			rows
+				.filter((row) => row.failing)
+				.map(
+					(row) =>
+						`- ${row.name}: ${row.state} — ${row.task.Error || "no error reported"}`,
+				),
+		),
+	];
+	return {
+		section: `\n===== ${PREVIEW_TASKS_TITLE} =====\n${lines.join("\n")}\n`,
+		summary: errors.length
+			? [
+					"Swarm tasks with errors:",
+					...errors.slice(0, PREVIEW_TASK_SUMMARY_LIMIT),
+					...(errors.length > PREVIEW_TASK_SUMMARY_LIMIT
+						? [
+								`  …and ${errors.length - PREVIEW_TASK_SUMMARY_LIMIT} more in the deployment log`,
+							]
+						: []),
+				].join("\n")
+			: "",
+	};
 }

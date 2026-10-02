@@ -9,11 +9,19 @@ import { isolatePreviewCompose } from "../utils/docker/compose-preview";
 import {
 	assignPreviewImages,
 	createPreviewStack,
+	formatPreviewStackTasks,
+	getPreviewStackTasksCommand,
 	previewImageRemovalReferences,
+	previewServiceName,
 } from "../utils/docker/compose-preview-stack";
+import {
+	chunkLogContent,
+	collectContainerDiagnostics,
+} from "../utils/docker/deployment-diagnostics";
 import { loadDockerComposeRemote } from "../utils/docker/domain";
 import type { ComposeSpecification } from "../utils/docker/types";
 import { encodeBase64 } from "../utils/docker/utils";
+import { formatDeploymentError } from "../utils/process/deployment-error";
 import { execAsync, execAsyncRemote } from "../utils/process/execAsync";
 import { cloneGithubRepository } from "../utils/providers/github";
 import { getRemoteDocker } from "../utils/servers/remote-docker";
@@ -244,7 +252,15 @@ export async function deployComposePreviewStack(
 			instance.serverId,
 			`(${command}) >> ${quote([deployment.logPath])} 2>&1`,
 		);
+	const appendLog = async (content: string) => {
+		for (const chunk of chunkLogContent(content))
+			await execAsyncRemote(
+				instance.serverId,
+				`printf %s ${quote([encodeBase64(chunk)])} | base64 -d >> ${quote([deployment.logPath])}`,
+			);
+	};
 	let phase = "initialization";
+	let stackDeployed = false;
 	try {
 		phase = "worker disk capacity check";
 		await execAsyncRemote(
@@ -402,6 +418,7 @@ export async function deployComposePreviewStack(
 				`printf %s ${quote([encodeBase64(registry.password)])} | base64 -d | ${getComposeRegistryLoginCommand(registry)}`,
 			);
 		phase = "Swarm stack deployment";
+		stackDeployed = true;
 		await runPreviewManager(
 			worker.swarmManagerId,
 			`docker stack deploy --with-registry-auth --resolve-image always --prune -c ${quote([stackFile])} ${quote([instance.appName])}`,
@@ -463,10 +480,21 @@ export async function deployComposePreviewStack(
 		});
 		await updateCompose(composeId, { composeStatus: "done" });
 	} catch {
+		const failure = `Preview stack deployment failed during ${phase}; see deployment logs`;
+		const diagnostics = stackDeployed
+			? await capturePreviewDiagnostics(
+					instance.appName,
+					instance.serverId,
+					worker.swarmManagerId,
+					previewId,
+					generation,
+					appendLog,
+				)
+			: "";
 		await updateDeployment(deployment.deploymentId, {
 			status: "error",
 			finishedAt: new Date().toISOString(),
-			errorMessage: `Preview stack deployment failed during ${phase}; see deployment logs`,
+			errorMessage: diagnostics ? `${failure}\n\n${diagnostics}` : failure,
 		});
 		await updateCompose(composeId, { composeStatus: "error" });
 		// Remote execution errors contain command text, potentially credentials.
@@ -474,6 +502,57 @@ export async function deployComposePreviewStack(
 			`Preview stack deployment failed during ${phase}; see deployment logs`,
 		);
 	}
+}
+
+/**
+ * Records Swarm task errors and the state and logs of every container of the
+ * failed generation. Swarm replaces failing tasks and prunes their containers,
+ * so this is the only durable copy. Never throws.
+ */
+async function capturePreviewDiagnostics(
+	appName: string,
+	workerId: string,
+	managerId: string | null,
+	previewId: string,
+	generation: string,
+	appendLog: (content: string) => Promise<void>,
+) {
+	const summaries: string[] = [];
+	try {
+		let tasks: ReturnType<typeof formatPreviewStackTasks>;
+		try {
+			const { stdout } = await runPreviewManager(
+				managerId,
+				getPreviewStackTasksCommand(appName),
+			);
+			tasks = formatPreviewStackTasks(stdout, appName);
+		} catch (error) {
+			const message = `Swarm task diagnostics could not be collected: ${formatDeploymentError(error).replace(/\n+/g, " ")}`;
+			tasks = {
+				section: `\n===== Diagnostics: Swarm tasks =====\n${message}\n`,
+				summary: message,
+			};
+		}
+		await appendLog(tasks.section);
+		if (tasks.summary) summaries.push(tasks.summary);
+		const containers = await collectContainerDiagnostics(
+			(command) => execAsyncRemote(workerId, command),
+			{
+				labels: [
+					`com.dokploy.preview-id=${previewId}`,
+					`com.dokploy.preview-generation=${generation}`,
+				],
+				serviceLabel: "com.docker.swarm.service.name",
+				title: "Diagnostics: preview containers",
+				serviceName: (name) => previewServiceName(appName, name),
+			},
+		);
+		summaries.push(containers.summary);
+		for (const section of containers.sections) await appendLog(section);
+	} catch {
+		// Preserve the original deployment failure.
+	}
+	return summaries.join("\n\n");
 }
 
 async function cleanupUnusedPreviewResources(
