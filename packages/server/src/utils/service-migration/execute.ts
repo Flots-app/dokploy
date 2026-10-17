@@ -46,6 +46,7 @@ import {
 	readMiddlewares,
 	requiresDowntime,
 	type SwarmServiceSnapshot,
+	type TraefikSnapshot,
 	type VolumeSnapshot,
 } from "./discovery";
 import { type HostExecutor, pipeBetweenHosts } from "./host";
@@ -527,9 +528,11 @@ const waitForTraefikRoutes = async (
 	);
 };
 
-const migrateTraefik = async (context: MigrationContext) => {
-	const snapshot = context.analysis.snapshot;
-	if (!snapshot || snapshot.traefik.length === 0) return;
+const migrateTraefik = async (
+	context: MigrationContext,
+	routes: TraefikSnapshot[],
+) => {
+	if (routes.length === 0) return;
 	const { target } = context;
 	const dynamic = target.paths.DYNAMIC_TRAEFIK_PATH;
 	const middlewaresFile = path.posix.join(dynamic, "middlewares.yml");
@@ -537,9 +540,9 @@ const migrateTraefik = async (context: MigrationContext) => {
 	current.http = current.http ?? {};
 	current.http.middlewares = current.http.middlewares ?? {};
 	const previous = { ...current.http.middlewares };
-	const added: string[] = [];
+	const added = new Set<string>();
 
-	await sequentially(snapshot.traefik, async (traefik) => {
+	await sequentially(routes, async (traefik) => {
 		const file = path.posix.join(dynamic, `${traefik.appName}.yml`);
 		await writeTargetFile(target, file, traefik.config);
 		await context.log(
@@ -553,20 +556,20 @@ const migrateTraefik = async (context: MigrationContext) => {
 		});
 	});
 	const middlewares = current.http.middlewares;
-	for (const traefik of snapshot.traefik) {
+	for (const traefik of routes) {
 		for (const [name, definition] of Object.entries(traefik.middlewares)) {
 			// Shared middlewares (redirect-to-https…) keep the target definition.
 			if (name in previous && !name.includes(traefik.appName)) continue;
 			middlewares[name] = definition as never;
-			added.push(name);
+			added.add(name);
 		}
 	}
-	if (added.length > 0) {
+	if (added.size > 0) {
 		await writeTargetFile(target, middlewaresFile, stringify(current));
-		await context.log(`Traefik middlewares copied: ${added.join(", ")}`);
+		await context.log(`Traefik middlewares copied: ${[...added].join(", ")}`);
 	}
-	await waitForTraefikRoutes(context, snapshot.traefik);
-	if (added.length === 0) return;
+	await waitForTraefikRoutes(context, routes);
+	if (added.size === 0) return;
 	context.compensations.push({
 		label: "Restore the target Traefik middlewares",
 		run: async () => {
@@ -629,11 +632,15 @@ const regenerateTraefik = async (context: MigrationContext) => {
 	}
 };
 
+/** Recreates the preview deployments; returns those that could not be recreated. */
 const migratePreviews = async (context: MigrationContext) => {
-	const snapshot = context.analysis.snapshot;
-	if (!snapshot || snapshot.previews.length === 0) return;
-	await sequentially(snapshot.previews, async (preview) => {
-		if (!preview.image) return;
+	const failed = new Set<string>();
+	const previews = context.analysis.snapshot?.previews ?? [];
+	await sequentially(previews, async (preview) => {
+		if (!preview.image) {
+			failed.add(preview.name);
+			return;
+		}
 		try {
 			const [application, previewDeployment, image] = await Promise.all([
 				findApplicationById(context.service.id),
@@ -660,8 +667,10 @@ const migratePreviews = async (context: MigrationContext) => {
 					);
 				},
 			});
+			await waitForSwarmService(context.target, preview.name);
 			await context.log(`Preview deployment ${preview.name} recreated`);
 		} catch (error) {
+			failed.add(preview.name);
 			await context.log(
 				`⚠️ Preview deployment ${preview.name} could not be recreated: ${
 					error instanceof Error ? error.message : String(error)
@@ -669,6 +678,7 @@ const migratePreviews = async (context: MigrationContext) => {
 			);
 		}
 	});
+	return failed;
 };
 
 const migrateSwarmService = async (context: MigrationContext) => {
@@ -756,15 +766,21 @@ const migrateSwarmService = async (context: MigrationContext) => {
 		await context.log(`${service.appName} is running on ${target.host.name}`);
 	}
 	if (service.type === "application") {
-		// Routes are published once the release is healthy so the target never answers 502.
-		await migrateTraefik(context);
+		// Routes are published once the releases are healthy so the target never
+		// answers 502; routes of previews that could not be recreated are skipped.
+		const failedPreviews = await migratePreviews(context);
+		await migrateTraefik(
+			context,
+			snapshot.traefik.filter(
+				(traefik) => !failedPreviews.has(traefik.appName),
+			),
+		);
 		const copied = snapshot.traefik.some(
 			(traefik) => traefik.appName === service.appName,
 		);
 		if (!copied && service.domains.length > 0) {
 			await regenerateTraefik(context);
 		}
-		await migratePreviews(context);
 	}
 	return status;
 };
