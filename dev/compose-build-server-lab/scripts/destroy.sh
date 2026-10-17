@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_command limactl
 
-for instance in "${BUILD_VM}" "${RUNTIME_VM}"; do
+for instance in "${BUILD_VM}" "${RUNTIME_VM}" "${MIGRATION_TARGET_VM}"; do
 	if instance_exists "${instance}"; then
 		limactl delete -f "${instance}"
 	fi

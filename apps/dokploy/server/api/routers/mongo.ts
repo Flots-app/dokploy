@@ -30,6 +30,7 @@ import {
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -145,6 +146,7 @@ export const mongoRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mongoId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mongoId);
 			const service = await findMongoById(input.mongoId);
 
 			if (service.serverId) {
@@ -170,6 +172,7 @@ export const mongoRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mongoId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mongoId);
 			const mongo = await findMongoById(input.mongoId);
 
 			if (mongo.serverId) {
@@ -228,6 +231,7 @@ export const mongoRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mongoId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mongoId);
 			const mongo = await findMongoById(input.mongoId);
 			await audit(ctx, {
 				action: "deploy",
@@ -299,6 +303,7 @@ export const mongoRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mongoId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mongoId);
 			const mongo = await findMongoById(input.mongoId);
 			if (mongo.serverId) {
 				await stopServiceRemote(mongo.serverId, mongo.appName);
@@ -505,6 +510,7 @@ export const mongoRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mongoId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mongoId);
 
 			await rebuildDatabase(input.mongoId, "mongo");
 

@@ -30,6 +30,7 @@ make status
 make smoke
 make smoke-clean
 make manual-ready
+make migration-target
 make stop
 make destroy
 ```
@@ -137,6 +138,26 @@ directory, so the full Dokploy setup step is optional for this focused test. Whe
 Dokploy itself runs in a container instead of directly on the host, replace
 `127.0.0.1` with the container host gateway while keeping ports `22221` and
 `22222`.
+
+## Server migration target
+
+`make migration-target` starts a third VM, `dokploy-runtime-b`, reachable on SSH
+port `22223` with the same user and key. It is provisioned like the runtime VM
+(Docker Swarm manager, `dokploy-network`, Traefik, the external
+`dokploy-lab-scheduler-state` volume and access to the lab registry) so services
+can be moved between two Deploy Servers with **Migrate to another server**:
+
+1. add it in Dokploy as a second Deploy Server (`127.0.0.1`, port `22223`, user
+   `dokploy`, the lab SSH key);
+2. deploy a service on the runtime VM, then open its migration dialog, run the
+   checks and migrate it to `dokploy-runtime-b` (and back).
+
+The lab Traefik has no Swarm provider, so Domains of Compose stacks
+(`composeType: stack`) do not route in the lab.
+
+The three VMs need about 13 GiB of memory and their disks grow with the images
+and volumes used in tests: keep enough free space on the host, a full host disk
+remounts the VM filesystems read-only.
 
 ## Fixture contract
 

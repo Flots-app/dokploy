@@ -22,6 +22,7 @@ import { ShowInternalMongoCredentials } from "@/components/dashboard/mongo/gener
 import { UpdateMongo } from "@/components/dashboard/mongo/update-mongo";
 import { ContainerFreeMonitoring } from "@/components/dashboard/monitoring/free/container/show-free-container-monitoring";
 import { ContainerPaidMonitoring } from "@/components/dashboard/monitoring/paid/container/show-paid-container-monitoring";
+import { MigrateServiceServer } from "@/components/dashboard/shared/migrate-service-server";
 import { ShowDatabaseAdvancedSettings } from "@/components/dashboard/shared/show-database-advanced-settings";
 import { MongodbIcon } from "@/components/icons/data-tools-icons";
 import { DashboardLayout } from "@/components/layouts/dashboard-layout";
@@ -158,6 +159,14 @@ const Mongo = (
 								<div className="flex flex-row gap-2 justify-end">
 									{permissions?.service.create && (
 										<UpdateMongo mongoId={mongoId} />
+									)}
+									{permissions?.service.create && (
+										<MigrateServiceServer
+											serviceType="mongo"
+											serviceId={mongoId}
+											serviceName={data?.name}
+											currentServerName={data?.server?.name || "Dokploy Server"}
+										/>
 									)}
 									{permissions?.service.delete && (
 										<DeleteService id={mongoId} type="mongo" />

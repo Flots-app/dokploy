@@ -29,6 +29,7 @@ import {
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -136,6 +137,7 @@ export const redisRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.redisId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.redisId);
 			const redis = await findRedisById(input.redisId);
 
 			if (redis.serverId) {
@@ -161,6 +163,7 @@ export const redisRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.redisId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.redisId);
 			const redis = await findRedisById(input.redisId);
 			if (redis.serverId) {
 				await stopServiceRemote(redis.serverId, redis.appName);
@@ -194,6 +197,7 @@ export const redisRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.redisId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.redisId);
 			const redis = await findRedisById(input.redisId);
 			if (redis.serverId) {
 				await stopServiceRemote(redis.serverId, redis.appName);
@@ -251,6 +255,7 @@ export const redisRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.redisId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.redisId);
 			const redis = await findRedisById(input.redisId);
 			await audit(ctx, {
 				action: "deploy",
@@ -492,6 +497,7 @@ export const redisRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.redisId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.redisId);
 
 			await rebuildDatabase(input.redisId, "redis");
 			await audit(ctx, {

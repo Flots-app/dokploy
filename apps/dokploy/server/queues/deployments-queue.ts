@@ -2,6 +2,7 @@ import {
 	deployApplication,
 	deployCompose,
 	deployPreviewApplication,
+	findRunningServiceMigration,
 	rebuildApplication,
 	rebuildCompose,
 	rebuildPreviewApplication,
@@ -17,6 +18,17 @@ import type { InMemoryJob } from "./in-memory-queue";
  */
 export const processDeploymentJob = async (job: InMemoryJob) => {
 	try {
+		const serviceId =
+			job.data.applicationType === "compose"
+				? job.data.composeId
+				: job.data.applicationId;
+		// The migration moves the service between servers and redeploys it itself.
+		if (await findRunningServiceMigration(serviceId)) {
+			console.log(
+				`Skipping ${job.data.type} of ${serviceId}: a server migration is running`,
+			);
+			return;
+		}
 		if (job.data.applicationType === "application") {
 			await updateApplicationStatus(job.data.applicationId, "running");
 

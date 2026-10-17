@@ -30,6 +30,7 @@ import {
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import { TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
@@ -141,6 +142,7 @@ export const mariadbRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mariadbId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mariadbId);
 			const service = await findMariadbById(input.mariadbId);
 			if (service.serverId) {
 				await startServiceRemote(service.serverId, service.appName);
@@ -165,6 +167,7 @@ export const mariadbRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mariadbId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mariadbId);
 			const mariadb = await findMariadbById(input.mariadbId);
 
 			if (mariadb.serverId) {
@@ -223,6 +226,7 @@ export const mariadbRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mariadbId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mariadbId);
 			const mariadb = await findMariadbById(input.mariadbId);
 
 			await audit(ctx, {
@@ -339,6 +343,7 @@ export const mariadbRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mariadbId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mariadbId);
 			const mariadb = await findMariadbById(input.mariadbId);
 			if (mariadb.serverId) {
 				await stopServiceRemote(mariadb.serverId, mariadb.appName);
@@ -490,6 +495,7 @@ export const mariadbRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mariadbId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mariadbId);
 
 			await rebuildDatabase(input.mariadbId, "mariadb");
 			await audit(ctx, {

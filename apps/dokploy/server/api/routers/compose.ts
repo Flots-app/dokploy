@@ -45,6 +45,7 @@ import {
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import {
 	type CompleteTemplate,
 	fetchTemplateFiles,
@@ -539,6 +540,7 @@ export const composeRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.composeId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.composeId);
 			const compose = await findComposeById(input.composeId);
 			assertBuildServerDeploymentReady(compose);
 
@@ -590,6 +592,7 @@ export const composeRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.composeId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.composeId);
 			const compose = await findComposeById(input.composeId);
 			assertBuildServerDeploymentReady(compose);
 			const jobData: DeploymentJob = {
@@ -639,6 +642,7 @@ export const composeRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.composeId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.composeId);
 			await stopCompose(input.composeId);
 			const composeForStop = await findComposeById(input.composeId);
 			await audit(ctx, {
@@ -655,6 +659,7 @@ export const composeRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.composeId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.composeId);
 			await startCompose(input.composeId);
 			const composeForStart = await findComposeById(input.composeId);
 			await audit(ctx, {

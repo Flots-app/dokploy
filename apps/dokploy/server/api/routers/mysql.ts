@@ -30,6 +30,7 @@ import {
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -145,6 +146,7 @@ export const mysqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mysqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mysqlId);
 			const service = await findMySqlById(input.mysqlId);
 
 			if (service.serverId) {
@@ -170,6 +172,7 @@ export const mysqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mysqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mysqlId);
 			const mongo = await findMySqlById(input.mysqlId);
 			if (mongo.serverId) {
 				await stopServiceRemote(mongo.serverId, mongo.appName);
@@ -227,6 +230,7 @@ export const mysqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mysqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mysqlId);
 			const mysql = await findMySqlById(input.mysqlId);
 			await audit(ctx, {
 				action: "deploy",
@@ -298,6 +302,7 @@ export const mysqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mysqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mysqlId);
 			const mysql = await findMySqlById(input.mysqlId);
 			if (mysql.serverId) {
 				await stopServiceRemote(mysql.serverId, mysql.appName);
@@ -508,6 +513,7 @@ export const mysqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.mysqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.mysqlId);
 
 			await rebuildDatabase(input.mysqlId, "mysql");
 

@@ -4,7 +4,8 @@ set -euxo pipefail
 printf 'runtime\n' >/etc/dokploy-lab-role
 chown dokploy:dokploy /etc/dokploy-lab-role
 
-if ! docker info | grep -q 'Swarm: active'; then
+# `docker info | grep -q` can fail under pipefail when grep exits first.
+if [[ "$(docker info --format '{{.Swarm.LocalNodeState}}')" != "active" ]]; then
 	advertise_address="$(hostname -I | awk '{print $1}')"
 	docker swarm init --advertise-addr "${advertise_address}"
 fi
@@ -33,6 +34,18 @@ entryPoints:
 api:
   insecure: true
 YAML
+# Dokploy's server setup creates the shared middlewares file used by basic auth,
+# redirects and HTTPS redirections.
+if [[ ! -f /etc/dokploy/traefik/dynamic/middlewares.yml ]]; then
+	cat >/etc/dokploy/traefik/dynamic/middlewares.yml <<'YAML'
+http:
+  middlewares:
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+YAML
+fi
 chown -R dokploy:dokploy /etc/dokploy/traefik
 
 if docker inspect dokploy-traefik >/dev/null 2>&1; then
