@@ -125,7 +125,10 @@
   [Flots-app/dokploy#37](https://github.com/Flots-app/dokploy/pull/37).
 - [x] Merge Compose candidate container diagnostics in
   [Flots-app/dokploy#38](https://github.com/Flots-app/dokploy/pull/38).
-- [ ] Publish `v0.29.14-flots.13` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.13` from `canary` and deploy it to production.
+- [x] Merge the service server migration in
+  [Flots-app/dokploy#41](https://github.com/Flots-app/dokploy/pull/41).
+- [ ] Publish `v0.29.14-flots.14` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
