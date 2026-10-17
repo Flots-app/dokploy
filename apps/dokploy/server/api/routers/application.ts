@@ -43,6 +43,7 @@ import {
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -245,6 +246,7 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.applicationId);
 			const application = await findApplicationById(input.applicationId);
 
 			try {
@@ -335,6 +337,7 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.applicationId);
 			const service = await findApplicationById(input.applicationId);
 			if (service.serverId) {
 				await stopServiceRemote(service.serverId, service.appName);
@@ -357,6 +360,7 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.applicationId);
 			const service = await findApplicationById(input.applicationId);
 			if (service.serverId) {
 				await startServiceRemote(service.serverId, service.appName);
@@ -379,6 +383,7 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.applicationId);
 			const application = await ensureApplicationBuildServer(
 				input.applicationId,
 			);
@@ -803,6 +808,7 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.applicationId);
 			const application = await ensureApplicationBuildServer(
 				input.applicationId,
 			);

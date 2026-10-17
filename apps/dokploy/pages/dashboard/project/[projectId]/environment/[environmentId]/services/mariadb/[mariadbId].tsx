@@ -22,6 +22,7 @@ import { ShowInternalMariadbCredentials } from "@/components/dashboard/mariadb/g
 import { UpdateMariadb } from "@/components/dashboard/mariadb/update-mariadb";
 import { ContainerFreeMonitoring } from "@/components/dashboard/monitoring/free/container/show-free-container-monitoring";
 import { ContainerPaidMonitoring } from "@/components/dashboard/monitoring/paid/container/show-paid-container-monitoring";
+import { MigrateServiceServer } from "@/components/dashboard/shared/migrate-service-server";
 import { ShowDatabaseAdvancedSettings } from "@/components/dashboard/shared/show-database-advanced-settings";
 import { MariadbIcon } from "@/components/icons/data-tools-icons";
 import { DashboardLayout } from "@/components/layouts/dashboard-layout";
@@ -158,6 +159,14 @@ const Mariadb = (
 								<div className="flex flex-row gap-2 justify-end">
 									{permissions?.service.create && (
 										<UpdateMariadb mariadbId={mariadbId} />
+									)}
+									{permissions?.service.create && (
+										<MigrateServiceServer
+											serviceType="mariadb"
+											serviceId={mariadbId}
+											serviceName={data?.name}
+											currentServerName={data?.server?.name || "Dokploy Server"}
+										/>
 									)}
 									{permissions?.service.delete && (
 										<DeleteService id={mariadbId} type="mariadb" />

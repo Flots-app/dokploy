@@ -24,6 +24,7 @@ import {
 	checkServiceAccess,
 	checkServicePermissionAndAccess,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
@@ -128,6 +129,7 @@ export const libsqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.libsqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.libsqlId);
 			const libsql = await findLibsqlById(input.libsqlId);
 
 			if (libsql.serverId) {
@@ -153,6 +155,7 @@ export const libsqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.libsqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.libsqlId);
 			const libsql = await findLibsqlById(input.libsqlId);
 
 			if (libsql.serverId) {
@@ -240,6 +243,7 @@ export const libsqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.libsqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.libsqlId);
 			const libsql = await findLibsqlById(input.libsqlId);
 			await audit(ctx, {
 				action: "deploy",
@@ -369,6 +373,7 @@ export const libsqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.libsqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.libsqlId);
 			const libsql = await findLibsqlById(input.libsqlId);
 			if (libsql.serverId) {
 				await stopServiceRemote(libsql.serverId, libsql.appName);
@@ -463,6 +468,7 @@ export const libsqlRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.libsqlId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.libsqlId);
 
 			await rebuildDatabase(input.libsqlId, "libsql");
 			await audit(ctx, {

@@ -31,6 +31,7 @@ import {
 	checkServicePermissionAndAccess,
 	findMemberByUserId,
 } from "@dokploy/server/services/permission";
+import { assertNoRunningServiceMigration } from "@dokploy/server/services/service-migration";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -149,6 +150,7 @@ export const postgresRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.postgresId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.postgresId);
 			const service = await findPostgresById(input.postgresId);
 
 			if (service.serverId) {
@@ -174,6 +176,7 @@ export const postgresRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.postgresId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.postgresId);
 			const postgres = await findPostgresById(input.postgresId);
 			if (postgres.serverId) {
 				await stopServiceRemote(postgres.serverId, postgres.appName);
@@ -231,6 +234,7 @@ export const postgresRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.postgresId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.postgresId);
 			const postgres = await findPostgresById(input.postgresId);
 			await audit(ctx, {
 				action: "deploy",
@@ -366,6 +370,7 @@ export const postgresRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.postgresId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.postgresId);
 			const postgres = await findPostgresById(input.postgresId);
 			if (postgres.serverId) {
 				await stopServiceRemote(postgres.serverId, postgres.appName);
@@ -511,6 +516,7 @@ export const postgresRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.postgresId, {
 				deployment: ["create"],
 			});
+			await assertNoRunningServiceMigration(input.postgresId);
 
 			await rebuildDatabase(input.postgresId, "postgres");
 

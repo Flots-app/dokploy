@@ -22,6 +22,7 @@ import { ShowExternalMysqlCredentials } from "@/components/dashboard/mysql/gener
 import { ShowGeneralMysql } from "@/components/dashboard/mysql/general/show-general-mysql";
 import { ShowInternalMysqlCredentials } from "@/components/dashboard/mysql/general/show-internal-mysql-credentials";
 import { UpdateMysql } from "@/components/dashboard/mysql/update-mysql";
+import { MigrateServiceServer } from "@/components/dashboard/shared/migrate-service-server";
 import { ShowDatabaseAdvancedSettings } from "@/components/dashboard/shared/show-database-advanced-settings";
 import { MysqlIcon } from "@/components/icons/data-tools-icons";
 import { DashboardLayout } from "@/components/layouts/dashboard-layout";
@@ -158,6 +159,16 @@ const MySql = (
 									<div className="flex flex-row gap-2 justify-end">
 										{permissions?.service.create && (
 											<UpdateMysql mysqlId={mysqlId} />
+										)}
+										{permissions?.service.create && (
+											<MigrateServiceServer
+												serviceType="mysql"
+												serviceId={mysqlId}
+												serviceName={data?.name}
+												currentServerName={
+													data?.server?.name || "Dokploy Server"
+												}
+											/>
 										)}
 										{permissions?.service.delete && (
 											<DeleteService id={mysqlId} type="mysql" />

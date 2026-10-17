@@ -21,6 +21,7 @@ import { ShowExternalRedisCredentials } from "@/components/dashboard/redis/gener
 import { ShowGeneralRedis } from "@/components/dashboard/redis/general/show-general-redis";
 import { ShowInternalRedisCredentials } from "@/components/dashboard/redis/general/show-internal-redis-credentials";
 import { UpdateRedis } from "@/components/dashboard/redis/update-redis";
+import { MigrateServiceServer } from "@/components/dashboard/shared/migrate-service-server";
 import { ShowDatabaseAdvancedSettings } from "@/components/dashboard/shared/show-database-advanced-settings";
 import { RedisIcon } from "@/components/icons/data-tools-icons";
 import { DashboardLayout } from "@/components/layouts/dashboard-layout";
@@ -157,6 +158,14 @@ const Redis = (
 								<div className="flex flex-row gap-2 justify-end">
 									{permissions?.service.create && (
 										<UpdateRedis redisId={redisId} />
+									)}
+									{permissions?.service.create && (
+										<MigrateServiceServer
+											serviceType="redis"
+											serviceId={redisId}
+											serviceName={data?.name}
+											currentServerName={data?.server?.name || "Dokploy Server"}
+										/>
 									)}
 									{permissions?.service.delete && (
 										<DeleteService id={redisId} type="redis" />

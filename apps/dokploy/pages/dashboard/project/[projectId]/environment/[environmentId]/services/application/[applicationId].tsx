@@ -35,6 +35,7 @@ import { ShowVolumeBackups } from "@/components/dashboard/application/volume-bac
 import { DeleteService } from "@/components/dashboard/compose/delete-service";
 import { ContainerFreeMonitoring } from "@/components/dashboard/monitoring/free/container/show-free-container-monitoring";
 import { ContainerPaidMonitoring } from "@/components/dashboard/monitoring/paid/container/show-paid-container-monitoring";
+import { MigrateServiceServer } from "@/components/dashboard/shared/migrate-service-server";
 import { DashboardLayout } from "@/components/layouts/dashboard-layout";
 import { AdvanceBreadcrumb } from "@/components/shared/advance-breadcrumb";
 import { StatusTooltip } from "@/components/shared/status-tooltip";
@@ -191,6 +192,14 @@ const Service = (
 								<div className="flex flex-row gap-2 justify-end">
 									{permissions?.service.create && (
 										<UpdateApplication applicationId={applicationId} />
+									)}
+									{permissions?.service.create && (
+										<MigrateServiceServer
+											serviceType="application"
+											serviceId={applicationId}
+											serviceName={data?.name}
+											currentServerName={data?.server?.name || "Dokploy Server"}
+										/>
 									)}
 									{permissions?.service.delete && (
 										<DeleteService id={applicationId} type="application" />
