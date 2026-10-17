@@ -141,11 +141,14 @@ export const runServiceMigration = async (serviceMigrationId: string) => {
 			.update(serviceMigrations)
 			.set({ checks: analysis.checks, plan: analysis.plan })
 			.where(eq(serviceMigrations.serviceMigrationId, serviceMigrationId));
-		for (const check of analysis.checks) {
-			await log(
-				`  ${statusIcon[check.status]} ${check.label}: ${check.message}`,
-			);
-		}
+		await log(
+			analysis.checks
+				.map(
+					(check) =>
+						`  ${statusIcon[check.status]} ${check.label}: ${check.message}`,
+				)
+				.join("\n"),
+		);
 		if (!analysis.canMigrate) {
 			throw new Error(
 				"Pre-flight checks failed; nothing was changed. Fix the failing checks and try again.",
@@ -323,14 +326,16 @@ export const initInterruptedServiceMigrations = async () => {
 			serviceType: serviceMigrations.serviceType,
 			serviceId: serviceMigrations.serviceId,
 		});
-	for (const migration of interrupted) {
-		// The migration had flagged the service as running; its real state is unknown.
-		await setServiceStatus(
-			migration.serviceType as MigratableServiceType,
-			migration.serviceId,
-			"error",
-		).catch(() => {});
-	}
+	// The migrations had flagged their services as running; their state is unknown.
+	await Promise.all(
+		interrupted.map((migration) =>
+			setServiceStatus(
+				migration.serviceType as MigratableServiceType,
+				migration.serviceId,
+				"error",
+			).catch(() => {}),
+		),
+	);
 	if (interrupted.length > 0) {
 		console.log(
 			`Marked ${interrupted.length} interrupted service migration(s)`,

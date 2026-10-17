@@ -51,32 +51,31 @@ export const serviceMigrationRouter = createTRPCRouter({
 		.input(apiServiceMigrationTargets)
 		.query(async ({ input, ctx }) => {
 			await authorize(ctx, input.serviceId);
-			const service = await loadMigrationService(
-				input.serviceType,
-				input.serviceId,
-			);
+			const [service, accessible, servers, settings] = await Promise.all([
+				loadMigrationService(input.serviceType, input.serviceId),
+				getAccessibleServerIds(ctx.session),
+				db.query.server.findMany({
+					where: and(
+						eq(server.organizationId, ctx.session.activeOrganizationId),
+						eq(server.serverType, "deploy"),
+						isNotNull(server.sshKeyId),
+					),
+					columns: {
+						serverId: true,
+						name: true,
+						ipAddress: true,
+						serverStatus: true,
+					},
+					orderBy: asc(server.name),
+				}),
+				getWebServerSettings(),
+			]);
 			if (service.organizationId !== ctx.session.activeOrganizationId) {
 				throw new TRPCError({
 					code: "UNAUTHORIZED",
 					message: "You are not authorized to access this service",
 				});
 			}
-			const accessible = await getAccessibleServerIds(ctx.session);
-			const servers = await db.query.server.findMany({
-				where: and(
-					eq(server.organizationId, ctx.session.activeOrganizationId),
-					eq(server.serverType, "deploy"),
-					isNotNull(server.sshKeyId),
-				),
-				columns: {
-					serverId: true,
-					name: true,
-					ipAddress: true,
-					serverStatus: true,
-				},
-				orderBy: asc(server.name),
-			});
-			const settings = await getWebServerSettings();
 			return {
 				currentServerId: service.serverId,
 				supportsZeroDowntime: service.supportsZeroDowntime,

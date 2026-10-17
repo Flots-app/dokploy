@@ -34,6 +34,11 @@ import { createRedirectMiddleware } from "../traefik/redirect";
 import { createSecurityMiddleware } from "../traefik/security";
 import { formatBytes, type ServiceMigrationAnalysis } from "./analyze";
 import {
+	mapWithConcurrency,
+	SSH_PROBE_CONCURRENCY,
+	sequentially,
+} from "./concurrency";
+import {
 	type BindSnapshot,
 	composeContainerIdsCommand,
 	type DirectorySnapshot,
@@ -110,7 +115,7 @@ const transfer = async (
 /* --------------------------------- images --------------------------------- */
 
 const loginRegistries = async (context: MigrationContext) => {
-	for (const registryId of context.service.registryIds) {
+	await sequentially(context.service.registryIds, async (registryId) => {
 		const registry = await findRegistryByIdWithCredentials(registryId);
 		await context.log(
 			`Logging ${context.target.host.name} in to ${registry.registryUrl || "Docker Hub"}`,
@@ -118,7 +123,7 @@ const loginRegistries = async (context: MigrationContext) => {
 		await context.target.run(getComposeRegistryLoginCommand(registry), {
 			input: registry.password,
 		});
-	}
+	});
 };
 
 /**
@@ -345,13 +350,15 @@ const copyDirectory = async (
 const copyData = async (context: MigrationContext) => {
 	const snapshot = context.analysis.snapshot;
 	if (!snapshot) return;
-	for (const volume of snapshot.volumes) await copyVolume(context, volume);
-	for (const bind of snapshot.binds) {
-		if (!bind.skipReason) await copyBind(context, bind);
-	}
-	for (const directory of snapshot.directories) {
-		await copyDirectory(context, directory);
-	}
+	// One transfer at a time: they share the bandwidth and the undo order.
+	await sequentially(snapshot.volumes, (volume) => copyVolume(context, volume));
+	await sequentially(
+		snapshot.binds.filter((bind) => !bind.skipReason),
+		(bind) => copyBind(context, bind),
+	);
+	await sequentially(snapshot.directories, (directory) =>
+		copyDirectory(context, directory),
+	);
 };
 
 /* --------------------------------- server --------------------------------- */
@@ -376,10 +383,13 @@ const switchServer = async (context: MigrationContext) => {
 			);
 		},
 	});
-	for (const mount of service.mounts.filter((item) => item.type === "file")) {
-		await createFileMount(mount.mountId);
-		await context.log(`File mount ${mount.mountPath} written on the target`);
-	}
+	await sequentially(
+		service.mounts.filter((item) => item.type === "file"),
+		async (mount) => {
+			await createFileMount(mount.mountId);
+			await context.log(`File mount ${mount.mountPath} written on the target`);
+		},
+	);
 };
 
 /* ---------------------------------- swarm --------------------------------- */
@@ -529,7 +539,7 @@ const migrateTraefik = async (context: MigrationContext) => {
 	const previous = { ...current.http.middlewares };
 	const added: string[] = [];
 
-	for (const traefik of snapshot.traefik) {
+	await sequentially(snapshot.traefik, async (traefik) => {
 		const file = path.posix.join(dynamic, `${traefik.appName}.yml`);
 		await writeTargetFile(target, file, traefik.config);
 		await context.log(
@@ -541,10 +551,13 @@ const migrateTraefik = async (context: MigrationContext) => {
 				await target.run(`rm -f ${quote([file])}`);
 			},
 		});
+	});
+	const middlewares = current.http.middlewares;
+	for (const traefik of snapshot.traefik) {
 		for (const [name, definition] of Object.entries(traefik.middlewares)) {
 			// Shared middlewares (redirect-to-https…) keep the target definition.
 			if (name in previous && !name.includes(traefik.appName)) continue;
-			current.http.middlewares[name] = definition as never;
+			middlewares[name] = definition as never;
 			added.push(name);
 		}
 	}
@@ -594,15 +607,16 @@ const regenerateTraefik = async (context: MigrationContext) => {
 			await removeTraefikConfig(application.appName, application.serverId);
 		},
 	});
-	for (const domain of application.domains) {
-		await manageDomain(application, domain);
-	}
-	for (const redirect of application.redirects) {
-		await createRedirectMiddleware(application, redirect);
-	}
-	for (const security of application.security) {
-		await createSecurityMiddleware(application, security);
-	}
+	// Each step rewrites the same Traefik files: they must not overlap.
+	await sequentially(application.domains, (domain) =>
+		manageDomain(application, domain),
+	);
+	await sequentially(application.redirects, (redirect) =>
+		createRedirectMiddleware(application, redirect),
+	);
+	await sequentially(application.security, (security) =>
+		createSecurityMiddleware(application, security),
+	);
 	await context.log(
 		`No Traefik configuration on ${context.source.host.name}: routes regenerated on the target from ${application.domains.length} domain(s), ${application.redirects.length} redirect(s) and ${application.security.length} basic auth rule(s)`,
 	);
@@ -618,14 +632,14 @@ const regenerateTraefik = async (context: MigrationContext) => {
 const migratePreviews = async (context: MigrationContext) => {
 	const snapshot = context.analysis.snapshot;
 	if (!snapshot || snapshot.previews.length === 0) return;
-	for (const preview of snapshot.previews) {
+	await sequentially(snapshot.previews, async (preview) => {
+		if (!preview.image) return;
 		try {
-			const application = await findApplicationById(context.service.id);
-			const previewDeployment = await findPreviewDeploymentById(
-				preview.previewDeploymentId,
-			);
-			if (!preview.image) continue;
-			const image = await provideImage(context, preview.image);
+			const [application, previewDeployment, image] = await Promise.all([
+				findApplicationById(context.service.id),
+				findPreviewDeploymentById(preview.previewDeploymentId),
+				provideImage(context, preview.image),
+			]);
 			application.appName = previewDeployment.appName;
 			application.env = `${application.previewEnv}\nDOKPLOY_DEPLOY_URL=${previewDeployment.domain?.host}`;
 			application.rollbackActive = false;
@@ -654,7 +668,7 @@ const migratePreviews = async (context: MigrationContext) => {
 				}. Redeploy it from its pull request.`,
 			);
 		}
-	}
+	});
 };
 
 const migrateSwarmService = async (context: MigrationContext) => {
@@ -694,10 +708,11 @@ const migrateSwarmService = async (context: MigrationContext) => {
 			...(sourceService?.exists ? [sourceService] : []),
 			...snapshot.previews,
 		];
-		for (const item of quiesced) {
+		// Sequential so the undo steps restart them in reverse order.
+		await sequentially(quiesced, async (item) => {
 			await context.log(`Stopping ${item.name} on ${context.source.host.name}`);
 			await stopSwarmSource(context, item, redeployOnSource);
-		}
+		});
 	}
 
 	await copyData(context);
@@ -989,19 +1004,25 @@ export const cleanupSource = async (
 		});
 		await log(`Removed the containers from ${source.host.name}`);
 	}
-	for (const name of cleanup.swarmServices) {
-		await source.run(`docker service rm ${quote([name])}`, {
-			allowFailure: true,
-		});
-		await log(`Removed ${name} from ${source.host.name}`);
-	}
+	await mapWithConcurrency(
+		cleanup.swarmServices,
+		SSH_PROBE_CONCURRENCY,
+		async (name) => {
+			await source.run(`docker service rm ${quote([name])}`, {
+				allowFailure: true,
+			});
+			await log(`Removed ${name} from ${source.host.name}`);
+		},
+	);
 	if (cleanup.traefik.length > 0) {
 		const dynamic = source.paths.DYNAMIC_TRAEFIK_PATH;
-		for (const traefik of cleanup.traefik) {
-			await source.run(
-				`rm -f ${quote([path.posix.join(dynamic, `${traefik.appName}.yml`)])}`,
-			);
-		}
+		await source.run(
+			`rm -f ${quote(
+				cleanup.traefik.map((traefik) =>
+					path.posix.join(dynamic, `${traefik.appName}.yml`),
+				),
+			)}`,
+		);
 		const owned = cleanup.traefik.flatMap((traefik) => traefik.middlewares);
 		const middlewares = await readMiddlewares(source);
 		if (middlewares?.http?.middlewares && owned.length > 0) {
@@ -1021,49 +1042,62 @@ export const cleanupSource = async (
 		);
 		return;
 	}
-	for (const name of cleanup.swarmServices) {
-		// Removed services leave exited task containers that still hold the volumes.
-		const label = quote([`label=com.docker.swarm.service.name=${name}`]);
-		await source.run(
-			`deadline=$(( $(date +%s) + 30 )); while [ -n "$(docker ps -aq --filter ${label})" ] && [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done; ids="$(docker ps -aq --filter ${label})"; [ -z "$ids" ] || docker rm -f $ids >/dev/null`,
-			{ allowFailure: true },
-		);
-	}
-	for (const volume of cleanup.volumes) {
-		const result = await source.run(`docker volume rm ${quote([volume])}`, {
-			allowFailure: true,
-		});
-		await log(
-			result.exitCode === 0
-				? `Removed volume ${volume} from ${source.host.name}`
-				: `⚠️ Volume ${volume} could not be removed from ${source.host.name}: ${result.stderr.trim()}`,
-		);
-	}
-	for (const directory of cleanup.directories) {
-		await source.run(
-			helper(
-				[`-v ${quote([`${path.posix.dirname(directory)}:/migration`])}`],
-				["rm", "-rf", `/migration/${path.posix.basename(directory)}`],
-			),
-			{ allowFailure: true },
-		);
-		await log(`Removed ${directory} from ${source.host.name}`);
-	}
+	// Removed services leave exited task containers that still hold the volumes.
+	await mapWithConcurrency(
+		cleanup.swarmServices,
+		SSH_PROBE_CONCURRENCY,
+		async (name) => {
+			const label = quote([`label=com.docker.swarm.service.name=${name}`]);
+			await source.run(
+				`deadline=$(( $(date +%s) + 30 )); while [ -n "$(docker ps -aq --filter ${label})" ] && [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done; ids="$(docker ps -aq --filter ${label})"; [ -z "$ids" ] || docker rm -f $ids >/dev/null`,
+				{ allowFailure: true },
+			);
+		},
+	);
+	await mapWithConcurrency(
+		cleanup.volumes,
+		SSH_PROBE_CONCURRENCY,
+		async (volume) => {
+			const result = await source.run(`docker volume rm ${quote([volume])}`, {
+				allowFailure: true,
+			});
+			await log(
+				result.exitCode === 0
+					? `Removed volume ${volume} from ${source.host.name}`
+					: `⚠️ Volume ${volume} could not be removed from ${source.host.name}: ${result.stderr.trim()}`,
+			);
+		},
+	);
+	await mapWithConcurrency(
+		cleanup.directories,
+		SSH_PROBE_CONCURRENCY,
+		async (directory) => {
+			await source.run(
+				helper(
+					[`-v ${quote([`${path.posix.dirname(directory)}:/migration`])}`],
+					["rm", "-rf", `/migration/${path.posix.basename(directory)}`],
+				),
+				{ allowFailure: true },
+			);
+			await log(`Removed ${directory} from ${source.host.name}`);
+		},
+	);
 };
 
 export const rollbackMigration = async (context: MigrationContext) => {
 	let failures = 0;
-	for (const compensation of [...context.compensations].reverse()) {
+	// Undo in reverse order: later changes depend on the earlier ones.
+	await sequentially([...context.compensations].reverse(), async (step) => {
 		try {
-			await context.log(`↩ ${compensation.label}`);
-			await compensation.run();
+			await context.log(`↩ ${step.label}`);
+			await step.run();
 		} catch (error) {
 			failures += 1;
 			await context.log(
 				`  ⚠️ ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-	}
+	});
 	return failures;
 };
 

@@ -5,6 +5,10 @@ import {
 	parsePublishedPorts,
 } from "@dokploy/server/utils/service-migration/analyze";
 import {
+	mapWithConcurrency,
+	sequentially,
+} from "@dokploy/server/utils/service-migration/concurrency";
+import {
 	bindSkipReason,
 	composeContainerIdsCommand,
 	isPathInside,
@@ -233,5 +237,45 @@ describe("service migration streams", () => {
 				"cat >/dev/null",
 			),
 		).rejects.toThrow(/exit 4.*broken/s);
+	});
+});
+
+describe("service migration concurrency helpers", () => {
+	const wait = (ms: number) =>
+		new Promise((resolve) => setTimeout(resolve, ms));
+
+	it("runs ordered steps one after the other", async () => {
+		const events: string[] = [];
+		await sequentially([30, 10, 20], async (delay) => {
+			events.push(`start ${delay}`);
+			await wait(delay);
+			events.push(`end ${delay}`);
+		});
+		expect(events).toEqual([
+			"start 30",
+			"end 30",
+			"start 10",
+			"end 10",
+			"start 20",
+			"end 20",
+		]);
+	});
+
+	it("bounds concurrency and keeps the result order", async () => {
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const results = await mapWithConcurrency(
+			[5, 1, 4, 2, 3, 6, 1],
+			3,
+			async (value) => {
+				inFlight += 1;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				await wait(value * 3);
+				inFlight -= 1;
+				return value * 10;
+			},
+		);
+		expect(results).toEqual([50, 10, 40, 20, 30, 60, 10]);
+		expect(maxInFlight).toBe(3);
 	});
 });

@@ -2,6 +2,7 @@ import path from "node:path";
 import { quote } from "shell-quote";
 import { parse } from "yaml";
 import type { FileConfig } from "../traefik/file-types";
+import { mapWithConcurrency, SSH_PROBE_CONCURRENCY } from "./concurrency";
 import type { HostExecutor } from "./host";
 import type { MigrationService } from "./service";
 
@@ -300,37 +301,38 @@ export const inspectVolumes = async (
 	executor: HostExecutor,
 	names: string[],
 ) => {
-	const volumes = new Map<string, Omit<VolumeSnapshot, "sizeBytes"> | null>();
-	for (const name of names) {
-		const result = await executor.run(
-			`docker volume inspect ${quote([name])} --format '{{json .}}'`,
-			{ allowFailure: true },
-		);
-		const volume =
-			result.exitCode === 0
-				? parseJson<{
-						Name: string;
-						Driver: string;
-						Labels: Record<string, string> | null;
-						Options: Record<string, string> | null;
-					}>(result.stdout.trim())
-				: null;
-		volumes.set(
-			name,
-			volume
-				? {
-						name: volume.Name,
-						driver: volume.Driver,
-						labels: volume.Labels ?? {},
-						options: volume.Options ?? {},
-						externalStorage:
-							volume.Driver !== "local" ||
-							Boolean(volume.Options?.type || volume.Options?.device),
-					}
-				: null,
-		);
-	}
-	return volumes;
+	const definitions = await mapWithConcurrency(
+		names,
+		SSH_PROBE_CONCURRENCY,
+		async (name): Promise<Omit<VolumeSnapshot, "sizeBytes"> | null> => {
+			const result = await executor.run(
+				`docker volume inspect ${quote([name])} --format '{{json .}}'`,
+				{ allowFailure: true },
+			);
+			const volume =
+				result.exitCode === 0
+					? parseJson<{
+							Name: string;
+							Driver: string;
+							Labels: Record<string, string> | null;
+							Options: Record<string, string> | null;
+						}>(result.stdout.trim())
+					: null;
+			if (!volume) return null;
+			return {
+				name: volume.Name,
+				driver: volume.Driver,
+				labels: volume.Labels ?? {},
+				options: volume.Options ?? {},
+				externalStorage:
+					volume.Driver !== "local" ||
+					Boolean(volume.Options?.type || volume.Options?.device),
+			};
+		},
+	);
+	return new Map(
+		names.map((name, index) => [name, definitions[index] ?? null]),
+	);
 };
 
 /** Makes sure the helper image is available, pulling it when needed. */
@@ -444,28 +446,34 @@ const inspectTraefik = async (
 ): Promise<TraefikSnapshot[]> => {
 	const middlewares =
 		(await readMiddlewares(executor))?.http?.middlewares ?? {};
-	const snapshots: TraefikSnapshot[] = [];
-	for (const appName of appNames) {
-		const config = await readFile(
-			executor,
-			path.posix.join(executor.paths.DYNAMIC_TRAEFIK_PATH, `${appName}.yml`),
-		);
-		if (!config?.trim()) continue;
+	const configs = await mapWithConcurrency(
+		appNames,
+		SSH_PROBE_CONCURRENCY,
+		(appName) =>
+			readFile(
+				executor,
+				path.posix.join(executor.paths.DYNAMIC_TRAEFIK_PATH, `${appName}.yml`),
+			),
+	);
+	return appNames.flatMap((appName, index) => {
+		const config = configs[index];
+		if (!config?.trim()) return [];
 		const names = referencedMiddlewares(parse(config) as FileConfig | null);
 		for (const name of Object.keys(middlewares)) {
 			if (name.includes(appName)) names.add(name);
 		}
-		snapshots.push({
-			appName,
-			config,
-			middlewares: Object.fromEntries(
-				[...names]
-					.filter((name) => name in middlewares)
-					.map((name) => [name, middlewares[name]]),
-			),
-		});
-	}
-	return snapshots;
+		return [
+			{
+				appName,
+				config,
+				middlewares: Object.fromEntries(
+					[...names]
+						.filter((name) => name in middlewares)
+						.map((name) => [name, middlewares[name]]),
+				),
+			},
+		];
+	});
 };
 
 /** Reads everything the source server holds for the service. Read-only. */
@@ -503,15 +511,20 @@ export const discoverSource = async (
 		swarmService = await inspectSwarmService(source, service.appName);
 		for (const name of swarmService.volumeNames) volumeNames.add(name);
 		for (const bind of swarmService.bindPaths) bindPaths.add(bind);
-		for (const preview of service.previews) {
-			const snapshot = await inspectSwarmService(source, preview.appName);
-			if (snapshot.exists) {
+		const previewSnapshots = await mapWithConcurrency(
+			service.previews,
+			SSH_PROBE_CONCURRENCY,
+			(preview) => inspectSwarmService(source, preview.appName),
+		);
+		service.previews.forEach((preview, index) => {
+			const snapshot = previewSnapshots[index];
+			if (snapshot?.exists) {
 				previews.push({
 					...snapshot,
 					previewDeploymentId: preview.previewDeploymentId,
 				});
 			}
-		}
+		});
 	}
 
 	const volumeDefinitions = await inspectVolumes(source, [...volumeNames]);
@@ -537,28 +550,28 @@ export const discoverSource = async (
 		sizeBytes: sizes.get(volume.name) ?? null,
 	}));
 
-	const binds: BindSnapshot[] = [];
-	for (const bindPath of bindPaths) {
-		const skipReason = bindSkipReason(bindPath, serviceDirectory);
-		// File mounts and relative Compose binds travel with the service directory.
-		if (isPathInside(path.posix.normalize(bindPath), serviceDirectory))
-			continue;
-		if (skipReason) {
-			binds.push({ path: bindPath, exists: true, sizeBytes: null, skipReason });
-			continue;
-		}
-		if (!helperImagePresent) {
-			binds.push({ path: bindPath, exists: true, sizeBytes: null, skipReason });
-			continue;
-		}
-		const sizeBytes = await measureBind(source, bindPath);
-		binds.push({
-			path: bindPath,
-			exists: sizeBytes !== null,
-			sizeBytes,
-			skipReason: sizeBytes === null ? "Missing on the source server" : null,
-		});
-	}
+	// File mounts and relative Compose binds travel with the service directory.
+	const bindCandidates = [...bindPaths].filter(
+		(bindPath) =>
+			!isPathInside(path.posix.normalize(bindPath), serviceDirectory),
+	);
+	const binds = await mapWithConcurrency(
+		bindCandidates,
+		SSH_PROBE_CONCURRENCY,
+		async (bindPath): Promise<BindSnapshot> => {
+			const skipReason = bindSkipReason(bindPath, serviceDirectory);
+			if (skipReason || !helperImagePresent) {
+				return { path: bindPath, exists: true, sizeBytes: null, skipReason };
+			}
+			const sizeBytes = await measureBind(source, bindPath);
+			return {
+				path: bindPath,
+				exists: sizeBytes !== null,
+				sizeBytes,
+				skipReason: sizeBytes === null ? "Missing on the source server" : null,
+			};
+		},
+	);
 
 	const directories: DirectorySnapshot[] = [];
 	const serviceDirectorySize = await directorySize(source, serviceDirectory);
@@ -589,18 +602,26 @@ export const discoverSource = async (
 			label: `Logs: schedule ${item.label}`,
 		})),
 	];
-	for (const owner of logOwners) {
-		const sourcePath = path.posix.join(source.paths.LOGS_PATH, owner.appName);
-		const sizeBytes = await directorySize(source, sourcePath);
-		if (sizeBytes === null) continue;
+	const logSizes = await mapWithConcurrency(
+		logOwners,
+		SSH_PROBE_CONCURRENCY,
+		(owner) =>
+			directorySize(
+				source,
+				path.posix.join(source.paths.LOGS_PATH, owner.appName),
+			),
+	);
+	logOwners.forEach((owner, index) => {
+		const sizeBytes = logSizes[index];
+		if (sizeBytes === null || sizeBytes === undefined) return;
 		directories.push({
 			label: owner.label,
-			sourcePath,
+			sourcePath: path.posix.join(source.paths.LOGS_PATH, owner.appName),
 			targetPath: path.posix.join(target.paths.LOGS_PATH, owner.appName),
 			sizeBytes,
 			exclude: [],
 		});
-	}
+	});
 
 	const traefik =
 		service.type === "application"

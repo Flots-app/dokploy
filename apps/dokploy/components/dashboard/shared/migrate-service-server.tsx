@@ -6,9 +6,10 @@ import {
 	TriangleAlert,
 	XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertBlock } from "@/components/shared/alert-block";
+import { DateTooltip } from "@/components/shared/date-tooltip";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -44,7 +45,6 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { api, type RouterOutputs } from "@/utils/api";
 
 export type MigratableService =
@@ -61,6 +61,15 @@ type Analysis = RouterOutputs["serviceMigration"]["analyze"];
 type Check = Analysis["checks"][number];
 type PlanItem = Analysis["plan"][number];
 type Migration = RouterOutputs["serviceMigration"]["one"];
+type Targets = RouterOutputs["serviceMigration"]["targets"];
+type History = RouterOutputs["serviceMigration"]["history"];
+
+interface MigrationOptions {
+	removeSourceData: boolean;
+	replaceTargetData: boolean;
+	zeroDowntime: boolean;
+	keepSourceRunning: boolean;
+}
 
 const DOKPLOY_SERVER = "dokploy";
 
@@ -114,6 +123,9 @@ const migrationStatus: Record<
 	error: { label: "Failed", variant: "red" },
 };
 
+const errorMessage = (error: unknown, fallback: string) =>
+	error instanceof Error ? error.message : fallback;
+
 const ChecksList = ({ checks }: { checks: Check[] }) => (
 	<div className="flex flex-col divide-y rounded-lg border">
 		{checks.map((check) => (
@@ -130,6 +142,29 @@ const ChecksList = ({ checks }: { checks: Check[] }) => (
 	</div>
 );
 
+const PlanRow = ({ item }: { item: PlanItem }) => (
+	<div className="flex items-start justify-between gap-3 p-3">
+		<div className="flex min-w-0 flex-col gap-0.5">
+			<div className="flex flex-wrap items-center gap-2">
+				<Badge variant={actions[item.action].variant}>
+					{actions[item.action].label}
+				</Badge>
+				<span className="text-sm font-medium break-all">{item.label}</span>
+			</div>
+			{item.detail && (
+				<span className="text-sm text-muted-foreground wrap-break-word">
+					{item.detail}
+				</span>
+			)}
+		</div>
+		{item.sizeBytes !== undefined && (
+			<span className="shrink-0 text-sm tabular-nums text-muted-foreground">
+				{formatBytes(item.sizeBytes)}
+			</span>
+		)}
+	</div>
+);
+
 const MigrationPlan = ({ plan }: { plan: PlanItem[] }) => (
 	<div className="flex flex-col gap-4">
 		{categories.map((category) => {
@@ -141,32 +176,11 @@ const MigrationPlan = ({ plan }: { plan: PlanItem[] }) => (
 						{category.label}
 					</span>
 					<div className="flex flex-col divide-y rounded-lg border">
-						{items.map((item, index) => (
-							<div
-								key={`${item.label}-${index}`}
-								className="flex items-start justify-between gap-3 p-3"
-							>
-								<div className="flex min-w-0 flex-col gap-0.5">
-									<div className="flex flex-wrap items-center gap-2">
-										<Badge variant={actions[item.action].variant}>
-											{actions[item.action].label}
-										</Badge>
-										<span className="text-sm font-medium break-all">
-											{item.label}
-										</span>
-									</div>
-									{item.detail && (
-										<span className="text-sm text-muted-foreground wrap-break-word">
-											{item.detail}
-										</span>
-									)}
-								</div>
-								{item.sizeBytes !== undefined && (
-									<span className="shrink-0 text-sm tabular-nums text-muted-foreground">
-										{formatBytes(item.sizeBytes)}
-									</span>
-								)}
-							</div>
+						{items.map((item) => (
+							<PlanRow
+								key={`${item.action}:${item.label}:${item.detail ?? ""}`}
+								item={item}
+							/>
 						))}
 					</div>
 				</div>
@@ -175,13 +189,91 @@ const MigrationPlan = ({ plan }: { plan: PlanItem[] }) => (
 	</div>
 );
 
+const AnalysisResult = ({ analysis }: { analysis: Analysis }) => {
+	const count = (status: Check["status"]) =>
+		analysis.checks.filter((check) => check.status === status).length;
+	const warnings = count("warn");
+	const failures = count("fail");
+	return (
+		<div className="flex flex-col gap-5">
+			<div className="flex flex-wrap items-center gap-2 text-sm">
+				<Badge variant="green">{count("pass")} passed</Badge>
+				{warnings > 0 && <Badge variant="yellow">{warnings} warning(s)</Badge>}
+				{failures > 0 && <Badge variant="red">{failures} failed</Badge>}
+				<span className="text-muted-foreground">
+					{analysis.source.name} → {analysis.target.name} ·{" "}
+					{formatBytes(analysis.totalBytes)} to copy ·{" "}
+					{analysis.requiresDowntime
+						? "downtime during the copy"
+						: "no downtime expected"}
+				</span>
+			</div>
+			<div className="flex flex-col gap-2">
+				<span className="text-sm font-semibold">Pre-flight checks</span>
+				<ChecksList checks={analysis.checks} />
+			</div>
+			{analysis.plan.length > 0 && (
+				<div className="flex flex-col gap-2">
+					<span className="text-sm font-semibold">What will be migrated</span>
+					<MigrationPlan plan={analysis.plan} />
+				</div>
+			)}
+			{!analysis.canMigrate && (
+				<AlertBlock type="error">
+					Fix the failed checks, then run them again to enable the migration.
+				</AlertBlock>
+			)}
+		</div>
+	);
+};
+
+const KeptSourceNotice = ({ migration }: { migration: Migration }) => {
+	const utils = api.useUtils();
+	const finalize = api.serviceMigration.finalize.useMutation();
+	const finishMigration = async () => {
+		try {
+			await finalize.mutateAsync({
+				serviceMigrationId: migration.serviceMigrationId,
+			});
+			toast.success(
+				"Migration finished, the source no longer runs the service",
+			);
+		} catch (error) {
+			toast.error(errorMessage(error, "Unable to finish the migration"));
+		} finally {
+			await utils.serviceMigration.invalidate();
+		}
+	};
+	return (
+		<AlertBlock type="info">
+			<div className="flex flex-col gap-2">
+				<span>
+					{migration.sourceServerName} still runs the previous copy so visitors
+					resolving the old IP keep being served. Point the DNS records of the
+					domains to {migration.targetServerName}, wait for the propagation,
+					then finish the migration to remove it from{" "}
+					{migration.sourceServerName}.
+				</span>
+				<div>
+					<Button
+						size="sm"
+						onClick={finishMigration}
+						isLoading={finalize.isPending}
+					>
+						Finish migration
+					</Button>
+				</div>
+			</div>
+		</AlertBlock>
+	);
+};
+
 const MigrationProgress = ({
 	serviceMigrationId,
-	onFinished,
 }: {
 	serviceMigrationId: string;
-	onFinished: (migration: Migration) => void;
 }) => {
+	const utils = api.useUtils();
 	const { data } = api.serviceMigration.one.useQuery(
 		{ serviceMigrationId },
 		{
@@ -189,27 +281,9 @@ const MigrationProgress = ({
 				query.state.data?.status === "running" ? 1500 : false,
 		},
 	);
-	const utils = api.useUtils();
-	const finalize = api.serviceMigration.finalize.useMutation();
 	const logRef = useRef<HTMLPreElement>(null);
-	const notified = useRef(false);
-
-	const finishMigration = async () => {
-		try {
-			await finalize.mutateAsync({ serviceMigrationId });
-			toast.success(
-				"Migration finished, the source no longer runs the service",
-			);
-		} catch (error) {
-			toast.error(
-				error instanceof Error
-					? error.message
-					: "Unable to finish the migration",
-			);
-		} finally {
-			await utils.serviceMigration.invalidate();
-		}
-	};
+	const status = data?.status;
+	const startedRunning = useRef(false);
 
 	useEffect(() => {
 		if (logRef.current) {
@@ -217,12 +291,20 @@ const MigrationProgress = ({
 		}
 	}, [data?.logs]);
 
+	// Refresh the page (server badge, status) when a migration watched here ends.
 	useEffect(() => {
-		if (data && data.status !== "running" && !notified.current) {
-			notified.current = true;
-			onFinished(data);
+		if (status === "running") {
+			startedRunning.current = true;
+			return;
 		}
-	}, [data, onFinished]);
+		if (!status || !startedRunning.current) return;
+		startedRunning.current = false;
+		void utils.invalidate();
+		if (status === "done") toast.success("Migration completed");
+		else if (status === "rolled_back") {
+			toast.warning("Migration failed and was rolled back");
+		} else toast.error("Migration failed");
+	}, [status, utils]);
 
 	if (!data) {
 		return (
@@ -231,11 +313,11 @@ const MigrationProgress = ({
 			</div>
 		);
 	}
-	const status = migrationStatus[data.status];
+	const badge = migrationStatus[data.status];
 	return (
 		<div className="flex flex-col gap-3">
 			<div className="flex flex-wrap items-center gap-2">
-				<Badge variant={status.variant}>{status.label}</Badge>
+				<Badge variant={badge.variant}>{badge.label}</Badge>
 				<span className="text-sm text-muted-foreground">
 					{data.sourceServerName} → {data.targetServerName}
 				</span>
@@ -244,26 +326,7 @@ const MigrationProgress = ({
 				)}
 			</div>
 			{data.status === "done" && data.pendingCleanup && (
-				<AlertBlock type="info">
-					<div className="flex flex-col gap-2">
-						<span>
-							{data.sourceServerName} still runs the previous copy so visitors
-							resolving the old IP keep being served. Point the DNS records of
-							the domains to {data.targetServerName}, wait for the propagation,
-							then finish the migration to remove it from{" "}
-							{data.sourceServerName}.
-						</span>
-						<div>
-							<Button
-								size="sm"
-								onClick={finishMigration}
-								isLoading={finalize.isPending}
-							>
-								Finish migration
-							</Button>
-						</div>
-					</div>
-				</AlertBlock>
+				<KeptSourceNotice migration={data} />
 			)}
 			{data.errorMessage && data.status !== "running" && (
 				<AlertBlock type={data.status === "rolled_back" ? "warning" : "error"}>
@@ -276,6 +339,369 @@ const MigrationProgress = ({
 			>
 				{data.logs || "Starting…"}
 			</pre>
+		</div>
+	);
+};
+
+const TargetPicker = ({
+	targets,
+	loading,
+	value,
+	onChange,
+}: {
+	targets: Targets | undefined;
+	loading: boolean;
+	value: string;
+	onChange: (value: string) => void;
+}) => {
+	const hasTargets =
+		(targets?.servers.length ?? 0) > 0 || Boolean(targets?.allowDokployServer);
+	const placeholder = loading
+		? "Loading servers…"
+		: hasTargets
+			? "Select a server"
+			: "No other Deploy Server available";
+	return (
+		<div className="flex flex-col gap-2">
+			<Label>Target server</Label>
+			<Select
+				value={value}
+				onValueChange={onChange}
+				disabled={loading || !hasTargets}
+			>
+				<SelectTrigger>
+					<SelectValue placeholder={placeholder} />
+				</SelectTrigger>
+				<SelectContent>
+					{targets?.allowDokployServer && (
+						<SelectItem value={DOKPLOY_SERVER}>Dokploy server</SelectItem>
+					)}
+					{targets?.servers.map((item) => (
+						<SelectItem
+							key={item.serverId}
+							value={item.serverId}
+							disabled={item.serverStatus !== "active"}
+						>
+							{item.name}{" "}
+							<span className="text-muted-foreground">({item.ipAddress})</span>
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</div>
+	);
+};
+
+const OptionSwitch = ({
+	id,
+	label,
+	description,
+	checked,
+	disabled,
+	onChange,
+}: {
+	id: string;
+	label: string;
+	description: string;
+	checked: boolean;
+	disabled?: boolean;
+	onChange: (checked: boolean) => void;
+}) => (
+	<div className="flex items-center justify-between gap-4">
+		<div className="flex flex-col">
+			<Label htmlFor={id}>{label}</Label>
+			<span className="text-sm text-muted-foreground">{description}</span>
+		</div>
+		<Switch
+			id={id}
+			checked={checked}
+			disabled={disabled}
+			onCheckedChange={onChange}
+		/>
+	</div>
+);
+
+const OptionsPanel = ({
+	options,
+	supportsZeroDowntime,
+	onChange,
+}: {
+	options: MigrationOptions;
+	supportsZeroDowntime: boolean;
+	onChange: (options: Partial<MigrationOptions>) => void;
+}) => (
+	<div className="flex flex-col gap-3 rounded-lg border p-3">
+		<OptionSwitch
+			id="migration-zero-downtime"
+			label="Zero-downtime migration"
+			description={
+				supportsZeroDowntime
+					? "The target starts and becomes healthy before the source stops. Volumes are then copied live."
+					: "Only applications and Compose projects in zero-downtime Build Server mode can run on two servers at once: this service is stopped during the copy."
+			}
+			checked={options.zeroDowntime}
+			disabled={!supportsZeroDowntime}
+			onChange={(zeroDowntime) => onChange({ zeroDowntime })}
+		/>
+		{options.zeroDowntime && (
+			<OptionSwitch
+				id="migration-keep-source"
+				label="Keep the source running until the DNS is switched"
+				description="The source keeps serving visitors that still resolve its IP. Finish the migration once the DNS points to the target."
+				checked={options.keepSourceRunning}
+				onChange={(keepSourceRunning) => onChange({ keepSourceRunning })}
+			/>
+		)}
+		<OptionSwitch
+			id="migration-replace"
+			label="Replace existing data on the target"
+			description="Volumes with the same name on the target are wiped and refilled instead of blocking the migration."
+			checked={options.replaceTargetData}
+			onChange={(replaceTargetData) => onChange({ replaceTargetData })}
+		/>
+		<OptionSwitch
+			id="migration-remove"
+			label="Delete the data from the source afterwards"
+			description="By default volumes and directories stay on the source as a backup."
+			checked={options.removeSourceData}
+			onChange={(removeSourceData) => onChange({ removeSourceData })}
+		/>
+	</div>
+);
+
+const MigrationHistory = ({
+	history,
+	onSelect,
+}: {
+	history: History;
+	onSelect: (serviceMigrationId: string) => void;
+}) => (
+	<div className="flex flex-col gap-2">
+		<span className="text-sm font-semibold">Recent migrations</span>
+		<div className="flex flex-col divide-y rounded-lg border">
+			{history.map((item) => (
+				<div
+					key={item.serviceMigrationId}
+					className="flex items-center justify-between gap-3 p-3 text-sm"
+				>
+					<span className="min-w-0 truncate">
+						{item.sourceServerName} → {item.targetServerName}
+					</span>
+					<span className="flex shrink-0 items-center gap-2">
+						<DateTooltip date={item.createdAt} />
+						{item.pendingCleanup && <Badge variant="blue">Source kept</Badge>}
+						<Badge variant={migrationStatus[item.status].variant}>
+							{migrationStatus[item.status].label}
+						</Badge>
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => onSelect(item.serviceMigrationId)}
+						>
+							Log
+						</Button>
+					</span>
+				</div>
+			))}
+		</div>
+	</div>
+);
+
+const ConfirmMigration = ({
+	analysis,
+	keepSourceRunning,
+	open,
+	onOpenChange,
+	onConfirm,
+}: {
+	analysis: Analysis | null;
+	keepSourceRunning: boolean;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	onConfirm: () => void;
+}) => {
+	const source = analysis?.source.name;
+	const target = analysis?.target.name;
+	const flow = analysis?.requiresDowntime
+		? `The service is stopped on ${source} while ${formatBytes(analysis.totalBytes)} are copied, then started on ${target}.`
+		: keepSourceRunning
+			? `The service starts on ${target} while ${source} keeps serving until you finish the migration.`
+			: `The service starts on ${target} before it is removed from ${source}.`;
+	return (
+		<AlertDialog open={open} onOpenChange={onOpenChange}>
+			<AlertDialogContent>
+				<AlertDialogHeader>
+					<AlertDialogTitle>Migrate to {target}?</AlertDialogTitle>
+					<AlertDialogDescription>
+						{flow} If anything fails before the target is healthy, the migration
+						is rolled back. Remember to update the DNS records of the domains.
+					</AlertDialogDescription>
+				</AlertDialogHeader>
+				<AlertDialogFooter>
+					<AlertDialogCancel>Cancel</AlertDialogCancel>
+					<AlertDialogAction onClick={onConfirm}>
+						Start migration
+					</AlertDialogAction>
+				</AlertDialogFooter>
+			</AlertDialogContent>
+		</AlertDialog>
+	);
+};
+
+type OptionChoices = Omit<MigrationOptions, "zeroDowntime"> & {
+	/** null until the user toggles it: overlap-safe services default to zero downtime. */
+	zeroDowntime: boolean | null;
+};
+
+/** The previous target becomes the current server after a migration. */
+const resolveTarget = (targets: Targets | undefined, value: string) => {
+	const available =
+		value === DOKPLOY_SERVER
+			? Boolean(targets?.allowDokployServer)
+			: Boolean(targets?.servers.some((item) => item.serverId === value));
+	return available ? value : "";
+};
+
+const resolveOptions = (
+	choices: OptionChoices,
+	supportsZeroDowntime: boolean,
+): MigrationOptions => {
+	const zeroDowntime = supportsZeroDowntime && (choices.zeroDowntime ?? true);
+	return {
+		...choices,
+		zeroDowntime,
+		keepSourceRunning: zeroDowntime && choices.keepSourceRunning,
+	};
+};
+
+const MigrationTrigger = () => (
+	<TooltipProvider delayDuration={0}>
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<DialogTrigger asChild>
+					<Button
+						variant="ghost"
+						size="icon"
+						aria-label="Migrate to another server"
+						className="group hover:bg-blue-500/10 focus-visible:ring-2 focus-visible:ring-offset-2"
+					>
+						<ArrowLeftRight className="size-3.5 text-primary group-hover:text-blue-500" />
+					</Button>
+				</DialogTrigger>
+			</TooltipTrigger>
+			<TooltipContent>Migrate to another server</TooltipContent>
+		</Tooltip>
+	</TooltipProvider>
+);
+
+const MigrationForm = ({
+	serviceType,
+	serviceId,
+	targets,
+	loadingTargets,
+	history,
+	onShowMigration,
+}: {
+	serviceType: MigratableService;
+	serviceId: string;
+	targets: Targets | undefined;
+	loadingTargets: boolean;
+	history: History | undefined;
+	onShowMigration: (serviceMigrationId: string) => void;
+}) => {
+	const [confirmOpen, setConfirmOpen] = useState(false);
+	const [selectedTarget, setSelectedTarget] = useState("");
+	const [choices, setChoices] = useState<OptionChoices>({
+		removeSourceData: false,
+		replaceTargetData: false,
+		zeroDowntime: null,
+		keepSourceRunning: false,
+	});
+	const [analysisState, setAnalysisState] = useState<{
+		key: string;
+		result: Analysis;
+	} | null>(null);
+	const analyze = api.serviceMigration.analyze.useMutation();
+	const start = api.serviceMigration.start.useMutation();
+
+	const supportsZeroDowntime = Boolean(targets?.supportsZeroDowntime);
+	const targetServerId = resolveTarget(targets, selectedTarget);
+	const options = resolveOptions(choices, supportsZeroDowntime);
+	const request = {
+		serviceType,
+		serviceId,
+		targetServerId: targetServerId === DOKPLOY_SERVER ? null : targetServerId,
+		options,
+	};
+	const requestKey = JSON.stringify(request);
+	// Checks only apply to the target and options they were run with.
+	const analysis =
+		analysisState?.key === requestKey ? analysisState.result : null;
+
+	const runChecks = async () => {
+		try {
+			const result = await analyze.mutateAsync(request);
+			setAnalysisState({ key: requestKey, result });
+		} catch (error) {
+			toast.error(errorMessage(error, "Unable to run the checks"));
+		}
+	};
+
+	const startMigration = async () => {
+		setConfirmOpen(false);
+		try {
+			const result = await start.mutateAsync(request);
+			onShowMigration(result.serviceMigrationId);
+		} catch (error) {
+			toast.error(errorMessage(error, "Unable to start the migration"));
+		}
+	};
+
+	return (
+		<div className="flex flex-col gap-5">
+			<div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+				<TargetPicker
+					targets={targets}
+					loading={loadingTargets}
+					value={targetServerId}
+					onChange={setSelectedTarget}
+				/>
+				<Button
+					variant="outline"
+					onClick={runChecks}
+					disabled={!targetServerId}
+					isLoading={analyze.isPending}
+				>
+					Run checks
+				</Button>
+			</div>
+			<OptionsPanel
+				options={options}
+				supportsZeroDowntime={supportsZeroDowntime}
+				onChange={(changes) =>
+					setChoices((current) => ({ ...current, ...changes }))
+				}
+			/>
+			{analysis && <AnalysisResult analysis={analysis} />}
+			<div className="flex items-center justify-end gap-2">
+				<Button
+					onClick={() => setConfirmOpen(true)}
+					disabled={!analysis?.canMigrate || start.isPending}
+					isLoading={start.isPending}
+				>
+					Migrate
+				</Button>
+			</div>
+			{history && history.length > 0 && (
+				<MigrationHistory history={history} onSelect={onShowMigration} />
+			)}
+			<ConfirmMigration
+				analysis={analysis}
+				keepSourceRunning={options.keepSourceRunning}
+				open={confirmOpen}
+				onOpenChange={setConfirmOpen}
+				onConfirm={startMigration}
+			/>
 		</div>
 	);
 };
@@ -293,165 +719,28 @@ export const MigrateServiceServer = ({
 	serviceName,
 	currentServerName,
 }: Props) => {
-	const utils = api.useUtils();
 	const [open, setOpen] = useState(false);
-	const [confirmOpen, setConfirmOpen] = useState(false);
-	const [targetServerId, setTargetServerId] = useState<string>("");
-	const [removeSourceData, setRemoveSourceData] = useState(false);
-	const [replaceTargetData, setReplaceTargetData] = useState(false);
-	const [zeroDowntime, setZeroDowntime] = useState(false);
-	const [keepSourceRunning, setKeepSourceRunning] = useState(false);
-	const [analysis, setAnalysis] = useState<Analysis | null>(null);
-	const [activeMigrationId, setActiveMigrationId] = useState<string | null>(
+	const [selectedMigrationId, setSelectedMigrationId] = useState<string | null>(
 		null,
 	);
-
 	const { data: targets, isLoading: loadingTargets } =
 		api.serviceMigration.targets.useQuery(
 			{ serviceType, serviceId },
 			{ enabled: open },
 		);
-	const { data: history, refetch: refetchHistory } =
-		api.serviceMigration.history.useQuery(
-			{ serviceType, serviceId },
-			{ enabled: open },
-		);
-	const analyze = api.serviceMigration.analyze.useMutation();
-	const start = api.serviceMigration.start.useMutation();
-
-	// After a migration the previous target becomes the current server.
-	useEffect(() => {
-		if (!targets || !targetServerId) return;
-		const available =
-			targetServerId === DOKPLOY_SERVER
-				? targets.allowDokployServer
-				: targets.servers.some((item) => item.serverId === targetServerId);
-		if (!available) setTargetServerId("");
-	}, [targets, targetServerId]);
-
-	// Overlap-safe services migrate without downtime unless the user opts out.
-	useEffect(() => {
-		setZeroDowntime(Boolean(targets?.supportsZeroDowntime));
-	}, [targets?.supportsZeroDowntime]);
-
-	const running = history?.find((migration) => migration.status === "running");
-	useEffect(() => {
-		if (running && !activeMigrationId) {
-			setActiveMigrationId(running.serviceMigrationId);
-		}
-	}, [running, activeMigrationId]);
-
-	// Any change of target or options invalidates the previous checks.
-	useEffect(() => {
-		setAnalysis(null);
-	}, [
-		targetServerId,
-		removeSourceData,
-		replaceTargetData,
-		zeroDowntime,
-		keepSourceRunning,
-	]);
-
-	const request = useMemo(
-		() => ({
-			serviceType,
-			serviceId,
-			targetServerId: targetServerId === DOKPLOY_SERVER ? null : targetServerId,
-			options: {
-				removeSourceData,
-				replaceTargetData,
-				zeroDowntime,
-				keepSourceRunning: zeroDowntime && keepSourceRunning,
-			},
-		}),
-		[
-			serviceType,
-			serviceId,
-			targetServerId,
-			removeSourceData,
-			replaceTargetData,
-			zeroDowntime,
-			keepSourceRunning,
-		],
+	const { data: history } = api.serviceMigration.history.useQuery(
+		{ serviceType, serviceId },
+		{ enabled: open },
 	);
-
-	const counts = useMemo(() => {
-		const checks = analysis?.checks ?? [];
-		return {
-			pass: checks.filter((check) => check.status === "pass").length,
-			warn: checks.filter((check) => check.status === "warn").length,
-			fail: checks.filter((check) => check.status === "fail").length,
-		};
-	}, [analysis]);
-
-	const runChecks = async () => {
-		try {
-			setAnalysis(await analyze.mutateAsync(request));
-		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Unable to run the checks",
-			);
-		}
-	};
-
-	const startMigration = async () => {
-		setConfirmOpen(false);
-		try {
-			const result = await start.mutateAsync(request);
-			setActiveMigrationId(result.serviceMigrationId);
-			await refetchHistory();
-		} catch (error) {
-			toast.error(
-				error instanceof Error
-					? error.message
-					: "Unable to start the migration",
-			);
-		}
-	};
-
-	const onFinished = async (migration: Migration) => {
-		await refetchHistory();
-		await utils.invalidate();
-		if (migration.status === "done") {
-			toast.success(`Migrated to ${migration.targetServerName}`);
-		} else if (migration.status === "rolled_back") {
-			toast.warning("Migration failed and was rolled back");
-		} else {
-			toast.error("Migration failed");
-		}
-	};
-
-	const reset = () => {
-		setActiveMigrationId(null);
-		setAnalysis(null);
-	};
-
-	const activeIsRunning =
-		activeMigrationId !== null &&
-		history?.find((item) => item.serviceMigrationId === activeMigrationId)
-			?.status === "running";
-	const hasTargets =
-		(targets?.servers.length ?? 0) > 0 || targets?.allowDokployServer;
+	// A running migration is always shown, whoever started it.
+	const runningMigrationId = history?.find(
+		(migration) => migration.status === "running",
+	)?.serviceMigrationId;
+	const shownMigrationId = selectedMigrationId ?? runningMigrationId;
 
 	return (
 		<Dialog open={open} onOpenChange={setOpen}>
-			<TooltipProvider delayDuration={0}>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<DialogTrigger asChild>
-							<Button
-								variant="ghost"
-								size="icon"
-								aria-label="Migrate to another server"
-								className="group hover:bg-blue-500/10 focus-visible:ring-2 focus-visible:ring-offset-2"
-							>
-								<ArrowLeftRight className="size-3.5 text-primary group-hover:text-blue-500" />
-							</Button>
-						</DialogTrigger>
-					</TooltipTrigger>
-					<TooltipContent>Migrate to another server</TooltipContent>
-				</Tooltip>
-			</TooltipProvider>
+			<MigrationTrigger />
 			<DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
 				<DialogHeader>
 					<DialogTitle>Migrate to another server</DialogTitle>
@@ -462,258 +751,33 @@ export const MigrateServiceServer = ({
 						migration.
 					</DialogDescription>
 				</DialogHeader>
-
-				{activeMigrationId ? (
+				{shownMigrationId ? (
 					<div className="flex flex-col gap-4">
 						<MigrationProgress
-							key={activeMigrationId}
-							serviceMigrationId={activeMigrationId}
-							onFinished={onFinished}
+							key={shownMigrationId}
+							serviceMigrationId={shownMigrationId}
 						/>
-						{!activeIsRunning && (
+						{shownMigrationId !== runningMigrationId && (
 							<div className="flex justify-end">
-								<Button variant="outline" onClick={reset}>
+								<Button
+									variant="outline"
+									onClick={() => setSelectedMigrationId(null)}
+								>
 									Back
 								</Button>
 							</div>
 						)}
 					</div>
 				) : (
-					<div className="flex flex-col gap-5">
-						<div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
-							<div className="flex flex-col gap-2">
-								<Label>Target server</Label>
-								<Select
-									value={targetServerId}
-									onValueChange={setTargetServerId}
-									disabled={loadingTargets || !hasTargets}
-								>
-									<SelectTrigger>
-										<SelectValue
-											placeholder={
-												loadingTargets
-													? "Loading servers…"
-													: hasTargets
-														? "Select a server"
-														: "No other Deploy Server available"
-											}
-										/>
-									</SelectTrigger>
-									<SelectContent>
-										{targets?.allowDokployServer && (
-											<SelectItem value={DOKPLOY_SERVER}>
-												Dokploy server
-											</SelectItem>
-										)}
-										{targets?.servers.map((item) => (
-											<SelectItem
-												key={item.serverId}
-												value={item.serverId}
-												disabled={item.serverStatus !== "active"}
-											>
-												{item.name}{" "}
-												<span className="text-muted-foreground">
-													({item.ipAddress})
-												</span>
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							</div>
-							<Button
-								variant="outline"
-								onClick={runChecks}
-								disabled={!targetServerId}
-								isLoading={analyze.isPending}
-							>
-								Run checks
-							</Button>
-						</div>
-
-						<div className="flex flex-col gap-3 rounded-lg border p-3">
-							<div className="flex items-center justify-between gap-4">
-								<div className="flex flex-col">
-									<Label htmlFor="migration-zero-downtime">
-										Zero-downtime migration
-									</Label>
-									<span className="text-sm text-muted-foreground">
-										{targets?.supportsZeroDowntime
-											? "The target starts and becomes healthy before the source stops. Volumes are then copied live."
-											: "Only applications and Compose projects in zero-downtime Build Server mode can run on two servers at once: this service is stopped during the copy."}
-									</span>
-								</div>
-								<Switch
-									id="migration-zero-downtime"
-									checked={zeroDowntime}
-									disabled={!targets?.supportsZeroDowntime}
-									onCheckedChange={setZeroDowntime}
-								/>
-							</div>
-							{zeroDowntime && (
-								<div className="flex items-center justify-between gap-4">
-									<div className="flex flex-col">
-										<Label htmlFor="migration-keep-source">
-											Keep the source running until the DNS is switched
-										</Label>
-										<span className="text-sm text-muted-foreground">
-											The source keeps serving visitors that still resolve its
-											IP. Finish the migration once the DNS points to the
-											target.
-										</span>
-									</div>
-									<Switch
-										id="migration-keep-source"
-										checked={keepSourceRunning}
-										onCheckedChange={setKeepSourceRunning}
-									/>
-								</div>
-							)}
-							<div className="flex items-center justify-between gap-4">
-								<div className="flex flex-col">
-									<Label htmlFor="migration-replace">
-										Replace existing data on the target
-									</Label>
-									<span className="text-sm text-muted-foreground">
-										Volumes with the same name on the target are wiped and
-										refilled instead of blocking the migration.
-									</span>
-								</div>
-								<Switch
-									id="migration-replace"
-									checked={replaceTargetData}
-									onCheckedChange={setReplaceTargetData}
-								/>
-							</div>
-							<div className="flex items-center justify-between gap-4">
-								<div className="flex flex-col">
-									<Label htmlFor="migration-remove">
-										Delete the data from the source afterwards
-									</Label>
-									<span className="text-sm text-muted-foreground">
-										By default volumes and directories stay on the source as a
-										backup.
-									</span>
-								</div>
-								<Switch
-									id="migration-remove"
-									checked={removeSourceData}
-									onCheckedChange={setRemoveSourceData}
-								/>
-							</div>
-						</div>
-
-						{analysis && (
-							<div className="flex flex-col gap-5">
-								<div className="flex flex-wrap items-center gap-2 text-sm">
-									<Badge variant="green">{counts.pass} passed</Badge>
-									{counts.warn > 0 && (
-										<Badge variant="yellow">{counts.warn} warning(s)</Badge>
-									)}
-									{counts.fail > 0 && (
-										<Badge variant="red">{counts.fail} failed</Badge>
-									)}
-									<span className="text-muted-foreground">
-										{analysis.source.name} → {analysis.target.name} ·{" "}
-										{formatBytes(analysis.totalBytes)} to copy ·{" "}
-										{analysis.requiresDowntime
-											? "downtime during the copy"
-											: "no downtime expected"}
-									</span>
-								</div>
-								<div className="flex flex-col gap-2">
-									<span className="text-sm font-semibold">
-										Pre-flight checks
-									</span>
-									<ChecksList checks={analysis.checks} />
-								</div>
-								{analysis.plan.length > 0 && (
-									<div className="flex flex-col gap-2">
-										<span className="text-sm font-semibold">
-											What will be migrated
-										</span>
-										<MigrationPlan plan={analysis.plan} />
-									</div>
-								)}
-								{!analysis.canMigrate && (
-									<AlertBlock type="error">
-										Fix the failed checks, then run them again to enable the
-										migration.
-									</AlertBlock>
-								)}
-							</div>
-						)}
-
-						<div className="flex items-center justify-end gap-2">
-							<Button
-								onClick={() => setConfirmOpen(true)}
-								disabled={!analysis?.canMigrate || start.isPending}
-								isLoading={start.isPending}
-							>
-								Migrate
-							</Button>
-						</div>
-
-						{history && history.length > 0 && (
-							<div className="flex flex-col gap-2">
-								<span className="text-sm font-semibold">Recent migrations</span>
-								<div className="flex flex-col divide-y rounded-lg border">
-									{history.map((item) => (
-										<button
-											type="button"
-											key={item.serviceMigrationId}
-											onClick={() =>
-												setActiveMigrationId(item.serviceMigrationId)
-											}
-											className={cn(
-												"flex items-center justify-between gap-3 p-3 text-left text-sm hover:bg-muted/50",
-											)}
-										>
-											<span className="min-w-0 truncate">
-												{item.sourceServerName} → {item.targetServerName}
-											</span>
-											<span className="flex shrink-0 items-center gap-2">
-												<span className="text-muted-foreground">
-													{new Date(item.createdAt).toLocaleString()}
-												</span>
-												{item.pendingCleanup && (
-													<Badge variant="blue">Source kept</Badge>
-												)}
-												<Badge variant={migrationStatus[item.status].variant}>
-													{migrationStatus[item.status].label}
-												</Badge>
-											</span>
-										</button>
-									))}
-								</div>
-							</div>
-						)}
-					</div>
+					<MigrationForm
+						serviceType={serviceType}
+						serviceId={serviceId}
+						targets={targets}
+						loadingTargets={loadingTargets}
+						history={history}
+						onShowMigration={setSelectedMigrationId}
+					/>
 				)}
-
-				<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-					<AlertDialogContent>
-						<AlertDialogHeader>
-							<AlertDialogTitle>
-								Migrate to {analysis?.target.name}?
-							</AlertDialogTitle>
-							<AlertDialogDescription>
-								{analysis?.requiresDowntime
-									? `The service is stopped on ${analysis.source.name} while ${formatBytes(analysis.totalBytes)} are copied, then started on ${analysis.target.name}.`
-									: keepSourceRunning
-										? `The service starts on ${analysis?.target.name} while ${analysis?.source.name} keeps serving until you finish the migration.`
-										: `The service starts on ${analysis?.target.name} before it is removed from ${analysis?.source.name}.`}{" "}
-								If anything fails before the target is healthy, the migration is
-								rolled back. Remember to update the DNS records of the domains.
-							</AlertDialogDescription>
-						</AlertDialogHeader>
-						<AlertDialogFooter>
-							<AlertDialogCancel>Cancel</AlertDialogCancel>
-							<AlertDialogAction onClick={startMigration}>
-								Start migration
-							</AlertDialogAction>
-						</AlertDialogFooter>
-					</AlertDialogContent>
-				</AlertDialog>
 			</DialogContent>
 		</Dialog>
 	);

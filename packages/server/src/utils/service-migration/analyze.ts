@@ -16,6 +16,7 @@ import { getWebServerSettings } from "@dokploy/server/services/web-server-settin
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNotNull, isNull, ne } from "drizzle-orm";
 import { quote } from "shell-quote";
+import { mapWithConcurrency, SSH_PROBE_CONCURRENCY } from "./concurrency";
 import {
 	composeContainerIdsCommand,
 	discoverSource,
@@ -179,59 +180,70 @@ const probeTarget = async (
 		(await target.run("docker compose version", { allowFailure: true }))
 			.exitCode === 0;
 
-	const missingNetworks: string[] = [];
-	for (const network of new Set(service.networks)) {
-		const result = await target.run(
-			`docker network inspect ${quote([network])} --format '{{.Name}}'`,
-			{ allowFailure: true },
+	/** Runs a probe per item and keeps the items for which it succeeded. */
+	const probe = async <T>(
+		items: readonly T[],
+		command: (item: T) => string,
+	) => {
+		const results = await mapWithConcurrency(
+			items,
+			SSH_PROBE_CONCURRENCY,
+			(item) => target.run(command(item), { allowFailure: true }),
 		);
-		if (result.exitCode !== 0) missingNetworks.push(network);
-	}
+		return items.filter((_, index) => results[index]?.exitCode === 0);
+	};
+
+	const networks = [...new Set(service.networks)];
+	const availableNetworks = new Set(
+		await probe(
+			networks,
+			(network) =>
+				`docker network inspect ${quote([network])} --format '{{.Name}}'`,
+		),
+	);
+	const missingNetworks = networks.filter(
+		(network) => !availableNetworks.has(network),
+	);
 
 	const traefik = await target.run(
 		"docker ps --filter name=dokploy-traefik --format '{{.Names}}'; docker service ls --filter name=dokploy-traefik --format '{{.Name}}' 2>/dev/null",
 		{ allowFailure: true },
 	);
 
-	const conflictingServices: string[] = [];
-	let conflictingContainers = 0;
-	if (service.type === "compose") {
-		conflictingContainers = lines(
-			(
-				await target.run(composeContainerIdsCommand(service), {
-					allowFailure: true,
-				})
-			).stdout,
-		).length;
-	} else {
-		for (const name of [
-			service.appName,
-			...snapshot.previews.map((preview) => preview.name),
-		]) {
-			const result = await target.run(
-				`docker service inspect ${quote([name])} --format '{{.ID}}'`,
-				{ allowFailure: true },
-			);
-			if (result.exitCode === 0) conflictingServices.push(name);
-		}
-	}
+	const conflictingContainers =
+		service.type === "compose"
+			? lines(
+					(
+						await target.run(composeContainerIdsCommand(service), {
+							allowFailure: true,
+						})
+					).stdout,
+				).length
+			: 0;
+	const conflictingServices =
+		service.type === "compose"
+			? []
+			: await probe(
+					[service.appName, ...snapshot.previews.map((item) => item.name)],
+					(name) =>
+						`docker service inspect ${quote([name])} --format '{{.ID}}'`,
+				);
 
-	const existingVolumes: string[] = [];
-	const nonEmptyVolumes: string[] = [];
-	for (const volume of snapshot.volumes) {
-		const result = await target.run(
-			`docker volume inspect ${quote([volume.name])} --format '{{.Name}}'`,
-			{ allowFailure: true },
-		);
-		if (result.exitCode !== 0) continue;
-		existingVolumes.push(volume.name);
-		// Pre-provisioned empty volumes (external Compose volumes) are simply filled.
-		const empty = await target.run(
-			`docker run --rm --log-driver none --network none --mount ${quote([`type=volume,source=${volume.name},target=/migration,readonly`])} ${MIGRATION_HELPER_IMAGE} sh -c '[ -z "$(ls -A /migration)" ]'`,
-			{ allowFailure: true },
-		);
-		if (empty.exitCode !== 0) nonEmptyVolumes.push(volume.name);
-	}
+	const existingVolumes = await probe(
+		snapshot.volumes.map((volume) => volume.name),
+		(name) => `docker volume inspect ${quote([name])} --format '{{.Name}}'`,
+	);
+	// Pre-provisioned empty volumes (external Compose volumes) are simply filled.
+	const emptyVolumes = new Set(
+		await probe(
+			existingVolumes,
+			(name) =>
+				`docker run --rm --log-driver none --network none --mount ${quote([`type=volume,source=${name},target=/migration,readonly`])} ${MIGRATION_HELPER_IMAGE} sh -c '[ -z "$(ls -A /migration)" ]'`,
+		),
+	);
+	const nonEmptyVolumes = existingVolumes.filter(
+		(name) => !emptyVolumes.has(name),
+	);
 
 	const busyPorts: string[] = [];
 	if (service.ports.length > 0) {
@@ -251,22 +263,20 @@ const probeTarget = async (
 		}
 	}
 
-	const existingDirectories: string[] = [];
-	for (const directory of snapshot.directories) {
-		const result = await target.run(`[ -e ${quote([directory.targetPath])} ]`, {
-			allowFailure: true,
-		});
-		if (result.exitCode === 0) existingDirectories.push(directory.targetPath);
-	}
+	const existingDirectories = await probe(
+		snapshot.directories.map((directory) => directory.targetPath),
+		(directory) => `[ -e ${quote([directory])} ]`,
+	);
 
-	const missingSystemPaths: string[] = [];
-	for (const bind of snapshot.binds) {
-		if (!bind.skipReason?.startsWith("Host system path")) continue;
-		const result = await target.run(`[ -e ${quote([bind.path])} ]`, {
-			allowFailure: true,
-		});
-		if (result.exitCode !== 0) missingSystemPaths.push(bind.path);
-	}
+	const systemPaths = snapshot.binds
+		.filter((bind) => bind.skipReason?.startsWith("Host system path"))
+		.map((bind) => bind.path);
+	const presentSystemPaths = new Set(
+		await probe(systemPaths, (hostPath) => `[ -e ${quote([hostPath])} ]`),
+	);
+	const missingSystemPaths = systemPaths.filter(
+		(hostPath) => !presentSystemPaths.has(hostPath),
+	);
 
 	const needsHelper =
 		snapshot.volumes.some((volume) => !volume.externalStorage) ||
@@ -275,9 +285,9 @@ const probeTarget = async (
 
 	// A full or read-only disk only shows up when something is written.
 	const storageErrors: string[] = [];
-	const probe = `dokploy-migration-probe-${Date.now()}`;
+	const marker = `dokploy-migration-probe-${Date.now()}`;
 	const baseWrite = await target.run(
-		`mkdir -p ${quote([target.paths.BASE_PATH])} && touch ${quote([`${target.paths.BASE_PATH}/.${probe}`])} && rm -f ${quote([`${target.paths.BASE_PATH}/.${probe}`])}`,
+		`mkdir -p ${quote([target.paths.BASE_PATH])} && touch ${quote([`${target.paths.BASE_PATH}/.${marker}`])} && rm -f ${quote([`${target.paths.BASE_PATH}/.${marker}`])}`,
 		{ allowFailure: true },
 	);
 	if (baseWrite.exitCode !== 0) {
@@ -286,7 +296,7 @@ const probeTarget = async (
 		);
 	}
 	const dockerWrite = await target.run(
-		`docker volume create ${probe} >/dev/null && docker volume rm ${probe} >/dev/null`,
+		`docker volume create ${marker} >/dev/null && docker volume rm ${marker} >/dev/null`,
 		{ allowFailure: true },
 	);
 	if (dockerWrite.exitCode !== 0) {
@@ -578,8 +588,9 @@ const checkData = (
 	options: ServiceMigrationOptions,
 	totalBytes: number,
 ) => {
+	const nonEmptyVolumes = new Set(targetSnapshot.nonEmptyVolumes);
 	const emptyVolumes = targetSnapshot.existingVolumes.filter(
-		(name) => !targetSnapshot.nonEmptyVolumes.includes(name),
+		(name) => !nonEmptyVolumes.has(name),
 	);
 	if (targetSnapshot.nonEmptyVolumes.length > 0) {
 		checks.add(
@@ -777,16 +788,18 @@ const checkNetworkExposure = async (
 			.filter((host): host is string => Boolean(host)),
 	].filter((host) => !host.includes("*"));
 	if (hosts.length > 0) {
-		const pointingToSource: string[] = [];
-		const unresolved: string[] = [];
-		for (const host of [...new Set(hosts)]) {
-			const addresses = await resolveDomainAddresses(host);
-			if (!addresses) {
-				unresolved.push(host);
-			} else if (!target.ipAddress || !addresses.includes(target.ipAddress)) {
-				pointingToSource.push(host);
-			}
-		}
+		const uniqueHosts = [...new Set(hosts)];
+		const resolved = await Promise.all(
+			uniqueHosts.map((host) => resolveDomainAddresses(host)),
+		);
+		const unresolved = uniqueHosts.filter((_, index) => !resolved[index]);
+		const pointingToSource = uniqueHosts.filter((_, index) => {
+			const addresses = resolved[index];
+			return (
+				addresses &&
+				(!target.ipAddress || !new Set(addresses).has(target.ipAddress))
+			);
+		});
 		const notes: string[] = [];
 		if (pointingToSource.length) {
 			notes.push(
@@ -941,6 +954,8 @@ const buildPlan = (
 		}
 	}
 
+	const targetExistingVolumes = new Set(targetSnapshot?.existingVolumes);
+	const targetNonEmptyVolumes = new Set(targetSnapshot?.nonEmptyVolumes);
 	for (const volume of snapshot.volumes) {
 		add({
 			category: "data",
@@ -948,9 +963,9 @@ const buildPlan = (
 			label: `Volume ${volume.name}`,
 			detail: volume.externalStorage
 				? `Driver ${volume.driver}: definition recreated, data stays on the external storage.`
-				: targetSnapshot?.nonEmptyVolumes.includes(volume.name)
+				: targetNonEmptyVolumes.has(volume.name)
 					? "Already holds data on the target: wiped, then filled."
-					: targetSnapshot?.existingVolumes.includes(volume.name)
+					: targetExistingVolumes.has(volume.name)
 						? "Already exists (empty) on the target: filled."
 						: "Recreated with the same driver, labels and options, then filled.",
 			sizeBytes: volume.externalStorage ? undefined : (volume.sizeBytes ?? 0),
@@ -1149,13 +1164,15 @@ export const analyzeServiceMigration = async (
 		});
 	}
 	const checks = new CheckList();
-	const source = await resolveMigrationHost(service.serverId);
-	const targetValid = await checkTargetServer(
-		checks,
-		service,
-		input.targetServerId,
-		input.organizationId,
-	);
+	const [source, targetValid] = await Promise.all([
+		resolveMigrationHost(service.serverId),
+		checkTargetServer(
+			checks,
+			service,
+			input.targetServerId,
+			input.organizationId,
+		),
+	]);
 	const target = targetValid
 		? await resolveMigrationHost(input.targetServerId)
 		: {
@@ -1197,40 +1214,41 @@ export const analyzeServiceMigration = async (
 	};
 	if (!targetValid) return result(null, null);
 
-	const openExecutor = async (
-		host: MigrationHost,
-		role: "source" | "target",
-	) => {
+	const openExecutor = async (host: MigrationHost) => {
 		try {
 			const executor = await createHostExecutor(host);
 			await executor.run("docker version --format '{{.Server.Version}}'");
-			checks.add(
-				`${role}-connection`,
-				role === "source"
-					? "Source server reachable"
-					: "Target server reachable",
-				"pass",
-				`Connected to ${host.name} and its Docker daemon.`,
-			);
-			return executor;
+			return { executor, error: null };
 		} catch (error) {
-			checks.add(
-				`${role}-connection`,
-				role === "source"
-					? "Source server reachable"
-					: "Target server reachable",
-				"fail",
-				error instanceof Error ? error.message : String(error),
-			);
-			return null;
+			return {
+				executor: null,
+				error: error instanceof Error ? error.message : String(error),
+			};
 		}
 	};
 
 	const owned = !input.executors;
-	const sourceExecutor =
-		input.executors?.source ?? (await openExecutor(source, "source"));
-	const targetExecutor =
-		input.executors?.target ?? (await openExecutor(target, "target"));
+	const [opened, openedTarget] = input.executors
+		? [
+				{ executor: input.executors.source, error: null },
+				{ executor: input.executors.target, error: null },
+			]
+		: await Promise.all([openExecutor(source), openExecutor(target)]);
+	for (const [role, host, result] of [
+		["source", source, opened],
+		["target", target, openedTarget],
+	] as const) {
+		checks.add(
+			`${role}-connection`,
+			role === "source" ? "Source server reachable" : "Target server reachable",
+			result.executor ? "pass" : "fail",
+			result.executor
+				? `Connected to ${host.name} and its Docker daemon.`
+				: (result.error ?? "Unreachable"),
+		);
+	}
+	const sourceExecutor = opened.executor;
+	const targetExecutor = openedTarget.executor;
 	try {
 		if (!sourceExecutor || !targetExecutor) return result(null, null);
 		const snapshot = await discoverSource(
