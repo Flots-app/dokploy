@@ -128,7 +128,10 @@
 - [x] Publish `v0.29.14-flots.13` from `canary` and deploy it to production.
 - [x] Merge the service server migration in
   [Flots-app/dokploy#41](https://github.com/Flots-app/dokploy/pull/41).
-- [ ] Publish `v0.29.14-flots.14` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.14` from `canary` and deploy it to production.
+- [x] Merge the server migration DNS hint fix in
+  [Flots-app/dokploy#43](https://github.com/Flots-app/dokploy/pull/43).
+- [ ] Publish `v0.29.14-flots.15` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
