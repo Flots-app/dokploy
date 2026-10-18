@@ -109,6 +109,10 @@ const RESOURCE_META: Record<string, { label: string; description: string }> = {
 		label: "Servers",
 		description: "Manage remote servers and nodes",
 	},
+	githubRunner: {
+		label: "GitHub Runners",
+		description: "Manage self-hosted runner pools and machines",
+	},
 	registry: {
 		label: "Registries",
 		description: "Manage Docker image registries",
@@ -310,6 +314,24 @@ const ACTION_META: Record<
 		delete: {
 			label: "Delete",
 			description: "Remove servers from the organization",
+		},
+	},
+	githubRunner: {
+		read: {
+			label: "Read",
+			description: "View runner pools, machines, jobs and monitoring",
+		},
+		create: {
+			label: "Create",
+			description: "Create pools and add machines (installs software over SSH)",
+		},
+		update: {
+			label: "Update",
+			description: "Enable, disable, resize and reinstall machines",
+		},
+		delete: {
+			label: "Delete",
+			description: "Remove machines and pools",
 		},
 	},
 	registry: {

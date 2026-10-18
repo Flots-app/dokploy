@@ -45,6 +45,7 @@ export const auditLogRouter = createTRPCRouter({
 						"certificate",
 						"registry",
 						"server",
+						"githubRunner",
 						"sshKey",
 						"gitProvider",
 						"notification",

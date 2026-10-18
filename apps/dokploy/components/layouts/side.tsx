@@ -19,6 +19,7 @@ import {
 	Forward,
 	GalleryVerticalEnd,
 	GitBranch,
+	Github,
 	House,
 	Key,
 	KeyRound,
@@ -208,6 +209,15 @@ const MENU: Menu = {
 			icon: PieChart,
 			// Only enabled for users with access to Docker
 			isEnabled: ({ permissions }) => !!permissions?.docker.read,
+		},
+		{
+			isSingle: true,
+			title: "GitHub Runners",
+			url: "/dashboard/runners",
+			icon: Github,
+			// Runner machines are reached over SSH from a self-hosted Dokploy.
+			isEnabled: ({ permissions, isCloud }) =>
+				!isCloud && !!permissions?.githubRunner.read,
 		},
 		{
 			isSingle: true,

@@ -72,6 +72,7 @@ export type AuditResourceType =
 	| "certificate"
 	| "registry"
 	| "server"
+	| "githubRunner"
 	| "sshKey"
 	| "gitProvider"
 	| "destination"

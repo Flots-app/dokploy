@@ -1,0 +1,2277 @@
+import { createHash, randomBytes } from "node:crypto";
+import { hostname } from "node:os";
+import { db } from "@dokploy/server/db";
+import {
+	type GithubRunnerAppliedConfig,
+	type GithubRunnerJobRecord,
+	type GithubRunnerNode,
+	type GithubRunnerNodeObservation,
+	type GithubRunnerOperation,
+	type GithubRunnerPool,
+	github,
+	githubRunnerJobs,
+	githubRunnerMetrics,
+	githubRunnerNodes,
+	githubRunnerOperations,
+} from "@dokploy/server/db/schema";
+import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { sequentially } from "../service-migration/concurrency";
+import {
+	effectiveBudget,
+	formatBytes,
+	formatCpuList,
+	formatCpus,
+	resolveMaxRunners,
+	sliceLimits,
+	vmSize,
+} from "./budget";
+import { linuxChecks, macChecks, type NodeCheck } from "./checks";
+import {
+	createNodeDriver,
+	detectPlatform,
+	type NodeDriver,
+	type NodeProbe,
+	readLinuxFacts,
+	readMacStatus,
+} from "./driver";
+import {
+	createGithubRunnerClient,
+	decodeJitConfig,
+	type GithubRunner,
+	GithubRunnerApiError,
+	type GithubRunnerAuth,
+	type GithubRunnerClient,
+	type RunnerRelease,
+	resolveRunnerRelease,
+} from "./github-api";
+import {
+	macCreateVmScript,
+	macDeleteVmScript,
+	macResizeVmScript,
+	macStartVmScript,
+	macStopVmScript,
+} from "./macos";
+import { parseCaches, type RuntimeStatus } from "./probe";
+import {
+	isKillDrain,
+	type PlannedAction,
+	planNode,
+	runnerNamePrefix,
+} from "./reconcile";
+import { decideRerun, initialRerunStatus } from "./rerun";
+import {
+	installRuntimeScript,
+	RUNNERCTL,
+	RUNTIME_VERSION,
+	runnerEnvironment,
+} from "./runtime";
+import { type NodeSession, openNodeSession } from "./ssh";
+
+const GiB = 1024 ** 3;
+export const TICK_MS = 5_000;
+const TICK_LEASE_MS = 2 * 60_000;
+const TASK_LEASE_MS = 45 * 60_000;
+const METRIC_EVERY_MS = 30_000;
+const CACHES_EVERY_MS = 10 * 60_000;
+const ROUTINE_PRUNE_EVERY_MS = 6 * 60 * 60_000;
+const PRESSURE_PRUNE_EVERY_MS = 15 * 60_000;
+const HEAL_EVERY_MS = 5 * 60_000;
+const RELEASE_TTL_MS = 6 * 60 * 60_000;
+const METRIC_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const MAX_ARMS_PER_TICK = 4;
+/** Inside the macOS VM: below this the runtime refuses new jobs whatever the host has. */
+const VM_MIN_FREE_BYTES = 3 * GiB;
+const MAX_EVENTS = 30;
+
+/**
+ * The server entry point and the Next.js API routes each evaluate their own copy
+ * of this module in the same process (like the deployment queue), so every piece
+ * of controller state lives on globalThis: an operator action and a tick must see
+ * the same tasks, the same ticks and the same lease owner.
+ */
+interface ControllerState {
+	owner: string;
+	clients: Map<string, { key: string; client: GithubRunnerClient }>;
+	releases: Map<string, { release: RunnerRelease; at: number }>;
+	tasks: Map<string, Promise<void>>;
+	ticking: Set<string>;
+	counters: Map<
+		string,
+		{
+			at: number;
+			usage: number | null;
+			busy: number | null;
+			total: number | null;
+		}
+	>;
+	lastMetricAt: Map<string, number>;
+	lastCachesAt: Map<string, number>;
+	lastHealAt: Map<string, number>;
+	lastRecoveryAt: Map<string, number>;
+	timer: NodeJS.Timeout | null;
+	running: boolean;
+	rerun: boolean;
+	lastPurge: number;
+	pendingTick: NodeJS.Timeout | null;
+}
+
+const shared = globalThis as { __dokployGithubRunners?: ControllerState };
+shared.__dokployGithubRunners ??= {
+	owner: `${hostname()}:${process.pid}:${randomBytes(3).toString("hex")}`,
+	clients: new Map(),
+	releases: new Map(),
+	tasks: new Map(),
+	ticking: new Set(),
+	counters: new Map(),
+	lastMetricAt: new Map(),
+	lastCachesAt: new Map(),
+	lastHealAt: new Map(),
+	lastRecoveryAt: new Map(),
+	timer: null,
+	running: false,
+	rerun: false,
+	lastPurge: 0,
+	pendingTick: null,
+};
+const state: ControllerState = shared.__dokployGithubRunners;
+const OWNER = state.owner;
+
+type NodeWithRelations = GithubRunnerNode & {
+	pool: GithubRunnerPool;
+	sshKey: { privateKey: string } | null;
+};
+
+// ---------------------------------------------------------------- loading
+
+export const loadRunnerNode = async (nodeId: string) => {
+	const node = await db.query.githubRunnerNodes.findFirst({
+		where: eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+		with: { pool: true, sshKey: { columns: { privateKey: true } } },
+	});
+	if (!node) throw new Error("Runner machine not found");
+	return node as NodeWithRelations;
+};
+
+export const poolAuth = async (
+	pool: GithubRunnerPool,
+): Promise<GithubRunnerAuth> => {
+	if (pool.authType === "token") {
+		if (!pool.token) throw new Error(`Pool ${pool.name} has no token`);
+		return { type: "token", token: pool.token };
+	}
+	if (pool.authType === "app") {
+		if (!pool.appId || !pool.appInstallationId || !pool.appPrivateKey) {
+			throw new Error(`Pool ${pool.name} has an incomplete GitHub App`);
+		}
+		return {
+			type: "app",
+			appId: pool.appId,
+			installationId: pool.appInstallationId,
+			privateKey: pool.appPrivateKey,
+		};
+	}
+	const provider = pool.githubId
+		? await db.query.github.findFirst({
+				where: eq(github.githubId, pool.githubId),
+			})
+		: null;
+	if (
+		!provider?.githubAppId ||
+		!provider.githubInstallationId ||
+		!provider.githubPrivateKey
+	) {
+		throw new Error(
+			`The GitHub provider of pool ${pool.name} is missing or not installed`,
+		);
+	}
+	return {
+		type: "app",
+		appId: provider.githubAppId,
+		installationId: provider.githubInstallationId,
+		privateKey: provider.githubPrivateKey,
+	};
+};
+
+const clients = state.clients;
+
+/** One client per pool, so a GitHub App installation token is reused until it expires. */
+export const poolClient = async (pool: GithubRunnerPool) => {
+	const auth = await poolAuth(pool);
+	const key = createHash("sha256")
+		.update(
+			JSON.stringify([
+				auth,
+				pool.scope,
+				pool.owner,
+				pool.repository,
+				pool.runnerGroup,
+				pool.apiUrl,
+			]),
+		)
+		.digest("hex");
+	const cached = clients.get(pool.githubRunnerPoolId);
+	if (cached?.key === key) return cached.client;
+	const client = createGithubRunnerClient(
+		{
+			scope: pool.scope,
+			owner: pool.owner,
+			repository: pool.repository,
+			runnerGroup: pool.runnerGroup,
+			apiUrl: pool.apiUrl,
+		},
+		auth,
+	);
+	clients.set(pool.githubRunnerPoolId, { key, client });
+	return client;
+};
+
+const releases = state.releases;
+
+export const desiredRelease = async (
+	pool: GithubRunnerPool,
+	arch: string,
+): Promise<RunnerRelease> => {
+	const key = `${pool.runnerVersion ?? "latest"}:${arch}`;
+	const cached = releases.get(key);
+	if (
+		cached &&
+		(pool.runnerVersion || Date.now() - cached.at < RELEASE_TTL_MS)
+	) {
+		return cached.release;
+	}
+	const authorization =
+		new URL(pool.apiUrl).hostname === "api.github.com"
+			? await (await poolClient(pool)).authorization().catch(() => undefined)
+			: undefined;
+	const release = await resolveRunnerRelease(pool.runnerVersion, arch, {
+		authorization,
+	});
+	releases.set(key, { release, at: Date.now() });
+	return release;
+};
+
+const archLabel = (arch: string) =>
+	arch === "aarch64" || arch === "arm64" ? "ARM64" : "X64";
+
+/** Labels every runner of the machine is registered with. */
+export const runnerLabels = (
+	pool: GithubRunnerPool,
+	node: GithubRunnerNode,
+	arch: string,
+) => {
+	const labels = [
+		"self-hosted",
+		"Linux",
+		archLabel(arch),
+		...pool.labels,
+		...node.extraLabels,
+		`dokploy-${node.name}`,
+	];
+	const seen = new Set<string>();
+	return labels.filter((label) => {
+		const key = label.toLowerCase();
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+};
+
+export const environmentHash = (pool: GithubRunnerPool) =>
+	createHash("sha256")
+		.update(runnerEnvironment(pool))
+		.digest("hex")
+		.slice(0, 16);
+
+const connect = (node: NodeWithRelations) => {
+	if (!node.sshKey?.privateKey) {
+		throw new Error(`Runner machine ${node.name} has no SSH key`);
+	}
+	return openNodeSession({
+		name: node.name,
+		host: node.host,
+		port: node.port,
+		username: node.username,
+		privateKey: node.sshKey.privateKey,
+		hostKeyFingerprint: node.hostKeyFingerprint,
+	});
+};
+
+// ------------------------------------------------------- leases and queues
+
+const acquireLease = async (nodeId: string, durationMs: number) => {
+	const now = new Date();
+	const rows = await db
+		.update(githubRunnerNodes)
+		.set({
+			lockedBy: OWNER,
+			lockedUntil: new Date(now.getTime() + durationMs).toISOString(),
+		})
+		.where(
+			and(
+				eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+				or(
+					isNull(githubRunnerNodes.lockedUntil),
+					lt(githubRunnerNodes.lockedUntil, now.toISOString()),
+					eq(githubRunnerNodes.lockedBy, OWNER),
+				),
+			),
+		)
+		.returning({ id: githubRunnerNodes.githubRunnerNodeId });
+	return rows.length > 0;
+};
+
+const releaseLease = (nodeId: string) =>
+	db
+		.update(githubRunnerNodes)
+		.set({ lockedBy: null, lockedUntil: null })
+		.where(
+			and(
+				eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+				eq(githubRunnerNodes.lockedBy, OWNER),
+			),
+		);
+
+/** Long tasks of a machine (provisioning, VM restart...). The tick skips the machine meanwhile. */
+const tasks = state.tasks;
+const ticking = state.ticking;
+
+const waitForTick = async (nodeId: string) => {
+	for (let attempt = 0; attempt < 600 && ticking.has(nodeId); attempt++) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+};
+
+/**
+ * Runs a task with the machine leased and an SSH session open. Returns false
+ * when another task already runs on the machine.
+ */
+const runTask = (
+	nodeId: string,
+	operationId: string | null,
+	task: (context: {
+		node: NodeWithRelations;
+		driver: NodeDriver;
+		session: NodeSession;
+		log: (line: string) => Promise<void>;
+	}) => Promise<void>,
+	onError?: (error: unknown) => Promise<void>,
+) => {
+	if (tasks.has(nodeId)) return false;
+	const log = (line: string) => appendOperationLog(operationId, line);
+	const promise = (async () => {
+		await waitForTick(nodeId);
+		let session: NodeSession | null = null;
+		const leased = await acquireLease(nodeId, TASK_LEASE_MS);
+		try {
+			if (!leased)
+				throw new Error("Another Dokploy instance is working on this machine");
+			const node = await loadRunnerNode(nodeId);
+			session = await connect(node);
+			const driver = createNodeDriver(session, node);
+			await task({ node, driver, session, log });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			await log(`Error: ${message}`);
+			if (onError) await onError(error);
+			else {
+				await finishOperation(operationId, "error", message);
+				await db
+					.update(githubRunnerNodes)
+					.set({ lastError: message })
+					.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+			}
+		} finally {
+			session?.close();
+			if (leased) await releaseLease(nodeId);
+		}
+	})()
+		.catch((error) => console.error("GitHub runner task failed", error))
+		.finally(() => {
+			tasks.delete(nodeId);
+			requestTick();
+		});
+	tasks.set(nodeId, promise);
+	return true;
+};
+
+// ------------------------------------------------------------- operations
+
+const timestamp = () => new Date().toISOString().slice(11, 19);
+
+export const appendOperationLog = async (
+	operationId: string | null,
+	line: string,
+) => {
+	if (!operationId) return;
+	const text = line
+		.split("\n")
+		.filter((item) => item.trim())
+		.map((item) => `[${timestamp()}] ${item}\n`)
+		.join("");
+	if (!text) return;
+	await db
+		.update(githubRunnerOperations)
+		.set({ logs: sql`${githubRunnerOperations.logs} || ${text}` })
+		.where(eq(githubRunnerOperations.githubRunnerOperationId, operationId));
+};
+
+export const finishOperation = async (
+	operationId: string | null,
+	status: "done" | "error" | "cancelled",
+	errorMessage?: string,
+) => {
+	if (!operationId) return;
+	await db
+		.update(githubRunnerOperations)
+		.set({
+			status,
+			errorMessage: errorMessage ?? null,
+			finishedAt: new Date().toISOString(),
+		})
+		.where(
+			and(
+				eq(githubRunnerOperations.githubRunnerOperationId, operationId),
+				eq(githubRunnerOperations.status, "running"),
+			),
+		);
+};
+
+/** Starts an operation; the running one of the machine, if any, is cancelled when superseded. */
+export const createOperation = async (
+	node: GithubRunnerNode,
+	type: GithubRunnerOperation["type"],
+	summary: string,
+	userId: string | null,
+	options: { supersede?: boolean } = {},
+) => {
+	const running = await db.query.githubRunnerOperations.findFirst({
+		where: and(
+			eq(githubRunnerOperations.githubRunnerNodeId, node.githubRunnerNodeId),
+			eq(githubRunnerOperations.status, "running"),
+		),
+	});
+	if (running) {
+		if (!options.supersede) {
+			throw new Error(
+				`An operation (${running.type}) is already running on ${node.name}`,
+			);
+		}
+		await appendOperationLog(
+			running.githubRunnerOperationId,
+			`Superseded by "${summary}"`,
+		);
+		await finishOperation(running.githubRunnerOperationId, "cancelled");
+	}
+	const [operation] = await db
+		.insert(githubRunnerOperations)
+		.values({
+			organizationId: node.organizationId,
+			githubRunnerNodeId: node.githubRunnerNodeId,
+			githubRunnerPoolId: node.githubRunnerPoolId,
+			nodeName: node.name,
+			type,
+			summary,
+			createdBy: userId,
+		})
+		.returning();
+	if (!operation) throw new Error("Unable to record the operation");
+	return operation;
+};
+
+// ------------------------------------------------------------- checks
+
+export interface NodeCheckResult {
+	fingerprint: string;
+	platform: string;
+	host: { cpus: number; memoryBytes: number; arch: string; os: string } | null;
+	checks: NodeCheck[];
+	canProvision: boolean;
+}
+
+export const checkRunnerMachine = async (input: {
+	name: string;
+	host: string;
+	port: number;
+	username: string;
+	privateKey: string;
+	hostKeyFingerprint: string | null;
+	platform: "linux" | "macos";
+	vmName: string;
+	vmDiskGb: number;
+	diskReserveGb: number;
+	cpuPercent: number;
+	memoryPercent: number;
+	maxRunners: number;
+}): Promise<NodeCheckResult> => {
+	const session = await openNodeSession({
+		name: input.name,
+		host: input.host,
+		port: input.port,
+		username: input.username,
+		privateKey: input.privateKey,
+		hostKeyFingerprint: input.hostKeyFingerprint,
+	});
+	try {
+		const detected = await detectPlatform(session);
+		if (detected !== input.platform) {
+			return {
+				fingerprint: session.fingerprint,
+				platform: detected,
+				host: null,
+				checks: [
+					{
+						id: "platform",
+						label: "Platform",
+						status: "fail",
+						message: `The machine runs ${detected === "macos" ? "macOS" : detected}, not ${input.platform === "macos" ? "macOS" : "Linux"}`,
+					},
+				],
+				canProvision: false,
+			};
+		}
+		if (input.platform === "macos") {
+			const status = await readMacStatus(session, input.vmName);
+			const checks = macChecks(status, input);
+			return {
+				fingerprint: session.fingerprint,
+				platform: "macos",
+				host: status.host
+					? {
+							cpus: status.host.cpus,
+							memoryBytes: status.host.memoryBytes,
+							arch: status.host.arch,
+							os: `macOS ${status.host.version}`,
+						}
+					: null,
+				checks,
+				canProvision: checks.every((item) => item.status !== "fail"),
+			};
+		}
+		const facts = await readLinuxFacts(session);
+		const checks = linuxChecks(facts, input);
+		return {
+			fingerprint: session.fingerprint,
+			platform: "linux",
+			host: {
+				cpus: facts.cpus,
+				memoryBytes: facts.memoryBytes,
+				arch: facts.arch,
+				os: `${facts.distro} ${facts.distroVersion}`,
+			},
+			checks,
+			canProvision: checks.every((item) => item.status !== "fail"),
+		};
+	} finally {
+		session.close();
+	}
+};
+
+// ------------------------------------------------------------- provisioning
+
+const installRuntime = async (
+	driver: NodeDriver,
+	log: (line: string) => Promise<void>,
+) => {
+	await log(`Installing the Dokploy runner runtime v${RUNTIME_VERSION}`);
+	await driver.guest("bash -s", {
+		input: installRuntimeScript(),
+		timeoutMs: 20 * 60_000,
+		label: "Runtime installation",
+		onOutput: (chunk) => {
+			for (const line of chunk.split("\n")) {
+				if (line.startsWith("==> ") || line.startsWith("warning:")) {
+					void log(line.replace(/^==> /, ""));
+				}
+			}
+		},
+	});
+};
+
+const installRelease = async (
+	driver: NodeDriver,
+	release: RunnerRelease,
+	log: (line: string) => Promise<void>,
+) => {
+	await log(`Installing actions/runner ${release.version} (SHA-256 verified)`);
+	await driver.guest(
+		`${RUNNERCTL} install-release ${release.version} ${release.url} ${release.sha256}`,
+		{ timeoutMs: 15 * 60_000, label: "Runner installation" },
+	);
+};
+
+const writeEnvironment = (driver: NodeDriver, pool: GithubRunnerPool) =>
+	driver.guest(`${RUNNERCTL} env`, {
+		input: runnerEnvironment(pool),
+		label: "Runner environment",
+		timeoutMs: 60_000,
+	});
+
+const applySliceLimits = async (
+	driver: NodeDriver,
+	node: GithubRunnerNode,
+	host: { cpus: number; memoryBytes: number },
+	log?: (line: string) => Promise<void>,
+) => {
+	// On macOS the VM is the budget: the slice inside takes the whole VM.
+	const limits =
+		node.platform === "linux"
+			? sliceLimits(host, node)
+			: { cpuQuotaPercent: null, allowedCpus: null, memoryMaxBytes: null };
+	await driver.guest(
+		`${RUNNERCTL} limits ${limits.cpuQuotaPercent ?? "none"} ${limits.allowedCpus ?? "none"} ${limits.memoryMaxBytes ?? "none"}`,
+		{ label: "Resource limits", timeoutMs: 60_000 },
+	);
+	if (log && node.platform === "linux") {
+		const effective = effectiveBudget("linux", host, node);
+		await log(
+			`Budget applied: ${formatCpus(effective.cpus)}${limits.allowedCpus ? ` (${formatCpuList(limits.allowedCpus)})` : ""}, ${formatBytes(effective.memoryBytes)} memory`,
+		);
+	}
+};
+
+const startVm = async (
+	driver: NodeDriver,
+	node: GithubRunnerNode,
+	log: (line: string) => Promise<void>,
+) => {
+	await log(`Starting VM ${node.vmName}`);
+	await driver.host(macStartVmScript(node.vmName), {
+		timeoutMs: 15 * 60_000,
+		label: "VM start",
+		onOutput: (chunk) => {
+			for (const line of chunk.split("\n")) {
+				const entry = limaLogLine(line);
+				if (entry) void log(entry);
+			}
+		},
+	});
+};
+
+/** Keeps the useful lines of limactl's logfmt output, as plain messages. */
+export const limaLogLine = (line: string) => {
+	const text = line.trim();
+	if (!text) return null;
+	const message = text
+		.match(/msg="((?:[^"\\]|\\.)*)"/)?.[1]
+		?.replace(/\\"/g, '"');
+	const level = text.match(/level=(\w+)/)?.[1];
+	if (message === undefined) {
+		// Lines of the start script itself (stale PID files).
+		return /^Removing /.test(text) ? text : null;
+	}
+	if (/^READY/.test(message)) return "VM ready";
+	if (level === "error" || level === "fatal") return `Lima: ${message}`;
+	return null;
+};
+
+/** Installs or refreshes everything on a machine, then marks it ready. */
+const prepareMachine = async (
+	node: NodeWithRelations,
+	driver: NodeDriver,
+	log: (line: string) => Promise<void>,
+) => {
+	let applied: GithubRunnerAppliedConfig | null = node.applied;
+	let vmCreated = applied?.vmCreatedByDokploy ?? false;
+	let host: { cpus: number; memoryBytes: number };
+
+	if (node.platform === "macos") {
+		const status = await readMacStatus(driver.session, node.vmName);
+		if (!status.host) throw new Error("Unable to read the Mac facts");
+		host = status.host;
+		const size = vmSize(status.host, node);
+		if (status.vm.status === "missing") {
+			await log(
+				`Creating VM ${node.vmName}: ${formatCpus(size.cpus)}, ${formatBytes(size.memoryBytes)}, ${node.vmDiskGb} GiB disk`,
+			);
+			await driver.host(
+				macCreateVmScript(node.vmName, {
+					cpus: size.cpus,
+					memoryGiB: size.memoryGiB,
+					diskGb: node.vmDiskGb,
+				}),
+				{ timeoutMs: 30 * 60_000, label: "VM creation" },
+			);
+			vmCreated = true;
+		} else if (status.vm.status !== "Running") {
+			await log(`Sizing VM ${node.vmName} to the budget`);
+			await driver.host(
+				macResizeVmScript(node.vmName, {
+					cpus: size.cpus,
+					memoryGiB: size.memoryGiB,
+					diskGb:
+						status.vm.diskBytes && node.vmDiskGb * GiB > status.vm.diskBytes
+							? node.vmDiskGb
+							: null,
+				}),
+				{ timeoutMs: 5 * 60_000, label: "VM resize" },
+			);
+		} else if (
+			status.vm.cpus !== size.cpus ||
+			status.vm.memoryBytes !== size.memoryBytes
+		) {
+			await log(
+				`VM ${node.vmName} already runs with ${formatCpus(status.vm.cpus ?? 0)} and ${formatBytes(status.vm.memoryBytes ?? 0)}; apply the budget later to resize it (it restarts the VM)`,
+			);
+		}
+		await startVm(driver, node, log);
+		const after = await readMacStatus(driver.session, node.vmName);
+		applied = {
+			runtimeVersion: RUNTIME_VERSION,
+			runnerVersion: "",
+			cpuPercent: node.cpuPercent,
+			memoryPercent: node.memoryPercent,
+			vmDiskGb: node.vmDiskGb,
+			cpus: after.vm.cpus ?? size.cpus,
+			memoryBytes: after.vm.memoryBytes ?? size.memoryBytes,
+			envHash: "",
+			vmCreatedByDokploy: vmCreated,
+		};
+	} else {
+		const facts = await readLinuxFacts(driver.session);
+		host = { cpus: facts.cpus, memoryBytes: facts.memoryBytes };
+		applied = null;
+	}
+
+	await installRuntime(driver, log);
+	const probe = await driver.probe();
+	const arch = probe.runtime?.host?.arch;
+	if (!probe.runtime || !arch) {
+		throw new Error(
+			`The runtime does not answer after installation${probe.runtimeError ? `: ${probe.runtimeError}` : ""}`,
+		);
+	}
+	const release = await desiredRelease(node.pool, arch);
+	await installRelease(driver, release, log);
+	await writeEnvironment(driver, node.pool);
+	await applySliceLimits(driver, node, host, log);
+	const effective = effectiveBudget(node.platform, host, node);
+	const runners = resolveMaxRunners(node.maxRunners, node.platform, host, node);
+	await log(
+		`Ready: up to ${runners} concurrent job${runners === 1 ? "" : "s"} on ${formatCpus(effective.cpus)} and ${formatBytes(effective.memoryBytes)}`,
+	);
+	return {
+		runtimeVersion: RUNTIME_VERSION,
+		runnerVersion: release.version,
+		cpuPercent: node.cpuPercent,
+		memoryPercent: node.memoryPercent,
+		vmDiskGb: node.platform === "macos" ? node.vmDiskGb : null,
+		cpus: applied?.cpus ?? effective.cpus,
+		memoryBytes: applied?.memoryBytes ?? effective.memoryBytes,
+		envHash: environmentHash(node.pool),
+		vmCreatedByDokploy: node.platform === "macos" ? vmCreated : undefined,
+	} satisfies GithubRunnerAppliedConfig;
+};
+
+export const provisionRunnerNode = async (
+	nodeId: string,
+	userId: string | null,
+) => {
+	const node = await loadRunnerNode(nodeId);
+	const operation = await createOperation(
+		node,
+		"provision",
+		`Provision ${node.name}`,
+		userId,
+		{ supersede: true },
+	);
+	await db
+		.update(githubRunnerNodes)
+		.set({ phase: "provisioning", lastError: null })
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	const started = runTask(
+		nodeId,
+		operation.githubRunnerOperationId,
+		async ({ node, driver, log }) => {
+			await log(`Connected to ${node.host} (${driver.session.fingerprint})`);
+			const applied = await prepareMachine(node, driver, log);
+			// The operator may have disabled the machine meanwhile: decide in the update.
+			const [fresh] = await db
+				.update(githubRunnerNodes)
+				.set({
+					applied,
+					phase: sql`CASE WHEN ${githubRunnerNodes.enabled} THEN 'ready'::"githubRunnerNodePhase" ELSE 'stopped'::"githubRunnerNodePhase" END`,
+					drain: null,
+					lastError: null,
+				})
+				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId))
+				.returning({ enabled: githubRunnerNodes.enabled });
+			if (!fresh?.enabled && node.platform === "macos") {
+				await driver.host(macStopVmScript(node.vmName), {
+					timeoutMs: 5 * 60_000,
+					label: "VM stop",
+				});
+			}
+			await finishOperation(operation.githubRunnerOperationId, "done");
+		},
+		async (error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			await finishOperation(
+				operation.githubRunnerOperationId,
+				"error",
+				message,
+			);
+			await db
+				.update(githubRunnerNodes)
+				.set({ phase: "error", lastError: message })
+				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		},
+	);
+	if (!started) {
+		await finishOperation(
+			operation.githubRunnerOperationId,
+			"error",
+			"Another task is running on this machine",
+		);
+		throw new Error("Another task is running on this machine");
+	}
+	return operation;
+};
+
+// ------------------------------------------------------------- user actions
+
+/** Stops taking jobs; once the machine is empty its runtime (and VM) stop. */
+export const disableRunnerNode = async (
+	nodeId: string,
+	options: { mode: "wait" | "kill"; timeoutMinutes: number | null },
+	userId: string | null,
+) => {
+	const node = await loadRunnerNode(nodeId);
+	if (node.phase === "stopped" || node.phase === "new") {
+		await db
+			.update(githubRunnerNodes)
+			.set({ enabled: false })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		return null;
+	}
+	const operation = await createOperation(
+		node,
+		"disable",
+		options.mode === "kill"
+			? `Disable ${node.name} now (running jobs are interrupted)`
+			: `Disable ${node.name} once its jobs finish${options.timeoutMinutes ? ` (at most ${options.timeoutMinutes} min)` : ""}`,
+		userId,
+		{ supersede: true },
+	);
+	const now = new Date();
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			enabled: false,
+			phase: "draining",
+			drain: {
+				mode: options.mode,
+				reason: "disable",
+				requestedAt: now.toISOString(),
+				deadline:
+					options.mode === "wait" && options.timeoutMinutes
+						? new Date(
+								now.getTime() + options.timeoutMinutes * 60_000,
+							).toISOString()
+						: null,
+				operationId: operation.githubRunnerOperationId,
+			},
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	await appendOperationLog(
+		operation.githubRunnerOperationId,
+		options.mode === "kill"
+			? "No new job; stopping the runners now"
+			: "No new job; waiting for the running jobs to finish",
+	);
+	requestTick();
+	return operation;
+};
+
+export const enableRunnerNode = async (
+	nodeId: string,
+	userId: string | null,
+) => {
+	const node = await loadRunnerNode(nodeId);
+	if (node.phase === "new" || node.phase === "error" || !node.applied) {
+		await db
+			.update(githubRunnerNodes)
+			.set({ enabled: true })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		return provisionRunnerNode(nodeId, userId);
+	}
+	const operation = await createOperation(
+		node,
+		"enable",
+		`Enable ${node.name}`,
+		userId,
+		{ supersede: true },
+	);
+	await db
+		.update(githubRunnerNodes)
+		.set({ enabled: true, drain: null })
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	if (node.phase === "ready" || node.phase === "draining") {
+		await db
+			.update(githubRunnerNodes)
+			.set({ phase: "ready" })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		await appendOperationLog(
+			operation.githubRunnerOperationId,
+			"Draining cancelled: the machine takes jobs again",
+		);
+		await finishOperation(operation.githubRunnerOperationId, "done");
+		requestTick();
+		return operation;
+	}
+	runTask(
+		nodeId,
+		operation.githubRunnerOperationId,
+		async ({ node, driver, log }) => {
+			if (node.platform === "macos") {
+				await startVm(driver, node, log);
+			}
+			const probe = await driver.probe();
+			if (!probe.runtime || probe.runtime.runtimeVersion < RUNTIME_VERSION) {
+				await installRuntime(driver, log);
+			}
+			await log("The machine takes jobs again");
+			await db
+				.update(githubRunnerNodes)
+				.set({ phase: "ready", lastError: null })
+				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+			await finishOperation(operation.githubRunnerOperationId, "done");
+		},
+	);
+	return operation;
+};
+
+/** Whether the new settings need the macOS VM to restart. */
+export const needsVmRestart = (
+	node: GithubRunnerNode,
+	host: { cpus: number; memoryBytes: number } | null,
+) => {
+	if (node.platform !== "macos" || !node.applied || !host) return false;
+	const size = vmSize(host, node);
+	return (
+		size.cpus !== node.applied.cpus ||
+		size.memoryBytes !== node.applied.memoryBytes ||
+		node.vmDiskGb > (node.applied.vmDiskGb ?? 0)
+	);
+};
+
+/**
+ * Applies the budget of a machine. Linux limits change live; a Mac drains (or
+ * interrupts its jobs) and restarts its VM with the new size.
+ */
+export const applyRunnerNodeConfig = async (
+	nodeId: string,
+	mode: "wait" | "kill",
+	userId: string | null,
+) => {
+	const node = await loadRunnerNode(nodeId);
+	const host = node.observed?.host ?? null;
+	if (node.phase === "new" || node.phase === "provisioning") return null;
+
+	if (node.platform === "macos" && needsVmRestart(node, host)) {
+		if (node.phase === "stopped") {
+			const operation = await createOperation(
+				node,
+				"apply",
+				`Resize the VM of ${node.name}`,
+				userId,
+				{ supersede: true },
+			);
+			runTask(
+				nodeId,
+				operation.githubRunnerOperationId,
+				async ({ node, driver, log }) => {
+					await resizeStoppedVm(node, driver, log);
+					await finishOperation(operation.githubRunnerOperationId, "done");
+				},
+			);
+			return operation;
+		}
+		const operation = await createOperation(
+			node,
+			"apply",
+			mode === "kill"
+				? `Resize the VM of ${node.name} now (running jobs are interrupted)`
+				: `Resize the VM of ${node.name} once its jobs finish`,
+			userId,
+			{ supersede: true },
+		);
+		await db
+			.update(githubRunnerNodes)
+			.set({
+				phase: "draining",
+				drain: {
+					mode,
+					reason: "apply",
+					requestedAt: new Date().toISOString(),
+					deadline: null,
+					operationId: operation.githubRunnerOperationId,
+				},
+			})
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		await appendOperationLog(
+			operation.githubRunnerOperationId,
+			"The VM restarts with its new size once no job runs",
+		);
+		requestTick();
+		return operation;
+	}
+
+	if (node.platform === "linux" && node.phase !== "error") {
+		const operation = await createOperation(
+			node,
+			"apply",
+			`Apply the budget of ${node.name}`,
+			userId,
+			{ supersede: true },
+		);
+		runTask(
+			nodeId,
+			operation.githubRunnerOperationId,
+			async ({ node, driver, log }) => {
+				const probe = await driver.probe();
+				if (!probe.host) throw new Error("Unable to read the machine facts");
+				await applySliceLimits(driver, node, probe.host, log);
+				await db
+					.update(githubRunnerNodes)
+					.set({
+						applied: node.applied
+							? {
+									...node.applied,
+									cpuPercent: node.cpuPercent,
+									memoryPercent: node.memoryPercent,
+								}
+							: node.applied,
+					})
+					.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+				await finishOperation(operation.githubRunnerOperationId, "done");
+			},
+		);
+		return operation;
+	}
+	requestTick();
+	return null;
+};
+
+const resizeStoppedVm = async (
+	node: NodeWithRelations,
+	driver: NodeDriver,
+	log: (line: string) => Promise<void>,
+) => {
+	const status = await readMacStatus(driver.session, node.vmName);
+	if (!status.host) throw new Error("Unable to read the Mac facts");
+	const size = vmSize(status.host, node);
+	await log(
+		`Resizing VM ${node.vmName} to ${formatCpus(size.cpus)} and ${formatBytes(size.memoryBytes)}`,
+	);
+	await driver.host(
+		macResizeVmScript(node.vmName, {
+			cpus: size.cpus,
+			memoryGiB: size.memoryGiB,
+			diskGb:
+				status.vm.diskBytes && node.vmDiskGb * GiB > status.vm.diskBytes
+					? node.vmDiskGb
+					: null,
+		}),
+		{ timeoutMs: 5 * 60_000, label: "VM resize" },
+	);
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			applied: {
+				...(node.applied as GithubRunnerAppliedConfig),
+				cpuPercent: node.cpuPercent,
+				memoryPercent: node.memoryPercent,
+				vmDiskGb: Math.max(node.vmDiskGb, node.applied?.vmDiskGb ?? 0),
+				cpus: size.cpus,
+				memoryBytes: size.memoryBytes,
+			},
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
+};
+
+export const removeRunnerNode = async (
+	nodeId: string,
+	options: {
+		mode: "wait" | "kill";
+		uninstall: boolean;
+		force: boolean;
+		timeoutMinutes?: number | null;
+	},
+	userId: string | null,
+) => {
+	const node = await loadRunnerNode(nodeId);
+	if (options.force || node.phase === "new" || !node.applied) {
+		// Nothing to drain, or the machine is gone: unregister and forget it.
+		await forgetRegistrations(node).catch(() => undefined);
+		await db
+			.delete(githubRunnerNodes)
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		return null;
+	}
+	const operation = await createOperation(
+		node,
+		"remove",
+		`Remove ${node.name}${options.uninstall ? " and uninstall its runtime" : ""}`,
+		userId,
+		{ supersede: true },
+	);
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			enabled: false,
+			phase: "draining",
+			drain: {
+				mode: options.mode,
+				reason: "remove",
+				requestedAt: new Date().toISOString(),
+				deadline:
+					options.mode === "wait" && options.timeoutMinutes
+						? new Date(
+								Date.now() + options.timeoutMinutes * 60_000,
+							).toISOString()
+						: null,
+				operationId: operation.githubRunnerOperationId,
+				uninstall: options.uninstall,
+			},
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	await appendOperationLog(
+		operation.githubRunnerOperationId,
+		options.mode === "kill"
+			? "Stopping the runners now"
+			: "Waiting for the running jobs to finish",
+	);
+	if (node.phase === "stopped") {
+		// Nothing runs: finish right away.
+		startDrainCompletion(nodeId);
+	}
+	requestTick();
+	return operation;
+};
+
+const forgetRegistrations = async (node: NodeWithRelations) => {
+	const client = await poolClient(node.pool);
+	const prefix = runnerNamePrefix(node.name);
+	const runners = await client.listRunners();
+	await Promise.all(
+		runners
+			.filter((runner) => runner.name.startsWith(prefix))
+			.map((runner) => client.deleteRunner(runner.id)),
+	);
+};
+
+/** Finishes a drain: the machine is empty, do what the drain was for. */
+const startDrainCompletion = (nodeId: string) =>
+	runTask(nodeId, null, async ({ node, driver, log: _log }) => {
+		const drain = node.drain;
+		if (!drain) return;
+		const operationId = drain.operationId;
+		const log = (line: string) => appendOperationLog(operationId, line);
+		if (drain.reason === "disable") {
+			if (node.platform === "macos") {
+				await log(`All runners stopped; shutting VM ${node.vmName} down`);
+				await driver.host(macStopVmScript(node.vmName), {
+					timeoutMs: 5 * 60_000,
+					label: "VM stop",
+				});
+			}
+			await log("Machine disabled: it takes no job until it is enabled again");
+			await db
+				.update(githubRunnerNodes)
+				.set({ phase: "stopped", drain: null })
+				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+			await finishOperation(operationId, "done");
+			return;
+		}
+		if (drain.reason === "apply") {
+			if (node.platform === "macos") {
+				await log(
+					`No job runs; restarting VM ${node.vmName} with its new size`,
+				);
+				await driver.host(macStopVmScript(node.vmName), {
+					timeoutMs: 5 * 60_000,
+					label: "VM stop",
+				});
+				await resizeStoppedVm(node, driver, log);
+				await startVm(driver, node, log);
+			}
+			const fresh = await loadRunnerNode(nodeId);
+			await db
+				.update(githubRunnerNodes)
+				.set({ phase: fresh.enabled ? "ready" : "stopped", drain: null })
+				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+			if (!fresh.enabled && node.platform === "macos") {
+				await driver.host(macStopVmScript(node.vmName), {
+					timeoutMs: 5 * 60_000,
+					label: "VM stop",
+				});
+			}
+			await log("New budget applied");
+			await finishOperation(operationId, "done");
+			return;
+		}
+		// remove
+		await log("Unregistering the runners from GitHub");
+		await forgetRegistrations(node);
+		if (drain.uninstall) {
+			if (node.platform === "macos" && node.applied?.vmCreatedByDokploy) {
+				await log(`Deleting VM ${node.vmName}`);
+				await driver.host(macDeleteVmScript(node.vmName), {
+					timeoutMs: 10 * 60_000,
+					label: "VM deletion",
+				});
+			} else {
+				if (node.platform === "macos") {
+					const status = await readMacStatus(driver.session, node.vmName);
+					if (status.vm.status !== "Running") {
+						await startVm(driver, node, log);
+					}
+				}
+				await log("Uninstalling the runner runtime");
+				await driver.guest(`${RUNNERCTL} uninstall`, {
+					timeoutMs: 10 * 60_000,
+					label: "Runtime removal",
+					allowFailure: true,
+				});
+				if (node.platform === "macos") {
+					await log(
+						`VM ${node.vmName} was not created by Dokploy: it is kept, stopped`,
+					);
+					await driver.host(macStopVmScript(node.vmName), {
+						timeoutMs: 5 * 60_000,
+						label: "VM stop",
+					});
+				}
+			}
+		} else if (node.platform === "macos") {
+			await driver.host(macStopVmScript(node.vmName), {
+				timeoutMs: 5 * 60_000,
+				label: "VM stop",
+			});
+		}
+		await log("Machine removed");
+		await finishOperation(operationId, "done");
+		await db
+			.delete(githubRunnerNodes)
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	});
+
+// ------------------------------------------------------------- the tick
+
+interface Observation {
+	node: NodeWithRelations;
+	session: NodeSession;
+	driver: NodeDriver;
+	probe: NodeProbe;
+}
+
+const { counters, lastMetricAt, lastCachesAt, lastHealAt } = state;
+
+const recordEvent = (
+	events: { at: string; message: string }[],
+	message: string,
+) => {
+	events.unshift({ at: new Date().toISOString(), message });
+	events.splice(MAX_EVENTS);
+};
+
+const markUnreachable = async (node: GithubRunnerNode, error: unknown) => {
+	const message = error instanceof Error ? error.message : String(error);
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			lastError: message,
+			observed: {
+				...(node.observed ?? { admission: { ok: false }, slots: [] }),
+				at: new Date().toISOString(),
+				reachable: false,
+				error: message,
+			},
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
+};
+
+const unreachable = new Set<string>();
+
+const observeNode = async (
+	node: NodeWithRelations,
+): Promise<Observation | null> => {
+	unreachable.delete(node.githubRunnerNodeId);
+	if (tasks.has(node.githubRunnerNodeId)) return null;
+	if (!(await acquireLease(node.githubRunnerNodeId, TICK_LEASE_MS)))
+		return null;
+	let session: NodeSession | null = null;
+	try {
+		session = await connect(node);
+		const driver = createNodeDriver(session, node);
+		const probe = await driver.probe();
+		return { node, session, driver, probe };
+	} catch (error) {
+		session?.close();
+		await markUnreachable(node, error);
+		await releaseLease(node.githubRunnerNodeId);
+		unreachable.add(node.githubRunnerNodeId);
+		return null;
+	}
+};
+
+/** A machine silent this long whose runners GitHub reports offline lost its jobs. */
+const LOST_AFTER_MS = 2 * 60_000;
+
+/**
+ * Jobs of a machine that went down (power, network, VM crash) cannot be seen
+ * ending: once the machine has been unreachable for a while and GitHub reports
+ * their runner offline, they are interrupted and recovered like a crash.
+ */
+const detectLostJobs = async (
+	node: NodeWithRelations,
+	runners: GithubRunner[],
+) => {
+	if (
+		!node.lastSeenAt ||
+		Date.now() - Date.parse(node.lastSeenAt) < LOST_AFTER_MS
+	) {
+		return;
+	}
+	const running = await db.query.githubRunnerJobs.findMany({
+		where: and(
+			eq(githubRunnerJobs.githubRunnerNodeId, node.githubRunnerNodeId),
+			eq(githubRunnerJobs.outcome, "running"),
+		),
+	});
+	const online = new Set(
+		runners
+			.filter((runner) => runner.status === "online")
+			.map((runner) => runner.name),
+	);
+	await interruptJobs(
+		running.filter((job) => !online.has(job.runnerName)),
+		node.pool.rerunInterruptedJobs,
+		() => `${node.name} became unreachable`,
+	);
+};
+
+/** Marks jobs interrupted and queues their recovery when the pool re-runs them. */
+const interruptJobs = (
+	jobs: GithubRunnerJobRecord[],
+	rerunEnabled: boolean,
+	note: (job: GithubRunnerJobRecord) => string | null,
+) => {
+	const now = new Date();
+	return Promise.all(
+		jobs.map((job) => {
+			const rerunStatus = initialRerunStatus(rerunEnabled, job.runAttempt);
+			return db
+				.update(githubRunnerJobs)
+				.set({
+					outcome: "interrupted",
+					finishedAt: now.toISOString(),
+					durationSeconds: Math.max(
+						0,
+						Math.round((now.getTime() - Date.parse(job.startedAt)) / 1000),
+					),
+					rerunStatus,
+					rerunNote:
+						rerunStatus === "skipped"
+							? `not re-run: already attempt ${job.runAttempt}`
+							: note(job),
+				})
+				.where(eq(githubRunnerJobs.githubRunnerJobId, job.githubRunnerJobId));
+		}),
+	);
+};
+
+const usageOf = (
+	node: GithubRunnerNode,
+	probe: NodeProbe,
+	runtime: RuntimeStatus | null,
+): NonNullable<GithubRunnerNodeObservation["usage"]> => {
+	const now = Date.now();
+	const previous = counters.get(node.githubRunnerNodeId);
+	const usage = runtime?.slice.usageUsec ?? null;
+	counters.set(node.githubRunnerNodeId, {
+		at: now,
+		usage,
+		busy: runtime?.cpu?.busy ?? null,
+		total: runtime?.cpu?.total ?? null,
+	});
+	let cpuPercent: number | null = null;
+	if (previous && runtime) {
+		if (
+			node.platform === "linux" &&
+			probe.host &&
+			usage !== null &&
+			previous.usage !== null
+		) {
+			const cpus = effectiveBudget("linux", probe.host, node).cpus;
+			const elapsedUsec = (now - previous.at) * 1000;
+			if (elapsedUsec > 0 && cpus > 0) {
+				cpuPercent = ((usage - previous.usage) / (elapsedUsec * cpus)) * 100;
+			}
+		} else if (
+			node.platform === "macos" &&
+			runtime.cpu &&
+			previous.busy !== null &&
+			previous.total !== null &&
+			runtime.cpu.total > previous.total
+		) {
+			cpuPercent =
+				((runtime.cpu.busy - previous.busy) /
+					(runtime.cpu.total - previous.total)) *
+				100;
+		}
+	}
+	const guestMemory = runtime?.host
+		? runtime.host.memoryBytes - (runtime.host.availableBytes ?? 0)
+		: null;
+	return {
+		cpuPercent:
+			cpuPercent === null
+				? null
+				: Math.round(Math.min(100, Math.max(0, cpuPercent)) * 10) / 10,
+		memoryBytes:
+			node.platform === "linux"
+				? (runtime?.slice.memoryCurrentBytes ?? null)
+				: guestMemory,
+		memoryLimitBytes:
+			node.platform === "linux"
+				? (runtime?.slice.memoryMaxBytes ?? probe.host?.memoryBytes ?? null)
+				: (runtime?.host?.memoryBytes ?? null),
+		hostMemoryFreePercent: probe.host?.memoryFreePercent ?? null,
+		hostLoad: probe.host?.load ?? null,
+	};
+};
+
+const LIVE_UNIT_STATES = new Set(["active", "activating", "deactivating"]);
+
+const recordJobs = async (node: NodeWithRelations, runtime: RuntimeStatus) => {
+	const now = new Date().toISOString();
+	const owner = {
+		organizationId: node.organizationId,
+		githubRunnerNodeId: node.githubRunnerNodeId,
+		githubRunnerPoolId: node.githubRunnerPoolId,
+	};
+	const rows = new Map<string, typeof githubRunnerJobs.$inferInsert>();
+	for (const slot of runtime.slots) {
+		if (!slot.runnerName || !slot.job || !LIVE_UNIT_STATES.has(slot.active)) {
+			continue;
+		}
+		rows.set(slot.runnerName, {
+			...owner,
+			runnerName: slot.runnerName,
+			slot: slot.slot,
+			repository: slot.job.repository,
+			workflow: slot.job.workflow,
+			job: slot.job.job,
+			runId: slot.job.runId,
+			runAttempt: slot.job.runAttempt,
+			startedAt: slot.job.startedAt ?? now,
+		});
+	}
+	// A job that ended between two probes is only seen in its job file.
+	const completed = runtime.jobFiles.flatMap((file) => {
+		const { runnerName } = file;
+		const completedAt = file.job.completedAt;
+		if (!runnerName || !completedAt) return [];
+		const startedAt = file.job.startedAt ?? completedAt;
+		const durationSeconds = Math.max(
+			0,
+			Math.round((Date.parse(completedAt) - Date.parse(startedAt)) / 1000),
+		);
+		rows.set(runnerName, {
+			...owner,
+			runnerName,
+			slot: file.slot,
+			repository: file.job.repository,
+			workflow: file.job.workflow,
+			job: file.job.job,
+			runId: file.job.runId,
+			runAttempt: file.job.runAttempt,
+			startedAt,
+			outcome: "completed",
+			finishedAt: completedAt,
+			durationSeconds,
+		});
+		return [{ runnerName, completedAt, durationSeconds }];
+	});
+	if (rows.size) {
+		await db
+			.insert(githubRunnerJobs)
+			.values([...rows.values()])
+			.onConflictDoNothing({ target: githubRunnerJobs.runnerName });
+	}
+	await Promise.all(
+		completed.map((job) =>
+			db
+				.update(githubRunnerJobs)
+				.set({
+					outcome: "completed",
+					finishedAt: job.completedAt,
+					durationSeconds: job.durationSeconds,
+				})
+				.where(
+					and(
+						eq(githubRunnerJobs.runnerName, job.runnerName),
+						eq(githubRunnerJobs.outcome, "running"),
+					),
+				),
+		),
+	);
+	const running = await db.query.githubRunnerJobs.findMany({
+		where: and(
+			eq(githubRunnerJobs.githubRunnerNodeId, node.githubRunnerNodeId),
+			eq(githubRunnerJobs.outcome, "running"),
+		),
+	});
+	await interruptJobs(
+		running.filter((job) => !rows.has(job.runnerName)),
+		node.pool.rerunInterruptedJobs,
+		() => null,
+	);
+};
+
+const runBackgroundMaintenance = (
+	node: NodeWithRelations,
+	kind: "caches" | "prune-routine" | "prune-pressure",
+) =>
+	runTask(node.githubRunnerNodeId, null, async ({ driver }) => {
+		if (kind === "caches") {
+			const { stdout } = await driver.guest(`${RUNNERCTL} caches`, {
+				timeoutMs: 3 * 60_000,
+				label: "Cache measurement",
+			});
+			const caches = parseCaches(stdout, new Date());
+			const fresh = await loadRunnerNode(node.githubRunnerNodeId);
+			if (fresh.observed) {
+				await db
+					.update(githubRunnerNodes)
+					.set({ observed: { ...fresh.observed, caches } })
+					.where(
+						eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId),
+					);
+			}
+			return;
+		}
+		await driver.guest(
+			`${RUNNERCTL} prune ${kind === "prune-pressure" ? "aggressive" : "normal"}`,
+			{ timeoutMs: 15 * 60_000, label: "Docker cleanup" },
+		);
+		await db
+			.update(githubRunnerNodes)
+			.set({ lastPrunedAt: new Date().toISOString() })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
+		lastCachesAt.delete(node.githubRunnerNodeId);
+	});
+
+/** Refreshes the cache sizes of a machine now (they are measured every 10 minutes). */
+export const refreshRunnerCaches = async (nodeId: string) => {
+	const node = await loadRunnerNode(nodeId);
+	if (!["ready", "draining"].includes(node.phase)) return false;
+	lastCachesAt.set(nodeId, Date.now());
+	return runBackgroundMaintenance(node, "caches");
+};
+
+const executeActions = async (
+	observation: Observation,
+	actions: PlannedAction[],
+	client: GithubRunnerClient,
+	labels: string[],
+	events: { at: string; message: string }[],
+) => {
+	const { node, driver } = observation;
+	const prefix = runnerNamePrefix(node.name);
+	const minFreeKib = Math.floor(
+		(node.platform === "macos" ? VM_MIN_FREE_BYTES : node.diskReserveGb * GiB) /
+			1024,
+	);
+	const operationId = node.drain?.operationId ?? null;
+	const note = async (message: string) => {
+		recordEvent(events, message);
+		await appendOperationLog(operationId, message);
+	};
+
+	const kills = actions.filter(
+		(action): action is Extract<PlannedAction, { type: "stop" }> =>
+			action.type === "stop",
+	);
+	if (isKillDrain(node.drain, Date.now()) && kills.length) {
+		const busy = kills.filter((action) =>
+			action.reason.startsWith("interrupting"),
+		).length;
+		await note(
+			`Stopping ${kills.length} runner(s)${busy ? `, interrupting ${busy} running job(s)` : ""}`,
+		);
+		await driver.guest(`${RUNNERCTL} stop-all`, {
+			timeoutMs: 3 * 60_000,
+			label: "Stopping the runners",
+		});
+		await Promise.all(
+			kills.map((action) =>
+				action.runnerId
+					? client.deleteRunner(action.runnerId).catch(() => "missing")
+					: null,
+			),
+		);
+	}
+
+	// One after the other: each opens its own channel on the machine.
+	await sequentially(actions, async (action) => {
+		try {
+			switch (action.type) {
+				case "arm": {
+					const name = `${prefix}${action.slot}-${randomBytes(3).toString("hex")}`;
+					const jit = await client.generateJitConfig({ name, labels });
+					try {
+						const files = decodeJitConfig(jit.encodedJitConfig);
+						const input = `${[
+							...files.map((file) => `${file.name} ${file.base64}`),
+							`name ${name}`,
+						].join("\n")}\n`;
+						const result = await driver.guest(
+							`${RUNNERCTL} arm ${action.slot} ${minFreeKib}`,
+							{
+								input,
+								allowFailure: true,
+								timeoutMs: 3 * 60_000,
+								label: `Arming slot ${action.slot}`,
+							},
+						);
+						if (result.exitCode === 3) {
+							await client.deleteRunner(jit.runnerId);
+							await note(
+								`Slot ${action.slot}: not started, disk below the reserve`,
+							);
+							break;
+						}
+						if (result.exitCode !== 0) {
+							throw new Error(
+								(result.stderr || result.stdout)
+									.trim()
+									.split("\n")
+									.slice(-3)
+									.join(" ") || `exit ${result.exitCode}`,
+							);
+						}
+						recordEvent(events, `Slot ${action.slot}: runner ${name} started`);
+					} catch (error) {
+						await client.deleteRunner(jit.runnerId).catch(() => "missing");
+						throw error;
+					}
+					break;
+				}
+				case "release": {
+					const result = await client.deleteRunner(action.runnerId);
+					if (result === "busy") {
+						recordEvent(
+							events,
+							`Slot ${action.slot}: took a job meanwhile, kept`,
+						);
+						break;
+					}
+					await driver.guest(`${RUNNERCTL} stop ${action.slot}`, {
+						timeoutMs: 2 * 60_000,
+						label: `Stopping slot ${action.slot}`,
+					});
+					await note(
+						`Slot ${action.slot}: idle runner removed (${action.reason})`,
+					);
+					break;
+				}
+				case "stop": {
+					if (isKillDrain(node.drain, Date.now())) break; // done above
+					await driver.guest(`${RUNNERCTL} stop ${action.slot}`, {
+						timeoutMs: 2 * 60_000,
+						label: `Stopping slot ${action.slot}`,
+					});
+					if (action.runnerId) {
+						await client.deleteRunner(action.runnerId).catch(() => "missing");
+					}
+					await note(`Slot ${action.slot}: stopped (${action.reason})`);
+					break;
+				}
+				case "forget": {
+					const result = await client.deleteRunner(action.runnerId);
+					if (result !== "busy") {
+						recordEvent(
+							events,
+							`Unregistered ${action.runnerName} (${action.reason})`,
+						);
+					}
+					break;
+				}
+				case "drained":
+					break;
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			await note(
+				`${action.type === "arm" || action.type === "release" || action.type === "stop" ? `Slot ${action.slot}` : action.type}: ${message}`,
+			);
+		}
+	});
+};
+
+const actOnNode = async (
+	observation: Observation,
+	runners: GithubRunner[] | null,
+	listError: string | null,
+) => {
+	const { node, driver, probe } = observation;
+	const now = Date.now();
+	const events = [...(node.observed?.events ?? [])];
+	let phase = node.phase;
+	let lastError: string | null = listError;
+	let runtime = probe.runtime;
+	let admission: GithubRunnerNodeObservation["admission"] = { ok: true };
+	let busy = 0;
+	let slots: GithubRunnerNodeObservation["slots"] = [];
+	let drained = false;
+	const nodeId = node.githubRunnerNodeId;
+
+	try {
+		// A Mac whose VM stopped while enabled is started again (after a reboot).
+		if (node.platform === "macos" && probe.vm) {
+			if (probe.vm.status === "missing") {
+				if (phase === "ready") {
+					phase = "error";
+					lastError = `VM ${node.vmName} no longer exists on the Mac`;
+				}
+				runtime = null;
+			} else if (probe.vm.status !== "Running") {
+				runtime = null;
+				if (
+					node.enabled &&
+					phase === "ready" &&
+					now - (lastHealAt.get(nodeId) ?? 0) > HEAL_EVERY_MS
+				) {
+					lastHealAt.set(nodeId, now);
+					recordEvent(
+						events,
+						`VM ${node.vmName} is ${probe.vm.status}: starting it`,
+					);
+					setTimeout(() => {
+						runTask(nodeId, null, async ({ node, driver }) => {
+							await startVm(driver, node, async (line) =>
+								console.log(`[github-runners] ${node.name}: ${line}`),
+							);
+						});
+					}, 0);
+				}
+			} else if (!runtime && probe.runtimeError) {
+				lastError = `Runtime does not answer: ${probe.runtimeError}`;
+			}
+		}
+
+		const host = probe.host;
+		if (runtime && host) {
+			// Runtime and runner updates happen in the background, between ticks.
+			if (
+				runtime.runtimeVersion < RUNTIME_VERSION &&
+				(phase === "ready" || phase === "draining")
+			) {
+				recordEvent(events, `Updating the runtime to v${RUNTIME_VERSION}`);
+				setTimeout(
+					() =>
+						runTask(nodeId, null, async ({ driver }) => {
+							await installRuntime(driver, async () => undefined);
+						}),
+					0,
+				);
+			} else if (phase === "ready" && node.enabled && runtime.host?.arch) {
+				const release = await desiredRelease(
+					node.pool,
+					runtime.host.arch,
+				).catch(() => null);
+				if (release && runtime.release !== release.version) {
+					recordEvent(events, `Installing actions/runner ${release.version}`);
+					setTimeout(
+						() =>
+							runTask(nodeId, null, async ({ node, driver }) => {
+								await installRelease(driver, release, async () => undefined);
+								await db
+									.update(githubRunnerNodes)
+									.set({
+										applied: node.applied
+											? { ...node.applied, runnerVersion: release.version }
+											: node.applied,
+									})
+									.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+							}),
+						0,
+					);
+				}
+			}
+
+			const envHash = environmentHash(node.pool);
+			if (node.applied && node.applied.envHash !== envHash) {
+				await writeEnvironment(driver, node.pool);
+				node.applied = { ...node.applied, envHash };
+				recordEvent(events, "Runner environment updated");
+			}
+			if (
+				node.platform === "linux" &&
+				node.applied &&
+				(node.applied.cpuPercent !== node.cpuPercent ||
+					node.applied.memoryPercent !== node.memoryPercent)
+			) {
+				await applySliceLimits(driver, node, host);
+				node.applied = {
+					...node.applied,
+					cpuPercent: node.cpuPercent,
+					memoryPercent: node.memoryPercent,
+				};
+				recordEvent(
+					events,
+					`Budget applied: ${node.cpuPercent}% CPU, ${node.memoryPercent}% memory`,
+				);
+			}
+
+			// Admission: the host disk reserve (the Mac APFS volume on macOS).
+			const reserve = node.diskReserveGb * GiB;
+			if (host.diskFreeBytes < reserve) {
+				admission = {
+					ok: false,
+					reason: `${formatBytes(host.diskFreeBytes)} free, below the ${node.diskReserveGb} GiB reserve`,
+				};
+			} else if (
+				node.platform === "macos" &&
+				runtime.disk &&
+				runtime.disk.freeBytes < VM_MIN_FREE_BYTES
+			) {
+				admission = {
+					ok: false,
+					reason: `VM disk almost full (${formatBytes(runtime.disk.freeBytes)} free)`,
+				};
+			}
+		}
+
+		const effectiveSlots = runtime?.slots ?? [];
+		const labels = runnerLabels(
+			node.pool,
+			node,
+			runtime?.host?.arch ?? host?.arch ?? "x86_64",
+		);
+		const plan = planNode({
+			now,
+			node: {
+				enabled: node.enabled,
+				phase,
+				drain: node.drain,
+				maxRunners: resolveMaxRunners(
+					node.maxRunners,
+					node.platform,
+					host,
+					node,
+				),
+				namePrefix: runnerNamePrefix(node.name),
+				labels,
+				runnerVersion: runtime?.release ?? null,
+				admission,
+				maxArmsPerTick: MAX_ARMS_PER_TICK,
+			},
+			slots: effectiveSlots,
+			runners: runners ?? [],
+		});
+		busy = plan.busy;
+		slots = plan.slots;
+
+		if (runtime) {
+			const client = await poolClient(node.pool);
+			// Without the GitHub view, only stopping runners is safe.
+			const actions =
+				runners === null
+					? plan.actions.filter(
+							(action) =>
+								action.type === "stop" && isKillDrain(node.drain, now),
+						)
+					: plan.actions;
+			await executeActions(observation, actions, client, labels, events);
+			await recordJobs(node, runtime);
+		}
+		// A stopped VM runs nothing; a running VM whose runtime does not answer
+		// may still run jobs, so it is never taken for drained.
+		drained =
+			plan.actions.some((action) => action.type === "drained") ||
+			(Boolean(node.drain) &&
+				node.platform === "macos" &&
+				probe.vm !== null &&
+				probe.vm.status !== "Running");
+
+		if (
+			!admission.ok &&
+			now - Date.parse(node.lastPrunedAt ?? "1970-01-01") >
+				PRESSURE_PRUNE_EVERY_MS
+		) {
+			recordEvent(
+				events,
+				`Disk pressure (${admission.reason}): pruning Docker data`,
+			);
+			setTimeout(() => runBackgroundMaintenance(node, "prune-pressure"), 0);
+		} else if (
+			runtime &&
+			busy === 0 &&
+			now - Date.parse(node.lastPrunedAt ?? "1970-01-01") >
+				ROUTINE_PRUNE_EVERY_MS
+		) {
+			setTimeout(() => runBackgroundMaintenance(node, "prune-routine"), 0);
+		} else if (
+			runtime &&
+			now - (lastCachesAt.get(nodeId) ?? 0) > CACHES_EVERY_MS
+		) {
+			lastCachesAt.set(nodeId, now);
+			setTimeout(() => runBackgroundMaintenance(node, "caches"), 0);
+		}
+	} catch (error) {
+		lastError = error instanceof Error ? error.message : String(error);
+	}
+
+	const usage = usageOf(node, probe, runtime);
+	const observed: GithubRunnerNodeObservation = {
+		at: new Date().toISOString(),
+		reachable: true,
+		...(lastError ? { error: lastError } : {}),
+		host: probe.host
+			? {
+					os: probe.host.os,
+					arch: probe.host.arch,
+					cpus: probe.host.cpus,
+					memoryBytes: probe.host.memoryBytes,
+					diskFreeBytes: probe.host.diskFreeBytes,
+					diskTotalBytes: probe.host.diskTotalBytes,
+				}
+			: node.observed?.host,
+		sandbox:
+			node.platform === "macos"
+				? {
+						kind: "vm",
+						state: probe.vm?.status ?? "unknown",
+						cpus: probe.vm?.cpus ?? null,
+						memoryBytes: probe.vm?.memoryBytes ?? null,
+						diskFreeBytes: runtime?.disk?.freeBytes ?? null,
+						memoryCurrentBytes: usage.memoryBytes,
+					}
+				: {
+						kind: "slice",
+						state: runtime ? "active" : "missing",
+						cpus: probe.host
+							? effectiveBudget("linux", probe.host, node).cpus
+							: null,
+						memoryBytes: usage.memoryLimitBytes,
+						diskFreeBytes: runtime?.disk?.freeBytes ?? null,
+						memoryCurrentBytes: usage.memoryBytes,
+					},
+		runtime: runtime
+			? { version: runtime.runtimeVersion, runnerVersion: runtime.release }
+			: node.observed?.runtime,
+		admission,
+		slots,
+		usage,
+		caches: node.observed?.caches,
+		events,
+	};
+
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			observed,
+			applied: node.applied,
+			lastSeenAt: observed.at,
+			lastError,
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	// An operator action may have moved the phase during the tick: only change it
+	// from the phase this tick started from.
+	if (phase !== node.phase) {
+		await db
+			.update(githubRunnerNodes)
+			.set({ phase })
+			.where(
+				and(
+					eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+					eq(githubRunnerNodes.phase, node.phase),
+				),
+			);
+	}
+
+	if (now - (lastMetricAt.get(nodeId) ?? 0) >= METRIC_EVERY_MS) {
+		lastMetricAt.set(nodeId, now);
+		await db.insert(githubRunnerMetrics).values({
+			githubRunnerNodeId: nodeId,
+			at: observed.at,
+			cpuPercent: usage.cpuPercent,
+			memoryBytes: usage.memoryBytes,
+			memoryLimitBytes: usage.memoryLimitBytes,
+			hostMemoryFreePercent: usage.hostMemoryFreePercent,
+			diskFreeBytes: probe.host?.diskFreeBytes ?? null,
+			busyRunners: busy,
+			runners: slots.length,
+		});
+	}
+
+	return drained;
+};
+
+const RECOVERY_EVERY_MS = 20_000;
+const RECOVERY_GIVE_UP_MS = 6 * 60 * 60_000;
+
+/**
+ * Re-runs the jobs machines interrupted, so they land on the healthy machines
+ * of the pool. One decision per run: a crash can interrupt several of its jobs.
+ */
+const recoverInterruptedJobs = async (pool: GithubRunnerPool) => {
+	const last = state.lastRecoveryAt.get(pool.githubRunnerPoolId) ?? 0;
+	if (Date.now() - last < RECOVERY_EVERY_MS) return;
+	state.lastRecoveryAt.set(pool.githubRunnerPoolId, Date.now());
+	const pending = await db.query.githubRunnerJobs.findMany({
+		where: and(
+			eq(githubRunnerJobs.githubRunnerPoolId, pool.githubRunnerPoolId),
+			inArray(githubRunnerJobs.rerunStatus, ["pending", "cancelling"]),
+		),
+		orderBy: asc(githubRunnerJobs.finishedAt),
+		limit: 50,
+	});
+	if (!pending.length) return;
+	const client = await poolClient(pool);
+	const runs = new Map<string, typeof pending>();
+	for (const job of pending) {
+		const key = `${job.repository}#${job.runId}#${job.runAttempt}`;
+		runs.set(key, [...(runs.get(key) ?? []), job]);
+	}
+	await sequentially([...runs.values()], async (jobs) => {
+		const [first] = jobs;
+		if (!first) return;
+		const ids = jobs.map((job) => job.githubRunnerJobId);
+		const mark = (
+			rerunStatus: "cancelling" | "requested" | "skipped" | "failed",
+			rerunNote: string,
+		) =>
+			db
+				.update(githubRunnerJobs)
+				.set({ rerunStatus, rerunNote, rerunAt: new Date().toISOString() })
+				.where(inArray(githubRunnerJobs.githubRunnerJobId, ids));
+		if (
+			Date.now() - Date.parse(first.finishedAt ?? first.startedAt) >
+			RECOVERY_GIVE_UP_MS
+		) {
+			await mark("skipped", "the run did not complete within 6 hours");
+			return;
+		}
+		try {
+			const [run, runJobs] = await Promise.all([
+				client.getRun(first.repository, first.runId),
+				client.listRunJobs(first.repository, first.runId),
+			]);
+			const decision = decideRerun(first, run, runJobs);
+			if (decision.action === "wait") return;
+			if (decision.action === "cancel") {
+				await client.forceCancelRun(first.repository, first.runId);
+				await mark("cancelling", decision.note);
+			} else if (decision.action === "rerun") {
+				await client.rerunFailedJobs(first.repository, first.runId);
+				await mark("requested", decision.note);
+			} else {
+				await mark("skipped", decision.note);
+			}
+		} catch (error) {
+			const status =
+				error instanceof GithubRunnerApiError ? error.status : null;
+			// Permission and validation errors do not heal by themselves.
+			if (
+				status === null ||
+				status === 403 ||
+				status === 404 ||
+				status === 422
+			) {
+				await mark(
+					"failed",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		}
+	});
+};
+
+const tickPool = async (nodes: NodeWithRelations[]) => {
+	const pool = nodes[0]?.pool;
+	if (!pool) return;
+	for (const node of nodes) ticking.add(node.githubRunnerNodeId);
+	const observations: Observation[] = [];
+	try {
+		observations.push(
+			...(await Promise.all(nodes.map(observeNode))).filter(
+				(item): item is Observation => item !== null,
+			),
+		);
+		const lost = nodes.filter((node) =>
+			unreachable.has(node.githubRunnerNodeId),
+		);
+		if (!observations.length && !lost.length) return;
+		let runners: GithubRunner[] | null = null;
+		let listError: string | null = null;
+		try {
+			runners = await (await poolClient(pool)).listRunners();
+		} catch (error) {
+			listError = `GitHub: ${error instanceof Error ? error.message : String(error)}`;
+		}
+		if (runners) {
+			for (const node of lost) await detectLostJobs(node, runners);
+		}
+		await Promise.all(
+			observations.map(async (observation) => {
+				const id = observation.node.githubRunnerNodeId;
+				let drained = false;
+				try {
+					drained = await actOnNode(observation, runners, listError);
+				} catch (error) {
+					console.error(
+						`GitHub runner tick failed for ${observation.node.name}`,
+						error,
+					);
+				} finally {
+					observation.session.close();
+					await releaseLease(id).catch(() => undefined);
+					ticking.delete(id);
+				}
+				if (drained) startDrainCompletion(id);
+			}),
+		);
+	} finally {
+		for (const node of nodes) ticking.delete(node.githubRunnerNodeId);
+	}
+};
+
+const tickGithubRunners = async () => {
+	if (state.running) {
+		state.rerun = true;
+		return;
+	}
+	state.running = true;
+	try {
+		const nodes = (await db.query.githubRunnerNodes.findMany({
+			with: { pool: true, sshKey: { columns: { privateKey: true } } },
+		})) as NodeWithRelations[];
+		const byPool = new Map<string, NodeWithRelations[]>();
+		for (const node of nodes) {
+			if (node.phase === "new" || node.phase === "provisioning") continue;
+			const list = byPool.get(node.githubRunnerPoolId) ?? [];
+			list.push(node);
+			byPool.set(node.githubRunnerPoolId, list);
+		}
+		await Promise.all([...byPool.values()].map(tickPool));
+		const pools = new Map(
+			nodes.map((node) => [node.githubRunnerPoolId, node.pool]),
+		);
+		await Promise.all(
+			[...pools.values()].map((pool) =>
+				recoverInterruptedJobs(pool).catch((error) =>
+					console.error(
+						`GitHub runner job recovery failed for ${pool.name}`,
+						error,
+					),
+				),
+			),
+		);
+		if (Date.now() - state.lastPurge > 60 * 60_000) {
+			state.lastPurge = Date.now();
+			await db
+				.delete(githubRunnerMetrics)
+				.where(
+					lt(
+						githubRunnerMetrics.at,
+						new Date(Date.now() - METRIC_RETENTION_MS).toISOString(),
+					),
+				);
+		}
+	} catch (error) {
+		console.error("GitHub runner controller tick failed", error);
+	} finally {
+		state.running = false;
+		if (state.rerun) {
+			state.rerun = false;
+			requestTick();
+		}
+	}
+};
+
+/** Runs a tick soon, e.g. right after an operator action. */
+export const requestTick = () => {
+	if (!state.timer || state.pendingTick) return;
+	state.pendingTick = setTimeout(() => {
+		state.pendingTick = null;
+		void tickGithubRunners();
+	}, 250);
+};
+
+/**
+ * Operations interrupted by a restart: provisioning is restarted from scratch by
+ * the operator; drains are level-triggered and simply continue.
+ */
+const recoverInterruptedWork = async () => {
+	const interrupted = await db.query.githubRunnerOperations.findMany({
+		where: eq(githubRunnerOperations.status, "running"),
+	});
+	const nodes = interrupted.length
+		? await db.query.githubRunnerNodes.findMany({
+				where: inArray(
+					githubRunnerNodes.githubRunnerNodeId,
+					interrupted.map((operation) => operation.githubRunnerNodeId),
+				),
+				columns: { githubRunnerNodeId: true, drain: true },
+			})
+		: [];
+	const drains = new Set(nodes.map((node) => node.drain?.operationId));
+	await Promise.all(
+		interrupted
+			// A drain is level-triggered: its operation goes on after the restart.
+			.filter((operation) => !drains.has(operation.githubRunnerOperationId))
+			.map(async (operation) => {
+				await appendOperationLog(
+					operation.githubRunnerOperationId,
+					"Interrupted by a Dokploy restart",
+				);
+				await finishOperation(
+					operation.githubRunnerOperationId,
+					"error",
+					"Interrupted by a Dokploy restart",
+				);
+			}),
+	);
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			phase: "error",
+			lastError: "Provisioning interrupted by a Dokploy restart",
+		})
+		.where(eq(githubRunnerNodes.phase, "provisioning"));
+	// Dokploy runs a single instance: leases left by the previous process are stale.
+	await db.update(githubRunnerNodes).set({ lockedBy: null, lockedUntil: null });
+};
+
+export const startGithubRunnerController = async () => {
+	if (state.timer || process.env.DOKPLOY_GITHUB_RUNNERS_CONTROLLER === "false")
+		return;
+	await recoverInterruptedWork();
+	state.timer = setInterval(() => void tickGithubRunners(), TICK_MS);
+	console.log("GitHub runner controller started");
+};
+
+export const stopGithubRunnerController = () => {
+	if (state.timer) clearInterval(state.timer);
+	state.timer = null;
+};
+
+/** The host key a machine presents now, for the operator to approve after a reinstall. */
+export const readPresentedHostKey = async (nodeId: string) => {
+	const node = await loadRunnerNode(nodeId);
+	if (!node.sshKey?.privateKey) throw new Error("No SSH key");
+	const session = await openNodeSession({
+		name: node.name,
+		host: node.host,
+		port: node.port,
+		username: node.username,
+		privateKey: node.sshKey.privateKey,
+		hostKeyFingerprint: null,
+	});
+	session.close();
+	return session.fingerprint;
+};

@@ -27,6 +27,7 @@ const ENTERPRISE_RESOURCES = [
 	"projectEnvVars",
 	"environmentEnvVars",
 	"server",
+	"githubRunner",
 	"registry",
 	"certificate",
 	"backup",

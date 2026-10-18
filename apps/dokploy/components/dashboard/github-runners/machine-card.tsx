@@ -1,0 +1,481 @@
+import { formatDistanceToNow } from "date-fns";
+import {
+	Activity,
+	Apple,
+	KeyRound,
+	ListChecks,
+	Loader2,
+	MoreHorizontal,
+	Pencil,
+	Power,
+	PowerOff,
+	RotateCw,
+	Server,
+	Trash2,
+} from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { AlertBlock } from "@/components/shared/alert-block";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { api } from "@/utils/api";
+import { EditMachineDialog } from "./edit-machine";
+import {
+	elapsed,
+	formatBytes,
+	formatCpus,
+	formatDuration,
+	percentText,
+	type RunnerMachine,
+	type RunnerSlot,
+	runUrl,
+} from "./format";
+import { HostKeyDialog } from "./host-key-dialog";
+import { DisableMachineDialog, RemoveMachineDialog } from "./machine-actions";
+import { MachineMonitoringDialog } from "./machine-monitoring";
+import { MachineOperationsDialog } from "./machine-operations";
+import { PhaseBadge, UsageBar } from "./shared";
+import { useNow } from "./use-now";
+
+type DialogName =
+	| "disable"
+	| "edit"
+	| "monitoring"
+	| "operations"
+	| "remove"
+	| "hostkey";
+
+const GiB = 1024 ** 3;
+
+const SLOT_STYLE: Record<string, string> = {
+	busy: "border-blue-500/40 bg-blue-500/10",
+	idle: "border-emerald-500/40 bg-emerald-500/10",
+	starting: "border-yellow-500/40 bg-yellow-500/10",
+	stopping: "border-orange-500/40 bg-orange-500/10",
+	exited: "border-muted bg-muted/40",
+	free: "border-dashed border-muted-foreground/30",
+};
+
+const SlotTile = ({
+	number,
+	slot,
+	now,
+}: {
+	number: number;
+	slot?: RunnerSlot;
+	now: number;
+}) => {
+	const state = slot?.state ?? "free";
+	const content = (
+		<div
+			className={`flex h-14 min-w-0 flex-col justify-center rounded-md border px-2 text-xs ${SLOT_STYLE[state]}`}
+		>
+			<span className="flex items-center justify-between gap-1">
+				<span className="font-medium">#{number}</span>
+				<span className="text-muted-foreground">
+					{state === "free" ? "empty" : state}
+				</span>
+			</span>
+			<span className="truncate text-muted-foreground">
+				{slot?.job && state === "busy"
+					? `${slot.job.job} · ${formatDuration(elapsed(slot.job.startedAt, now))}`
+					: (slot?.runnerName ?? " ")}
+			</span>
+		</div>
+	);
+	if (!slot?.job) return content;
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<a href={runUrl(slot.job)} target="_blank" rel="noreferrer">
+					{content}
+				</a>
+			</TooltipTrigger>
+			<TooltipContent>
+				{slot.job.repository} · {slot.job.workflow} · {slot.job.job} (run{" "}
+				{slot.job.runId}
+				{slot.job.runAttempt && slot.job.runAttempt !== "1"
+					? `, attempt ${slot.job.runAttempt}`
+					: ""}
+				)
+			</TooltipContent>
+		</Tooltip>
+	);
+};
+
+const SlotGrid = ({ machine }: { machine: RunnerMachine }) => {
+	const now = useNow();
+	const slots = machine.observed?.slots ?? [];
+	const bySlot = new Map(slots.map((slot) => [slot.slot, slot]));
+	const count = Math.max(
+		machine.resolvedMaxRunners,
+		...slots.map((slot) => slot.slot),
+	);
+	return (
+		<TooltipProvider delayDuration={200}>
+			<div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+				{Array.from({ length: count }, (_, index) => (
+					<SlotTile
+						key={index + 1}
+						number={index + 1}
+						slot={bySlot.get(index + 1)}
+						now={now}
+					/>
+				))}
+			</div>
+		</TooltipProvider>
+	);
+};
+
+const diskLevel = (machine: RunnerMachine) => {
+	const host = machine.observed?.host;
+	if (!host) return "ok" as const;
+	const reserve = machine.diskReserveGb * GiB;
+	if (host.diskFreeBytes < reserve) return "danger" as const;
+	return host.diskFreeBytes < 2 * reserve ? ("warn" as const) : ("ok" as const);
+};
+
+const MachineUsage = ({ machine }: { machine: RunnerMachine }) => {
+	const usage = machine.observed?.usage;
+	const host = machine.observed?.host;
+	const memoryLimit = usage?.memoryLimitBytes ?? machine.budget?.memoryBytes;
+	return (
+		<div className="grid gap-2">
+			<p className="text-xs text-muted-foreground">
+				Budget{" "}
+				<span className="font-medium text-foreground">
+					{machine.budget
+						? `${formatCpus(machine.budget.cpus)} · ${formatBytes(machine.budget.memoryBytes)}`
+						: "—"}
+				</span>{" "}
+				({machine.cpuPercent}% CPU, {machine.memoryPercent}% memory
+				{machine.platform === "macos" ? ", VM" : ""})
+			</p>
+			<UsageBar
+				label="CPU"
+				tone="neutral"
+				value={percentText(usage?.cpuPercent)}
+				ratio={
+					typeof usage?.cpuPercent === "number" ? usage.cpuPercent / 100 : null
+				}
+			/>
+			<UsageBar
+				label="Memory"
+				value={`${formatBytes(usage?.memoryBytes)} / ${formatBytes(memoryLimit)}`}
+				ratio={
+					usage?.memoryBytes && memoryLimit
+						? usage.memoryBytes / memoryLimit
+						: null
+				}
+			/>
+			<UsageBar
+				label="Disk free"
+				value={
+					host
+						? `${formatBytes(host.diskFreeBytes)} (reserve ${machine.diskReserveGb} GiB)`
+						: "—"
+				}
+				ratio={
+					host?.diskTotalBytes
+						? 1 - host.diskFreeBytes / host.diskTotalBytes
+						: null
+				}
+				level={diskLevel(machine)}
+			/>
+		</div>
+	);
+};
+
+const drainMessage = (machine: RunnerMachine, busy: number) => {
+	const drain = machine.drain;
+	if (!drain) return null;
+	const action =
+		drain.reason === "apply"
+			? "Applying a new VM size"
+			: drain.reason === "remove"
+				? "Removing"
+				: "Disabling";
+	if (drain.mode === "kill") return `${action}: interrupting the running jobs.`;
+	if (!busy) return `${action}: finishing.`;
+	const deadline = drain.deadline
+		? ` (interrupted ${formatDistanceToNow(new Date(drain.deadline), { addSuffix: true })})`
+		: "";
+	return `${action}: no new job, waiting for ${busy} running job${busy > 1 ? "s" : ""}${deadline}.`;
+};
+
+const MachineAlerts = ({
+	machine,
+	busy,
+	canUpdate,
+	onReviewHostKey,
+}: {
+	machine: RunnerMachine;
+	busy: number;
+	canUpdate: boolean;
+	onReviewHostKey: () => void;
+}) => {
+	const drain = drainMessage(machine, busy);
+	const admission = machine.observed?.admission;
+	return (
+		<>
+			{drain && <AlertBlock type="warning">{drain}</AlertBlock>}
+			{machine.lastError && !drain && (
+				<AlertBlock type={machine.phase === "error" ? "error" : "warning"}>
+					{machine.lastError}
+					{machine.lastError.includes("host key") && canUpdate && (
+						<Button
+							variant="link"
+							className="h-auto px-1"
+							onClick={onReviewHostKey}
+						>
+							Review the host key
+						</Button>
+					)}
+				</AlertBlock>
+			)}
+			{admission && !admission.ok && (
+				<AlertBlock type="warning">
+					New jobs paused: {admission.reason}
+				</AlertBlock>
+			)}
+		</>
+	);
+};
+
+const MachineActions = ({
+	machine,
+	canUpdate,
+	canDelete,
+	onOpen,
+}: {
+	machine: RunnerMachine;
+	canUpdate: boolean;
+	canDelete: boolean;
+	onOpen: (dialog: DialogName) => void;
+}) => {
+	const utils = api.useUtils();
+	const enable = api.githubRunner.enableMachine.useMutation();
+	const provision = api.githubRunner.provisionMachine.useMutation();
+	const working =
+		machine.phase === "provisioning" || Boolean(machine.operation);
+
+	const run = async (action: () => Promise<unknown>, success: string) => {
+		try {
+			await action();
+			await utils.githubRunner.overview.invalidate();
+			toast.success(success);
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : "Action failed");
+		}
+	};
+	const id = { githubRunnerNodeId: machine.githubRunnerNodeId };
+
+	return (
+		<div className="flex shrink-0 items-center gap-1">
+			{canUpdate &&
+				(machine.enabled ? (
+					<Button
+						size="sm"
+						variant="outline"
+						onClick={() => onOpen("disable")}
+						disabled={machine.phase === "provisioning"}
+					>
+						<PowerOff className="size-4" />
+						Disable
+					</Button>
+				) : (
+					<Button
+						size="sm"
+						onClick={() =>
+							run(() => enable.mutateAsync(id), `${machine.name} enabled`)
+						}
+						disabled={enable.isPending}
+					>
+						{enable.isPending ? (
+							<Loader2 className="size-4 animate-spin" />
+						) : (
+							<Power className="size-4" />
+						)}
+						Enable
+					</Button>
+				))}
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<Button size="icon" variant="ghost" aria-label="Machine actions">
+						<MoreHorizontal className="size-4" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end">
+					<DropdownMenuItem onSelect={() => onOpen("monitoring")}>
+						<Activity className="size-4" /> Monitoring
+					</DropdownMenuItem>
+					<DropdownMenuItem onSelect={() => onOpen("operations")}>
+						<ListChecks className="size-4" /> Operations
+					</DropdownMenuItem>
+					{canUpdate && (
+						<>
+							<DropdownMenuItem onSelect={() => onOpen("edit")}>
+								<Pencil className="size-4" /> Resources
+							</DropdownMenuItem>
+							<DropdownMenuItem
+								disabled={provision.isPending || working}
+								onSelect={() =>
+									run(() => provision.mutateAsync(id), "Provisioning started")
+								}
+							>
+								<RotateCw className="size-4" /> Reinstall runtime
+							</DropdownMenuItem>
+							<DropdownMenuItem onSelect={() => onOpen("hostkey")}>
+								<KeyRound className="size-4" /> SSH host key
+							</DropdownMenuItem>
+						</>
+					)}
+					{canDelete && (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem
+								className="text-destructive"
+								onSelect={() => onOpen("remove")}
+							>
+								<Trash2 className="size-4" /> Remove
+							</DropdownMenuItem>
+						</>
+					)}
+				</DropdownMenuContent>
+			</DropdownMenu>
+		</div>
+	);
+};
+
+const MachineTitle = ({ machine }: { machine: RunnerMachine }) => {
+	const host = machine.observed?.host;
+	const working =
+		machine.phase === "provisioning" || Boolean(machine.operation);
+	return (
+		<div className="min-w-0 space-y-1">
+			<div className="flex flex-wrap items-center gap-2">
+				{machine.platform === "macos" ? (
+					<Apple className="size-4 text-muted-foreground" />
+				) : (
+					<Server className="size-4 text-muted-foreground" />
+				)}
+				<span className="text-base font-semibold">{machine.name}</span>
+				<PhaseBadge machine={machine} />
+				{working && (
+					<Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+				)}
+			</div>
+			<p className="truncate text-xs text-muted-foreground">
+				{machine.username}@{machine.host}
+				{machine.platform === "macos" ? ` · VM ${machine.vmName}` : ""}
+				{host
+					? ` · ${host.os} · ${formatCpus(host.cpus)} · ${formatBytes(host.memoryBytes)}`
+					: ""}
+			</p>
+			{machine.description && (
+				<p className="text-xs text-muted-foreground">{machine.description}</p>
+			)}
+		</div>
+	);
+};
+
+const MachineFooter = ({
+	machine,
+	busy,
+}: {
+	machine: RunnerMachine;
+	busy: number;
+}) => (
+	<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+		<span>
+			{busy}/{machine.resolvedMaxRunners} busy
+			{machine.maxRunners === 0 ? " (auto)" : ""}
+		</span>
+		{machine.observed?.runtime?.runnerVersion && (
+			<span>runner {machine.observed.runtime.runnerVersion}</span>
+		)}
+		{machine.extraLabels.map((label) => (
+			<Badge key={label} variant="outline">
+				{label}
+			</Badge>
+		))}
+		{machine.lastSeenAt && (
+			<span>
+				seen{" "}
+				{formatDistanceToNow(new Date(machine.lastSeenAt), { addSuffix: true })}
+			</span>
+		)}
+	</div>
+);
+
+export const MachineCard = ({
+	machine,
+	canUpdate,
+	canDelete,
+	rerunInterruptedJobs,
+}: {
+	machine: RunnerMachine;
+	canUpdate: boolean;
+	canDelete: boolean;
+	rerunInterruptedJobs: boolean;
+}) => {
+	const [dialog, setDialog] = useState<DialogName | null>(null);
+	const busy = (machine.observed?.slots ?? []).filter(
+		(slot) => slot.state === "busy",
+	).length;
+	const installed = machine.phase !== "new" && machine.phase !== "provisioning";
+	const dialogProps = (name: DialogName) => ({
+		machine,
+		open: dialog === name,
+		onOpenChange: (open: boolean) => setDialog(open ? name : null),
+	});
+
+	return (
+		<div className="flex flex-col gap-4 rounded-xl border bg-background p-4">
+			<div className="flex items-start justify-between gap-3">
+				<MachineTitle machine={machine} />
+				<MachineActions
+					machine={machine}
+					canUpdate={canUpdate}
+					canDelete={canDelete}
+					onOpen={setDialog}
+				/>
+			</div>
+			<MachineAlerts
+				machine={machine}
+				busy={busy}
+				canUpdate={canUpdate}
+				onReviewHostKey={() => setDialog("hostkey")}
+			/>
+			{installed && <MachineUsage machine={machine} />}
+			{installed && <SlotGrid machine={machine} />}
+			<MachineFooter machine={machine} busy={busy} />
+
+			<DisableMachineDialog
+				{...dialogProps("disable")}
+				rerun={rerunInterruptedJobs}
+			/>
+			<RemoveMachineDialog
+				{...dialogProps("remove")}
+				rerun={rerunInterruptedJobs}
+			/>
+			<EditMachineDialog {...dialogProps("edit")} />
+			<MachineMonitoringDialog {...dialogProps("monitoring")} />
+			<MachineOperationsDialog {...dialogProps("operations")} />
+			<HostKeyDialog {...dialogProps("hostkey")} />
+		</div>
+	);
+};

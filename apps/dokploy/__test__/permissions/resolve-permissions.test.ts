@@ -105,6 +105,8 @@ describe("enterprise resources for static roles", () => {
 		const perms = await resolvePermissions(ctx);
 
 		expect(perms.server.read).toBe(false);
+		expect(perms.githubRunner.read).toBe(false);
+		expect(perms.githubRunner.update).toBe(false);
 		expect(perms.registry.read).toBe(false);
 		expect(perms.certificate.read).toBe(false);
 		expect(perms.destination.read).toBe(false);

@@ -15,6 +15,7 @@ import { environmentRouter } from "./routers/environment";
 import { gitProviderRouter } from "./routers/git-provider";
 import { giteaRouter } from "./routers/gitea";
 import { githubRouter } from "./routers/github";
+import { githubRunnerRouter } from "./routers/github-runner";
 import { gitlabRouter } from "./routers/gitlab";
 import { libsqlRouter } from "./routers/libsql";
 import { mariadbRouter } from "./routers/mariadb";
@@ -88,6 +89,7 @@ export const appRouter = createTRPCRouter({
 	security: securityRouter,
 	server: serverRouter,
 	serviceMigration: serviceMigrationRouter,
+	githubRunner: githubRunnerRouter,
 	settings: settingsRouter,
 	sshKey: sshRouter,
 	stripe: stripeRouter,

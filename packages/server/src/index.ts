@@ -23,6 +23,7 @@ export * from "./services/environment";
 export * from "./services/git-provider";
 export * from "./services/gitea";
 export * from "./services/github";
+export * from "./services/github-runner";
 export * from "./services/gitlab";
 export * from "./services/libsql";
 export * from "./services/mariadb";
@@ -109,6 +110,17 @@ export * from "./utils/docker/utils";
 export * from "./utils/filesystem/directory";
 export * from "./utils/filesystem/ssh";
 export * from "./utils/git-branch-validation";
+export {
+	applyRunnerNodeConfig,
+	disableRunnerNode,
+	enableRunnerNode,
+	provisionRunnerNode,
+	readPresentedHostKey,
+	refreshRunnerCaches,
+	removeRunnerNode,
+	startGithubRunnerController,
+	stopGithubRunnerController,
+} from "./utils/github-runners/controller";
 export * from "./utils/gpu-setup";
 export * from "./utils/hostname-validation";
 export * from "./utils/notifications/build-error";
