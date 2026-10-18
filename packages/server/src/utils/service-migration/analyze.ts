@@ -1,4 +1,3 @@
-import dns from "node:dns/promises";
 import { IS_CLOUD } from "@dokploy/server/constants";
 import { db } from "@dokploy/server/db";
 import {
@@ -26,6 +25,12 @@ import {
 	requiresDowntime,
 	type SourceSnapshot,
 } from "./discovery";
+import {
+	describeDomainDns,
+	type PublicAddresses,
+	probePublicAddresses,
+	resolveDomainRecords,
+} from "./dns";
 import {
 	createHostExecutor,
 	type HostExecutor,
@@ -61,6 +66,8 @@ export interface TargetSnapshot {
 	helperImagePresent: boolean;
 	/** Problems writing to the Dokploy directory or the Docker storage of the target. */
 	storageErrors: string[];
+	/** Probed only when the service has domains. */
+	publicAddresses: PublicAddresses;
 }
 
 export interface ServiceMigrationAnalysis {
@@ -162,6 +169,18 @@ const freeBytes = async (executor: HostExecutor, directory: string) => {
 	const available = Number(result.stdout.trim().split(/\s+/)[3]);
 	return Number.isFinite(available) ? available * 1024 : null;
 };
+
+/** Domains whose DNS must follow the service (wildcards cannot be checked). */
+const domainHosts = (service: MigrationService) => [
+	...new Set(
+		[
+			...service.domains.map((domain) => domain.host),
+			...service.previews
+				.map((preview) => preview.domainHost)
+				.filter((host): host is string => Boolean(host)),
+		].filter((host) => !host.includes("*")),
+	),
+];
 
 const probeTarget = async (
 	service: MigrationService,
@@ -327,15 +346,11 @@ const probeTarget = async (
 		missingSystemPaths,
 		helperImagePresent: needsHelper ? await ensureHelperImage(target) : true,
 		storageErrors,
+		publicAddresses:
+			domainHosts(service).length > 0
+				? await probePublicAddresses(target)
+				: { ipv4: null, ipv6: null },
 	};
-};
-
-const resolveDomainAddresses = async (host: string) => {
-	try {
-		return await dns.resolve4(host);
-	} catch {
-		return null;
-	}
 };
 
 const checkTargetServer = async (
@@ -781,40 +796,15 @@ const checkNetworkExposure = async (
 		);
 	}
 
-	const hosts = [
-		...service.domains.map((domain) => domain.host),
-		...service.previews
-			.map((preview) => preview.domainHost)
-			.filter((host): host is string => Boolean(host)),
-	].filter((host) => !host.includes("*"));
+	const hosts = domainHosts(service);
 	if (hosts.length > 0) {
-		const uniqueHosts = [...new Set(hosts)];
-		const resolved = await Promise.all(
-			uniqueHosts.map((host) => resolveDomainAddresses(host)),
-		);
-		const unresolved = uniqueHosts.filter((_, index) => !resolved[index]);
-		const pointingToSource = uniqueHosts.filter((_, index) => {
-			const addresses = resolved[index];
-			return (
-				addresses &&
-				(!target.ipAddress || !new Set(addresses).has(target.ipAddress))
-			);
+		const records = await Promise.all(hosts.map(resolveDomainRecords));
+		const dnsCheck = describeDomainDns(records, {
+			name: target.name,
+			registeredAddress: target.ipAddress,
+			publicAddresses: targetSnapshot.publicAddresses,
 		});
-		const notes: string[] = [];
-		if (pointingToSource.length) {
-			notes.push(
-				`Point ${pointingToSource.join(", ")} to ${target.ipAddress || "the target"} once migrated (the source stops serving them).`,
-			);
-		}
-		if (unresolved.length) notes.push(`Unresolved: ${unresolved.join(", ")}.`);
-		checks.add(
-			"dns",
-			"Domain DNS",
-			notes.length ? "warn" : "pass",
-			notes.length
-				? notes.join(" ")
-				: `Every domain already resolves to ${target.ipAddress}.`,
-		);
+		checks.add("dns", "Domain DNS", dnsCheck.status, dnsCheck.message);
 	}
 
 	if (service.placementConstraints.length > 0) {
