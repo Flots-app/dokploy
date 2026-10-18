@@ -17,6 +17,12 @@ import {
 	type SourceSnapshot,
 } from "@dokploy/server/utils/service-migration/discovery";
 import {
+	type DnsTarget,
+	describeDomainDns,
+	isCloudflareAddress,
+	isPublicAddress,
+} from "@dokploy/server/utils/service-migration/dns";
+import {
 	createHostExecutor,
 	HostCommandError,
 	pipeBetweenHosts,
@@ -277,5 +283,131 @@ describe("service migration concurrency helpers", () => {
 		);
 		expect(results).toEqual([50, 10, 40, 20, 30, 60, 10]);
 		expect(maxInFlight).toBe(3);
+	});
+});
+
+describe("service migration DNS hint", () => {
+	const tailscaleTarget: DnsTarget = {
+		name: "fsn1",
+		registeredAddress: "100.127.224.66",
+		publicAddresses: { ipv4: "5.75.1.2", ipv6: null },
+	};
+	const records = (
+		host: string,
+		ipv4: string[] | null,
+		ipv6: string[] | null = null,
+	) => ({ host, ipv4, ipv6 });
+
+	it("classifies addresses", () => {
+		for (const address of [
+			"100.127.224.66",
+			"172.17.0.1",
+			"10.0.0.4",
+			"192.168.1.10",
+			"127.0.0.1",
+			"fd7a:115c:a1e0::1",
+			"not-an-ip",
+		]) {
+			expect(isPublicAddress(address)).toBe(false);
+		}
+		expect(isPublicAddress("195.201.5.178")).toBe(true);
+		expect(isPublicAddress("2a01:4f8:c17::1")).toBe(true);
+		expect(isCloudflareAddress("172.67.153.152")).toBe(true);
+		expect(isCloudflareAddress("2606:4700:3030::ac43:9998")).toBe(true);
+		expect(isCloudflareAddress("195.201.5.178")).toBe(false);
+	});
+
+	it("never suggests the private address a server is registered with", () => {
+		const { status, message } = describeDomainDns(
+			[records("app.example.com", ["195.201.5.178"])],
+			tailscaleTarget,
+		);
+		expect(status).toBe("warn");
+		expect(message).toBe(
+			"Point app.example.com to 5.75.1.2 once migrated (the source stops serving them).",
+		);
+	});
+
+	it("explains when the public address of the target is unknown", () => {
+		const { message } = describeDomainDns(
+			[records("app.example.com", ["195.201.5.178"])],
+			{ ...tailscaleTarget, publicAddresses: { ipv4: null, ipv6: null } },
+		);
+		expect(message).toContain(
+			"to the public IP of fsn1 (it is registered with 100.127.224.66, which public DNS cannot use)",
+		);
+	});
+
+	it("falls back to a public registered address", () => {
+		const { message } = describeDomainDns(
+			[records("app.example.com", ["195.201.5.178"])],
+			{
+				name: "nbg1",
+				registeredAddress: "203.0.113.7",
+				publicAddresses: { ipv4: null, ipv6: null },
+			},
+		);
+		expect(message).toContain("Point app.example.com to 203.0.113.7");
+	});
+
+	it("only blames the registered address when it is private", () => {
+		const { message } = describeDomainDns(
+			[records("app.example.com", ["195.201.5.178"])],
+			{
+				name: "v6-only",
+				registeredAddress: "2a01:4f8:c17::1",
+				publicAddresses: { ipv4: null, ipv6: null },
+			},
+		);
+		expect(message).toBe(
+			"Point app.example.com to the public IP of v6-only once migrated (the source stops serving them).",
+		);
+	});
+
+	it("points Cloudflare-proxied domains to the origin", () => {
+		const { status, message } = describeDomainDns(
+			[
+				records(
+					"pwd.flots.app",
+					["172.67.153.152", "104.21.3.180"],
+					["2606:4700:3030::ac43:9998"],
+				),
+			],
+			tailscaleTarget,
+		);
+		expect(status).toBe("warn");
+		expect(message).toBe(
+			"pwd.flots.app is proxied by Cloudflare: once migrated, point the origin in Cloudflare (DNS record or tunnel) to 5.75.1.2.",
+		);
+	});
+
+	it("passes when every record already targets the server", () => {
+		expect(
+			describeDomainDns(
+				[records("app.example.com", ["5.75.1.2"])],
+				tailscaleTarget,
+			),
+		).toEqual({
+			status: "pass",
+			message: "Every domain already resolves to fsn1 (5.75.1.2).",
+		});
+	});
+
+	it("flags AAAA records left on the source", () => {
+		const { message } = describeDomainDns(
+			[records("app.example.com", ["5.75.1.2"], ["2a01:4f8:c17::1"])],
+			tailscaleTarget,
+		);
+		expect(message).toBe(
+			"Remove or update the AAAA records of app.example.com: no public IPv6 address was found on fsn1.",
+		);
+	});
+
+	it("reports unresolved domains", () => {
+		const { message } = describeDomainDns(
+			[records("new.example.com", null, null)],
+			tailscaleTarget,
+		);
+		expect(message).toBe("Unresolved: new.example.com.");
 	});
 });
