@@ -78,7 +78,17 @@ import {
 	macStartVmScript,
 	macStopVmScript,
 } from "./macos";
-import { parseCaches, parseCleanup, type RuntimeStatus } from "./probe";
+import {
+	type PlacementMachine,
+	placeWaitingRunners,
+	type WaitingTarget,
+} from "./placement";
+import {
+	parseBenchmark,
+	parseCaches,
+	parseCleanup,
+	type RuntimeStatus,
+} from "./probe";
 import {
 	isKillDrain,
 	type PlannedAction,
@@ -108,6 +118,8 @@ const TASK_LEASE_MS = 45 * 60_000;
 const METRIC_EVERY_MS = 30_000;
 const CACHES_EVERY_MS = 10 * 60_000;
 const ROUTINE_CLEANUP_EVERY_MS = 6 * 60 * 60_000;
+const BENCHMARK_EVERY_MS = 6 * 60 * 60_000;
+const BENCHMARK_RETRY_MS = 30 * 60_000;
 const MAX_CLEANUPS = 20;
 const HEAL_EVERY_MS = 5 * 60_000;
 const RELEASE_TTL_MS = 6 * 60 * 60_000;
@@ -145,6 +157,7 @@ interface ControllerState {
 	/** Repositories a pool routes jobs for, refreshed hourly. */
 	repositories: Map<string, { at: number; names: string[] }>;
 	lastRerouteScan: Map<string, number>;
+	lastBenchmarkAt: Map<string, number>;
 	/** Free space seen by the last ticks, for the fill rate (VM disk on a Mac). */
 	diskSamples: Map<string, { host: DiskSample[]; vm: DiskSample[] }>;
 	lastCleanups: Map<string, LastCleanup>;
@@ -172,6 +185,7 @@ shared.__dokployGithubRunners ??= {
 	poolRunners: new Map(),
 	repositories: new Map(),
 	lastRerouteScan: new Map(),
+	lastBenchmarkAt: new Map(),
 	diskSamples: new Map(),
 	lastCleanups: new Map(),
 	pendingEvents: new Map(),
@@ -1773,6 +1787,68 @@ export const cleanRunnerCaches = async (
 	return true;
 };
 
+/**
+ * Whether the speed of a machine should be measured again: never measured, for
+ * a while, or under another budget.
+ */
+const benchmarkDue = (node: GithubRunnerNode, now: number) => {
+	const benchmark = node.benchmark;
+	if (
+		now - (state.lastBenchmarkAt.get(node.githubRunnerNodeId) ?? 0) <
+		BENCHMARK_RETRY_MS
+	) {
+		return false;
+	}
+	return (
+		!benchmark ||
+		now - Date.parse(benchmark.at) > BENCHMARK_EVERY_MS ||
+		benchmark.cpuPercent !== node.cpuPercent ||
+		(node.platform === "macos" &&
+			(node.applied?.cpus ?? null) !== benchmark.vmCpus)
+	);
+};
+
+/** Measures what a job gets on the machine, for fastest-first placement. */
+const measureSpeed = (node: NodeWithRelations) => {
+	const started = runTask(
+		node.githubRunnerNodeId,
+		null,
+		async ({ node, driver }) => {
+			const { stdout } = await driver.guest(`${RUNNERCTL} bench`, {
+				timeoutMs: 2 * 60_000,
+				label: "Speed benchmark",
+			});
+			const result = parseBenchmark(stdout);
+			if (!result) throw new Error("the benchmark reported nothing");
+			await db
+				.update(githubRunnerNodes)
+				.set({
+					benchmark: {
+						at: new Date().toISOString(),
+						...result,
+						cpuPercent: node.cpuPercent,
+						vmCpus:
+							node.platform === "macos" ? (node.applied?.cpus ?? null) : null,
+					},
+				})
+				.where(
+					eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId),
+				);
+			pushEvent(
+				node.githubRunnerNodeId,
+				`Speed measured: ${result.single} per core, about ${(result.multi / result.single).toFixed(1)} cores for the jobs`,
+			);
+		},
+		async (error) => {
+			pushEvent(
+				node.githubRunnerNodeId,
+				`Speed benchmark failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		},
+	);
+	if (started) state.lastBenchmarkAt.set(node.githubRunnerNodeId, Date.now());
+};
+
 /** Refreshes the cache sizes of a machine now (they are measured every 10 minutes). */
 export const refreshRunnerCaches = async (nodeId: string) => {
 	const node = await loadRunnerNode(nodeId);
@@ -1983,6 +2059,7 @@ const actOnNode = async (
 	observation: Observation,
 	runners: GithubRunner[] | null,
 	listError: string | null,
+	waiting: WaitingTarget | undefined,
 ) => {
 	const { node, driver, probe } = observation;
 	const now = Date.now();
@@ -2141,6 +2218,7 @@ const actOnNode = async (
 				runnerVersion: runtime?.release ?? null,
 				admission,
 				maxArmsPerTick: MAX_ARMS_PER_TICK,
+				waiting,
 			},
 			slots: effectiveSlots,
 			runners: runners ?? [],
@@ -2187,6 +2265,13 @@ const actOnNode = async (
 			})
 		) {
 			recordEvent(events, describePressure(node, pressure));
+		} else if (
+			runtime &&
+			busy === 0 &&
+			phase === "ready" &&
+			benchmarkDue(node, now)
+		) {
+			measureSpeed(node);
 		} else if (
 			!pressure &&
 			runtime &&
@@ -2652,6 +2737,43 @@ export const clearPoolRouting = async (pool: GithubRunnerPool) => {
 		.catch(() => undefined);
 };
 
+const LIVE_SLOT = new Set(["active", "activating", "reloading"]);
+
+/** A machine as fastest-first placement sees it, before this tick acts. */
+const placementMachine = (
+	observation: Observation,
+	runners: GithubRunner[],
+): PlacementMachine => {
+	const { node, probe } = observation;
+	const host = probe.host;
+	const busyRunners = new Set(
+		runners.filter((runner) => runner.busy).map((runner) => runner.name),
+	);
+	const busy = (probe.runtime?.slots ?? []).filter(
+		(slot) =>
+			LIVE_SLOT.has(slot.active) &&
+			((slot.job && !slot.job.completedAt) ||
+				(slot.runnerName !== null && busyRunners.has(slot.runnerName))),
+	).length;
+	return {
+		id: node.githubRunnerNodeId,
+		accepting:
+			node.enabled &&
+			node.phase === "ready" &&
+			!node.drain &&
+			Boolean(probe.runtime) &&
+			node.observed?.admission?.ok !== false,
+		maxRunners: host
+			? resolveMaxRunners(node.maxRunners, node.platform, host, node)
+			: 0,
+		busy,
+		speed: node.benchmark
+			? { single: node.benchmark.single, multi: node.benchmark.multi }
+			: null,
+		cpus: host ? effectiveBudget(node.platform, host, node).cpus : 1,
+	};
+};
+
 const tickPool = async (nodes: NodeWithRelations[]) => {
 	const pool = nodes[0]?.pool;
 	if (!pool) return;
@@ -2681,12 +2803,24 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 		if (runners) {
 			for (const node of lost) await detectLostJobs(node, runners);
 		}
+		// Where runners wait across the pool: only where a new job runs fastest.
+		const waiting = placeWaitingRunners(
+			observations.map((observation) =>
+				placementMachine(observation, runners ?? []),
+			),
+			pool.placement,
+		);
 		await Promise.all(
 			observations.map(async (observation) => {
 				const id = observation.node.githubRunnerNodeId;
 				let drained = false;
 				try {
-					drained = await actOnNode(observation, runners, listError);
+					drained = await actOnNode(
+						observation,
+						runners,
+						listError,
+						waiting.get(id),
+					);
 				} catch (error) {
 					console.error(
 						`GitHub runner tick failed for ${observation.node.name}`,

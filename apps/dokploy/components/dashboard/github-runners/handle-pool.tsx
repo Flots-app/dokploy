@@ -293,6 +293,34 @@ const AdvancedFields = ({
 			</Button>
 		</CollapsibleTrigger>
 		<CollapsibleContent className="grid gap-4 pt-2">
+			<FormField
+				control={form.control}
+				name="placement"
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>Job placement</FormLabel>
+						<Select value={field.value} onValueChange={field.onChange}>
+							<FormControl>
+								<SelectTrigger>
+									<SelectValue />
+								</SelectTrigger>
+							</FormControl>
+							<SelectContent>
+								<SelectItem value="fastest">
+									Fastest machine first (recommended)
+								</SelectItem>
+								<SelectItem value="spread">Any free machine</SelectItem>
+							</SelectContent>
+						</Select>
+						<FormDescription>
+							Fastest first: runners wait only where a new job runs fastest,
+							from each machine's measured speed and its running jobs; slower
+							machines take jobs once the faster ones are full. Any free
+							machine: every slot waits, and GitHub picks one at random.
+						</FormDescription>
+					</FormItem>
+				)}
+			/>
 			<div className="grid gap-4 sm:grid-cols-2">
 				<FormField
 					control={form.control}

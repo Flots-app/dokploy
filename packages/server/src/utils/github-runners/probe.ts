@@ -415,3 +415,14 @@ export const parseCleanup = (output: string): CleanupOutput | null => {
 		freed,
 	};
 };
+
+/** Output of `runnerctl bench`: work units per second, one core and every core. */
+export const parseBenchmark = (output: string) => {
+	const fields = parseRecords(output).find(
+		(record) => record.kind === "bench",
+	)?.fields;
+	const cpus = int(fields?.cpus);
+	const single = int(fields?.single);
+	const multi = int(fields?.multi);
+	return cpus && single && multi ? { cpus, single, multi } : null;
+};

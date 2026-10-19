@@ -83,6 +83,14 @@ const PoolStats = ({ pool }: { pool: RunnerPool }) => {
 	);
 };
 
+/** Per-core score of the slowest measured machine, the reference of the speed ratios. */
+const speedRef = (pool: RunnerPool) => {
+	const scores = pool.nodes.flatMap((node) =>
+		node.benchmark ? [node.benchmark.single] : [],
+	);
+	return scores.length ? Math.min(...scores) : null;
+};
+
 const PoolSection = ({
 	pool,
 	permissions,
@@ -177,6 +185,11 @@ const PoolSection = ({
 							canUpdate={permissions.update}
 							canDelete={permissions.delete}
 							rerunInterruptedJobs={pool.rerunInterruptedJobs}
+							speedRef={speedRef(pool)}
+							isNext={
+								pool.nodes.length > 1 &&
+								pool.nextNodeId === node.githubRunnerNodeId
+							}
 						/>
 					))}
 				</div>

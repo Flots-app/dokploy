@@ -150,7 +150,51 @@ const diskLevel = (machine: RunnerMachine) => {
 		: ("ok" as const);
 };
 
-const MachineUsage = ({ machine }: { machine: RunnerMachine }) => {
+/** Measured speed of the budget: per core relative to the slowest machine of the pool. */
+const SpeedLine = ({
+	machine,
+	speedRef,
+	isNext,
+}: {
+	machine: RunnerMachine;
+	speedRef: number | null;
+	isNext: boolean;
+}) => {
+	const benchmark = machine.benchmark;
+	if (!benchmark) {
+		return (
+			<p className="text-xs text-muted-foreground">
+				Speed measured once the machine is idle
+			</p>
+		);
+	}
+	const ratio = speedRef ? benchmark.single / speedRef : 1;
+	return (
+		<p className="text-xs text-muted-foreground">
+			Speed{" "}
+			<span className="font-medium text-foreground">
+				×{ratio.toFixed(2)} per core · about{" "}
+				{(benchmark.multi / benchmark.single).toFixed(1)} cores for jobs
+			</span>
+			{isNext && (
+				<span className="text-emerald-600 dark:text-emerald-500">
+					{" "}
+					· next job lands here
+				</span>
+			)}
+		</p>
+	);
+};
+
+const MachineUsage = ({
+	machine,
+	speedRef,
+	isNext,
+}: {
+	machine: RunnerMachine;
+	speedRef: number | null;
+	isNext: boolean;
+}) => {
 	const usage = machine.observed?.usage;
 	const host = machine.observed?.host;
 	const memoryLimit = usage?.memoryLimitBytes ?? machine.budget?.memoryBytes;
@@ -166,6 +210,7 @@ const MachineUsage = ({ machine }: { machine: RunnerMachine }) => {
 				({machine.cpuPercent}% CPU, {machine.memoryPercent}% memory
 				{machine.platform === "macos" ? ", VM" : ""})
 			</p>
+			<SpeedLine machine={machine} speedRef={speedRef} isNext={isNext} />
 			<UsageBar
 				label="CPU"
 				tone="neutral"
@@ -428,11 +473,16 @@ export const MachineCard = ({
 	canUpdate,
 	canDelete,
 	rerunInterruptedJobs,
+	speedRef,
+	isNext,
 }: {
 	machine: RunnerMachine;
 	canUpdate: boolean;
 	canDelete: boolean;
 	rerunInterruptedJobs: boolean;
+	/** Per-core score of the slowest measured machine of the pool. */
+	speedRef: number | null;
+	isNext: boolean;
 }) => {
 	const [dialog, setDialog] = useState<DialogName | null>(null);
 	const busy = (machine.observed?.slots ?? []).filter(
@@ -462,7 +512,9 @@ export const MachineCard = ({
 				canUpdate={canUpdate}
 				onReviewHostKey={() => setDialog("hostkey")}
 			/>
-			{installed && <MachineUsage machine={machine} />}
+			{installed && (
+				<MachineUsage machine={machine} speedRef={speedRef} isNext={isNext} />
+			)}
 			{installed && <SlotGrid machine={machine} />}
 			<MachineFooter machine={machine} busy={busy} />
 

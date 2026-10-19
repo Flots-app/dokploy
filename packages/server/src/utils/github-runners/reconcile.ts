@@ -3,6 +3,7 @@ import type {
 	GithubRunnerSlotObservation,
 } from "@dokploy/server/db/schema";
 import type { GithubRunner } from "./github-api";
+import { RELEASE_AFTER_MS, type WaitingTarget } from "./placement";
 import type { LocalSlot } from "./probe";
 
 /** A runner that has not come online this long after its slot started is restarted. */
@@ -24,6 +25,11 @@ export interface PlannerNode {
 	runnerVersion: string | null;
 	admission: { ok: boolean; reason?: string };
 	maxArmsPerTick: number;
+	/**
+	 * Runners waiting for jobs on this machine (fastest-first placement across
+	 * the pool); without it every free slot waits.
+	 */
+	waiting?: WaitingTarget;
 }
 
 export type PlannedAction =
@@ -112,6 +118,12 @@ export const planNode = (input: {
 	);
 	const attached = new Set<string>();
 	let busyCount = 0;
+	/** Slots whose runner waits for a job, or is starting to. */
+	const waiting: {
+		slot: number;
+		runner: GithubRunner | undefined;
+		age: number;
+	}[] = [];
 
 	for (const slot of [...live].sort((a, b) => a.slot - b.slot)) {
 		const runner = slot.runnerName ? byName.get(slot.runnerName) : undefined;
@@ -200,6 +212,33 @@ export const planNode = (input: {
 					? "runner did not come online"
 					: "runner registration disappeared",
 			});
+			continue;
+		}
+		if (!busy && !slot.job?.completedAt) {
+			waiting.push({ slot: slot.slot, runner, age });
+		}
+	}
+
+	// A faster machine has room: runners waiting here beyond the target leave,
+	// the ones waiting longest first; GitHub refuses if one just took a job.
+	if (node.waiting && accepting && waiting.length > node.waiting.keep) {
+		const releasable = waiting
+			.filter(
+				(item) =>
+					item.runner?.status === "online" &&
+					!item.runner.busy &&
+					item.age >= RELEASE_AFTER_MS,
+			)
+			.sort((a, b) => b.slot - a.slot)
+			.slice(0, waiting.length - node.waiting.keep);
+		for (const item of releasable) {
+			if (!item.runner) continue;
+			actions.push({
+				type: "release",
+				slot: item.slot,
+				runnerId: item.runner.id,
+				reason: "a faster machine has room",
+			});
 		}
 	}
 
@@ -220,9 +259,15 @@ export const planNode = (input: {
 
 	if (accepting && node.admission.ok) {
 		const used = new Set(live.map((slot) => slot.slot));
+		const limit = Math.min(
+			node.maxArmsPerTick,
+			node.waiting
+				? Math.max(0, node.waiting.arm - waiting.length)
+				: Number.POSITIVE_INFINITY,
+		);
 		let armed = 0;
 		for (let slot = 1; slot <= node.maxRunners; slot++) {
-			if (armed >= node.maxArmsPerTick) break;
+			if (armed >= limit) break;
 			if (used.has(slot)) continue;
 			actions.push({ type: "arm", slot });
 			armed++;

@@ -201,6 +201,28 @@ export interface GithubRunnerCaches {
 	workspacesBytes: number | null;
 }
 
+/** CPU benchmark of a machine's runner budget, in work units per second. */
+export interface GithubRunnerBenchmark {
+	at: string;
+	cpus: number;
+	/** One core. */
+	single: number;
+	/** Every CPU of the budget at once. */
+	multi: number;
+	/** The budget it measured: a change calls for a new measure. */
+	cpuPercent: number;
+	vmCpus: number | null;
+}
+
+/**
+ * fastest: runners wait only where a new job runs fastest (default);
+ * spread: every free slot waits, jobs land on any machine.
+ */
+export const githubRunnerPlacement = pgEnum("githubRunnerPlacement", [
+	"fastest",
+	"spread",
+]);
+
 /** Where the routing variable of a pool sends the jobs, as last published. */
 export interface GithubRunnerRouting {
 	/** Variable last written; differs from the pool setting until synced. */
@@ -265,6 +287,7 @@ export const githubRunnerPools = pgTable(
 			.notNull()
 			.default(["ubuntu-24.04"]),
 		routing: jsonb("routing").$type<GithubRunnerRouting | null>(),
+		placement: githubRunnerPlacement("placement").notNull().default("fastest"),
 		createdAt: text("createdAt")
 			.notNull()
 			.$defaultFn(() => new Date().toISOString()),
@@ -325,6 +348,7 @@ export const githubRunnerNodes = pgTable(
 		lastSeenAt: text("lastSeenAt"),
 		lastError: text("lastError"),
 		lastPrunedAt: text("lastPrunedAt"),
+		benchmark: jsonb("benchmark").$type<GithubRunnerBenchmark | null>(),
 		cleanups: jsonb("cleanups")
 			.$type<GithubRunnerCleanup[]>()
 			.notNull()
@@ -645,6 +669,7 @@ const poolFields = z.object({
 		.nullable()
 		.default(null),
 	fallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
+	placement: z.enum(["fastest", "spread"]).default("fastest"),
 });
 
 const checkPoolTarget = (

@@ -3,6 +3,7 @@ CREATE TYPE "public"."githubRunnerJobOutcome" AS ENUM('running', 'completed', 'i
 CREATE TYPE "public"."githubRunnerNodePhase" AS ENUM('new', 'provisioning', 'ready', 'draining', 'stopped', 'error');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerOperationStatus" AS ENUM('running', 'done', 'error', 'cancelled');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerOperationType" AS ENUM('provision', 'apply', 'disable', 'enable', 'remove', 'upgrade');--> statement-breakpoint
+CREATE TYPE "public"."githubRunnerPlacement" AS ENUM('fastest', 'spread');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerPlatform" AS ENUM('linux', 'macos');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerRerouteStatus" AS ENUM('cancelling', 'requested', 'rerouted', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerRerunStatus" AS ENUM('pending', 'cancelling', 'requested', 'skipped', 'failed');--> statement-breakpoint
@@ -69,6 +70,7 @@ CREATE TABLE "github_runner_node" (
 	"lastSeenAt" text,
 	"lastError" text,
 	"lastPrunedAt" text,
+	"benchmark" jsonb,
 	"cleanups" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"lockedBy" text,
 	"lockedUntil" text,
@@ -117,6 +119,7 @@ CREATE TABLE "github_runner_pool" (
 	"routingVariable" text,
 	"fallbackLabels" jsonb DEFAULT '["ubuntu-24.04"]'::jsonb NOT NULL,
 	"routing" jsonb,
+	"placement" "githubRunnerPlacement" DEFAULT 'fastest' NOT NULL,
 	"createdAt" text NOT NULL,
 	CONSTRAINT "github_runner_pool_repository_scope" CHECK (("github_runner_pool"."scope" = 'repository') = ("github_runner_pool"."repository" IS NOT NULL))
 );

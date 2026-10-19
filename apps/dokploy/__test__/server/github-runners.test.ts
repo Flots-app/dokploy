@@ -47,7 +47,14 @@ import {
 	macStopVmScript,
 } from "@dokploy/server/utils/github-runners/macos";
 import {
+	nextMachine,
+	type PlacementMachine,
+	placeWaitingRunners,
+	slotSpeed,
+} from "@dokploy/server/utils/github-runners/placement";
+import {
 	type LocalSlot,
+	parseBenchmark,
 	parseCaches,
 	parseCleanup,
 	parseDockerSize,
@@ -945,6 +952,10 @@ describe("runtime scripts", () => {
 			completed: extractRuntimeFile(
 				all.install,
 				"/opt/dokploy-runners/bin/job-completed.sh",
+			),
+			bench: extractRuntimeFile(
+				all.install,
+				"/opt/dokploy-runners/bin/bench.sh",
 			),
 		};
 	};
@@ -2008,5 +2019,117 @@ describe("routing with a GitHub-hosted fallback", () => {
 			'"Variables: read and write" on the repository',
 		);
 		await expect(client.canManageVariables()).resolves.toBe(false);
+	});
+});
+
+describe("fastest-first placement", () => {
+	// Measured budgets: the M6 is faster per core, the M4 has more cores free.
+	const m6: PlacementMachine = {
+		id: "m6",
+		accepting: true,
+		maxRunners: 3,
+		busy: 0,
+		speed: { single: 1300, multi: 9100 },
+		cpus: 7,
+	};
+	const m4: PlacementMachine = {
+		id: "m4",
+		accepting: true,
+		maxRunners: 4,
+		busy: 0,
+		speed: { single: 1000, multi: 10_000 },
+		cpus: 10,
+	};
+	const targets = (machines: PlacementMachine[]) =>
+		Object.fromEntries(placeWaitingRunners(machines, "fastest"));
+
+	it("rates a slot by the job's share of the budget, capped by what a job uses", () => {
+		expect(slotSpeed(m6, 1)).toBe(5200);
+		expect(slotSpeed(m6, 2)).toBe(4550);
+		expect(slotSpeed(m4, 3)).toBeCloseTo(3333.3, 0);
+		// Unmeasured machines score from their CPUs.
+		expect(slotSpeed({ ...m4, speed: null }, 1)).toBe(4000);
+	});
+
+	it("waits only on the M6 while it runs jobs faster than the M4", () => {
+		expect(targets([m6, m4])).toEqual({
+			m6: { arm: 2, keep: 3 },
+			m4: { arm: 0, keep: 2 },
+		});
+		expect(nextMachine([m6, m4])).toBe("m6");
+	});
+
+	it("opens the M4 once a job on the M6 makes it about as fast", () => {
+		expect(targets([{ ...m6, busy: 1 }, m4])).toEqual({
+			m6: { arm: 1, keep: 2 },
+			m4: { arm: 2, keep: 3 },
+		});
+		// The M6 full: everything waits on the M4.
+		expect(targets([{ ...m6, busy: 3 }, m4]).m4).toEqual({ arm: 4, keep: 4 });
+		expect(nextMachine([{ ...m6, busy: 3 }, m4])).toBe("m4");
+	});
+
+	it("arms every free slot of a lone machine, or in spread mode", () => {
+		expect(targets([m4])).toEqual({ m4: { arm: 4, keep: 4 } });
+		expect(targets([{ ...m6, accepting: false }, m4]).m4).toEqual({
+			arm: 4,
+			keep: 4,
+		});
+		expect(Object.fromEntries(placeWaitingRunners([m6, m4], "spread"))).toEqual(
+			{ m6: { arm: 3, keep: 3 }, m4: { arm: 4, keep: 4 } },
+		);
+	});
+
+	it("keeps two runners waiting for bursts", () => {
+		const big = { ...m6, speed: { single: 3000, multi: 6000 }, maxRunners: 1 };
+		// Only one slot is close to the best: one more waits on the next best.
+		expect(targets([big, m4])).toEqual({
+			m6: { arm: 1, keep: 1 },
+			m4: { arm: 1, keep: 0 + 1 },
+		});
+	});
+
+	it("arms up to the target and releases the slower waiting runners", () => {
+		const waitingSlots = [slot(1), slot(2, { since: nowSeconds - 120 })];
+		const plan = planNode({
+			now: NOW,
+			node: plannerNode({ maxRunners: 4, waiting: { arm: 1, keep: 1 } }),
+			slots: waitingSlots,
+			runners: [ghRunner(1), ghRunner(2)],
+		});
+		// Two wait, one is enough: the one waiting longest leaves, none is armed.
+		expect(plan.actions).toEqual([
+			{
+				type: "release",
+				slot: 2,
+				runnerId: 102,
+				reason: "a faster machine has room",
+			},
+		]);
+		const busy = planNode({
+			now: NOW,
+			node: plannerNode({ maxRunners: 4, waiting: { arm: 2, keep: 2 } }),
+			slots: [slot(1, { job: runningJob }), slot(2)],
+			runners: [ghRunner(1, { busy: true }), ghRunner(2)],
+		});
+		// A busy slot never counts as waiting: one more runner is armed.
+		expect(busy.actions).toEqual([{ type: "arm", slot: 3 }]);
+		const fresh = planNode({
+			now: NOW,
+			node: plannerNode({ maxRunners: 4, waiting: { arm: 0, keep: 0 } }),
+			slots: [slot(1, { since: nowSeconds - 10 })],
+			runners: [ghRunner(1)],
+		});
+		// Released only after waiting a minute.
+		expect(fresh.actions).toEqual([]);
+	});
+
+	it("reads the benchmark", () => {
+		expect(parseBenchmark("bench cpus=7 single=1302 multi=8890\n")).toEqual({
+			cpus: 7,
+			single: 1302,
+			multi: 8890,
+		});
+		expect(parseBenchmark("Failed to start transient service")).toBeNull();
 	});
 });

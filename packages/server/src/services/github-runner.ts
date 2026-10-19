@@ -32,6 +32,7 @@ import {
 	findRunnerGroup,
 	tokenExpiration,
 } from "@dokploy/server/utils/github-runners/github-api";
+import { nextMachine } from "@dokploy/server/utils/github-runners/placement";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
@@ -469,13 +470,8 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 				})
 			: [],
 	]);
-	return pools.map((pool) => ({
-		...publicPool(pool),
-		/** Runs sent to the fallback in the last week, latest first. */
-		reroutes: reroutes
-			.filter((row) => row.githubRunnerPoolId === pool.githubRunnerPoolId)
-			.slice(0, 10),
-		nodes: nodes
+	return pools.map((pool) => {
+		const poolNodes = nodes
 			.filter((node) => node.githubRunnerPoolId === pool.githubRunnerPoolId)
 			.map(({ lockedBy: _lockedBy, lockedUntil: _lockedUntil, ...node }) => {
 				const host = node.observed?.host ?? null;
@@ -505,8 +501,42 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 								operation.githubRunnerNodeId === node.githubRunnerNodeId,
 						) ?? null,
 				};
-			}),
-	}));
+			});
+		return {
+			...publicPool(pool),
+			/** Runs sent to the fallback in the last week, latest first. */
+			reroutes: reroutes
+				.filter((row) => row.githubRunnerPoolId === pool.githubRunnerPoolId)
+				.slice(0, 10),
+			/** Machine the next job lands on with fastest-first placement. */
+			nextNodeId:
+				pool.placement === "fastest"
+					? nextMachine(
+							poolNodes.map((node) => ({
+								id: node.githubRunnerNodeId,
+								accepting:
+									node.enabled &&
+									node.phase === "ready" &&
+									!node.drain &&
+									node.observed?.reachable !== false &&
+									node.observed?.admission?.ok !== false,
+								maxRunners: node.resolvedMaxRunners,
+								busy: (node.observed?.slots ?? []).filter(
+									(slot) => slot.state === "busy",
+								).length,
+								speed: node.benchmark
+									? {
+											single: node.benchmark.single,
+											multi: node.benchmark.multi,
+										}
+									: null,
+								cpus: node.budget?.cpus ?? 1,
+							})),
+						)
+					: null,
+			nodes: poolNodes,
+		};
+	});
 };
 
 export const listGithubRunnerOperations = async (

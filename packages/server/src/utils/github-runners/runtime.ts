@@ -4,7 +4,7 @@
  * file below changes; the controller reinstalls the runtime when the machine
  * reports an older version.
  */
-export const RUNTIME_VERSION = 4;
+export const RUNTIME_VERSION = 5;
 
 const RUNTIME_ROOT = "/opt/dokploy-runners";
 export const RUNNERCTL = `${RUNTIME_ROOT}/bin/runnerctl`;
@@ -97,6 +97,13 @@ cmd_status() {
 		[[ "$id" =~ ^[0-9]+$ ]] || continue
 		echo "jobfile id=$id name=$(cat "$ROOT/slots/$id/.dokploy-runner-name" 2>/dev/null || true) job=$(base64 -w0 <"$file")"
 	done
+}
+
+# Measures what a job gets: run inside the runner slice, so under the same CPU
+# quota and CPUs as the jobs (on a Mac, the VM is the budget).
+cmd_bench() {
+	systemd-run --quiet --wait --pipe --collect --slice="$SLICE" \
+		/bin/bash "$ROOT/bin/bench.sh"
 }
 
 cmd_caches() {
@@ -485,6 +492,7 @@ cmd_uninstall() {
 case "\${1:-}" in
 status) cmd_status ;;
 caches) cmd_caches ;;
+bench) cmd_bench ;;
 arm) cmd_arm "\${2:-}" "\${3:-0}" ;;
 stop) cmd_stop "\${2:-}" ;;
 stop-all) cmd_stop_all ;;
@@ -493,7 +501,7 @@ env) cmd_env ;;
 install-release) cmd_install_release "\${2:-}" "\${3:-}" "\${4:-}" ;;
 gc) cmd_gc "\${2:-}" "\${3:-}" "\${4:-}" ;;
 uninstall) cmd_uninstall ;;
-*) die "usage: runnerctl status|caches|gc|arm|stop|stop-all|limits|env|install-release|uninstall" ;;
+*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|install-release|uninstall" ;;
 esac
 `;
 
@@ -570,8 +578,39 @@ Restart=no
 LimitNOFILE=1048576
 `;
 
+/**
+ * CPU benchmark of the runner budget, about 3 seconds: hashing (crypto units)
+ * and gzip (branchy integer code), once on one core, then on every CPU of the
+ * budget at once. Prints work units per second, x1000.
+ */
+const bench = sh`#!/bin/bash
+# Managed by Dokploy (GitHub runners): reinstalled with the runtime, do not edit.
+set -euo pipefail
+dir=$(mktemp -d /dev/shm/dokploy-bench.XXXXXX 2>/dev/null || mktemp -d)
+trap 'rm -rf "$dir"' EXIT
+head -c 16777216 /dev/urandom >"$dir/data"
+work() {
+	for _ in 1 2 3 4; do
+		sha256sum "$dir/data" >/dev/null
+		gzip -1 -c "$dir/data" >/dev/null
+	done
+}
+now() { date +%s%N; }
+cpus=$(nproc)
+work
+start=$(now)
+work
+single=$(($(now) - start))
+start=$(now)
+for _ in $(seq "$cpus"); do work & done
+wait
+multi=$(($(now) - start))
+echo "bench cpus=$cpus single=$((1000000000000 / single)) multi=$((cpus * 1000000000000 / multi))"
+`;
+
 const files: { path: string; mode: string; content: string }[] = [
 	{ path: RUNNERCTL, mode: "0755", content: runnerctl },
+	{ path: `${RUNTIME_ROOT}/bin/bench.sh`, mode: "0755", content: bench },
 	{
 		path: `${RUNTIME_ROOT}/bin/job-started.sh`,
 		mode: "0755",

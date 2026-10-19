@@ -43,6 +43,7 @@ export const poolFormSchema = z
 			)
 			.refine((name) => !/^github_/i.test(name), "Cannot start with GITHUB_"),
 		fallbackLabels: z.string(),
+		placement: z.enum(["fastest", "spread"]),
 	})
 	.refine((value) => value.scope === "organization" || value.repository, {
 		path: ["repository"],
@@ -82,6 +83,7 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 	routingEnabled: pool ? Boolean(pool.routingVariable) : true,
 	routingVariable: pool?.routingVariable ?? "DOKPLOY_RUNS_ON",
 	fallbackLabels: (pool?.fallbackLabels ?? ["ubuntu-24.04"]).join(", "),
+	placement: pool?.placement ?? "fastest",
 });
 
 /** Undefined (an unmounted field) keeps the stored value; empty clears it. */
@@ -116,6 +118,7 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 	jobCompletedHook: keepOr(values.jobCompletedHook, pool?.jobCompletedHook),
 	rerunInterruptedJobs: values.rerunInterruptedJobs ?? true,
 	routingVariable: values.routingEnabled ? values.routingVariable : null,
+	placement: values.placement,
 	fallbackLabels: parseLabels(values.fallbackLabels).length
 		? parseLabels(values.fallbackLabels)
 		: ["ubuntu-24.04"],

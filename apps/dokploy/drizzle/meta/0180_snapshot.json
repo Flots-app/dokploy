@@ -1,5 +1,5 @@
 {
-  "id": "4d417bf9-d817-4b22-8020-784d450fe245",
+  "id": "574d2750-35c1-43f4-b2ee-2bc79d7e77ae",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -4252,6 +4252,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "benchmark": {
+          "name": "benchmark",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "cleanups": {
           "name": "cleanups",
           "type": "jsonb",
@@ -4663,6 +4669,14 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "placement": {
+          "name": "placement",
+          "type": "githubRunnerPlacement",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'fastest'"
         },
         "createdAt": {
           "name": "createdAt",
@@ -9850,6 +9864,14 @@
         "enable",
         "remove",
         "upgrade"
+      ]
+    },
+    "public.githubRunnerPlacement": {
+      "name": "githubRunnerPlacement",
+      "schema": "public",
+      "values": [
+        "fastest",
+        "spread"
       ]
     },
     "public.githubRunnerPlatform": {
