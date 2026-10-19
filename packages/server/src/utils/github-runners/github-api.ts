@@ -191,7 +191,9 @@ export const findAppInstallation = async (
 				? target.owner
 				: `${target.owner}/${target.repository}`;
 		const page = await get("/app")
-			.then((res) => (res.ok ? (res.json() as Promise<{ html_url?: string }>) : null))
+			.then((res) =>
+				res.ok ? (res.json() as Promise<{ html_url?: string }>) : null,
+			)
 			.catch(() => null);
 		throw new GithubRunnerApiError(
 			`The GitHub App is not installed on ${where}.${page?.html_url ? ` Install it from ${page.html_url}/installations/new, then try again.` : ""}`,
@@ -224,7 +226,9 @@ export const tokenExpiration = async (
 			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 		},
 	).catch(() => null);
-	return response?.headers.get("github-authentication-token-expiration") ?? null;
+	return (
+		response?.headers.get("github-authentication-token-expiration") ?? null
+	);
 };
 
 /** Base path of the runner endpoints for the target. */
