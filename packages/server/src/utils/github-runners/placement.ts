@@ -124,7 +124,7 @@ export const placeWaitingRunners = (
 		const armed = arm.get(machine.id) ?? 0;
 		targets.set(machine.id, {
 			arm: armed,
-			keep: open.includes(machine)
+			keep: firstSlot.has(machine.id)
 				? Math.max(armed, fastEnough(machine, KEEP_WITHIN))
 				: 0,
 		});
