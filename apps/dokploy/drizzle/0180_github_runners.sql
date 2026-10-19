@@ -4,6 +4,7 @@ CREATE TYPE "public"."githubRunnerNodePhase" AS ENUM('new', 'provisioning', 'rea
 CREATE TYPE "public"."githubRunnerOperationStatus" AS ENUM('running', 'done', 'error', 'cancelled');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerOperationType" AS ENUM('provision', 'apply', 'disable', 'enable', 'remove', 'upgrade');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerPlatform" AS ENUM('linux', 'macos');--> statement-breakpoint
+CREATE TYPE "public"."githubRunnerRerouteStatus" AS ENUM('cancelling', 'requested', 'rerouted', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerRerunStatus" AS ENUM('pending', 'cancelling', 'requested', 'skipped', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerScope" AS ENUM('organization', 'repository');--> statement-breakpoint
 CREATE TABLE "github_runner_job" (
@@ -113,8 +114,24 @@ CREATE TABLE "github_runner_pool" (
 	"jobStartedHook" text,
 	"jobCompletedHook" text,
 	"rerunInterruptedJobs" boolean DEFAULT true NOT NULL,
+	"routingVariable" text,
+	"fallbackLabels" jsonb DEFAULT '["ubuntu-24.04"]'::jsonb NOT NULL,
+	"routing" jsonb,
 	"createdAt" text NOT NULL,
 	CONSTRAINT "github_runner_pool_repository_scope" CHECK (("github_runner_pool"."scope" = 'repository') = ("github_runner_pool"."repository" IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "github_runner_reroute" (
+	"githubRunnerRerouteId" text PRIMARY KEY NOT NULL,
+	"githubRunnerPoolId" text NOT NULL,
+	"repository" text NOT NULL,
+	"runId" text NOT NULL,
+	"runAttempt" integer NOT NULL,
+	"workflow" text NOT NULL,
+	"status" "githubRunnerRerouteStatus" DEFAULT 'cancelling' NOT NULL,
+	"note" text,
+	"createdAt" text NOT NULL,
+	"updatedAt" text NOT NULL
 );
 --> statement-breakpoint
 ALTER TABLE "github_runner_job" ADD CONSTRAINT "github_runner_job_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -127,10 +144,12 @@ ALTER TABLE "github_runner_operation" ADD CONSTRAINT "github_runner_operation_or
 ALTER TABLE "github_runner_operation" ADD CONSTRAINT "github_runner_operation_createdBy_user_id_fk" FOREIGN KEY ("createdBy") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "github_runner_pool" ADD CONSTRAINT "github_runner_pool_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "github_runner_pool" ADD CONSTRAINT "github_runner_pool_githubId_github_githubId_fk" FOREIGN KEY ("githubId") REFERENCES "public"."github"("githubId") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_runner_reroute" ADD CONSTRAINT "github_runner_reroute_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk" FOREIGN KEY ("githubRunnerPoolId") REFERENCES "public"."github_runner_pool"("githubRunnerPoolId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "github_runner_job_runner_unique" ON "github_runner_job" USING btree ("runnerName");--> statement-breakpoint
 CREATE INDEX "github_runner_job_node_started_idx" ON "github_runner_job" USING btree ("githubRunnerNodeId","startedAt");--> statement-breakpoint
 CREATE INDEX "github_runner_metric_node_at_idx" ON "github_runner_metric" USING btree ("githubRunnerNodeId","at");--> statement-breakpoint
 CREATE UNIQUE INDEX "github_runner_node_org_name_unique" ON "github_runner_node" USING btree ("organizationId","name");--> statement-breakpoint
 CREATE INDEX "github_runner_operation_node_idx" ON "github_runner_operation" USING btree ("githubRunnerNodeId");--> statement-breakpoint
 CREATE UNIQUE INDEX "github_runner_operation_running_unique" ON "github_runner_operation" USING btree ("githubRunnerNodeId") WHERE "github_runner_operation"."status" = 'running';--> statement-breakpoint
-CREATE UNIQUE INDEX "github_runner_pool_org_name_unique" ON "github_runner_pool" USING btree ("organizationId","name");
+CREATE UNIQUE INDEX "github_runner_pool_org_name_unique" ON "github_runner_pool" USING btree ("organizationId","name");--> statement-breakpoint
+CREATE UNIQUE INDEX "github_runner_reroute_run_unique" ON "github_runner_reroute" USING btree ("githubRunnerPoolId","repository","runId");

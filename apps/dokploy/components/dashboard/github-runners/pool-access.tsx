@@ -360,6 +360,13 @@ const AccessSummary = ({
 		{access.tokenExpiresAt &&
 			` The token expires on ${access.tokenExpiresAt.slice(0, 10)}.`}
 		{access.installationId && " The App installation was found."}
+		{access.variablesAccess === false && (
+			<span className="mt-1 block text-orange-600 dark:text-orange-500">
+				It cannot manage Actions variables, which the fallback to GitHub-hosted
+				runners needs: add "Variables: read and write" to it, or create it again
+				from the link above.
+			</span>
+		)}
 	</AlertBlock>
 );
 

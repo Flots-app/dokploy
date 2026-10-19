@@ -201,6 +201,23 @@ export interface GithubRunnerCaches {
 	workspacesBytes: number | null;
 }
 
+/** Where the routing variable of a pool sends the jobs, as last published. */
+export interface GithubRunnerRouting {
+	/** Variable last written; differs from the pool setting until synced. */
+	variable: string | null;
+	target: "pool" | "fallback";
+	value: string;
+	/** When the target last changed. */
+	since: string;
+	/** Since when no runner of the pool is ON; the pool stays the target for a short grace. */
+	unavailableSince: string | null;
+	/** Value GitHub holds since the last successful write. */
+	syncedValue: string | null;
+	syncedAt: string | null;
+	attemptedAt: string | null;
+	error: string | null;
+}
+
 export const githubRunnerPools = pgTable(
 	"github_runner_pool",
 	{
@@ -238,6 +255,16 @@ export const githubRunnerPools = pgTable(
 		rerunInterruptedJobs: boolean("rerunInterruptedJobs")
 			.notNull()
 			.default(true),
+		/**
+		 * GitHub Actions variable holding the runs-on of the pool while at least one
+		 * of its runners is ON, and the fallback otherwise; null disables routing.
+		 */
+		routingVariable: text("routingVariable"),
+		fallbackLabels: jsonb("fallbackLabels")
+			.$type<string[]>()
+			.notNull()
+			.default(["ubuntu-24.04"]),
+		routing: jsonb("routing").$type<GithubRunnerRouting | null>(),
 		createdAt: text("createdAt")
 			.notNull()
 			.$defaultFn(() => new Date().toISOString()),
@@ -417,6 +444,53 @@ export const githubRunnerJobs = pgTable(
 	],
 );
 
+/** cancelling → requested (re-run asked) → rerouted (seen on the fallback) or failed. */
+export const githubRunnerRerouteStatus = pgEnum("githubRunnerRerouteStatus", [
+	"cancelling",
+	"requested",
+	"rerouted",
+	"failed",
+]);
+
+/**
+ * Runs whose jobs waited for the pool while none of its runners was ON: they
+ * are cancelled, then their jobs re-run, which reads the routing variable again
+ * and lands on the fallback runners. One reroute per run at most.
+ */
+export const githubRunnerReroutes = pgTable(
+	"github_runner_reroute",
+	{
+		githubRunnerRerouteId: text("githubRunnerRerouteId")
+			.notNull()
+			.primaryKey()
+			.$defaultFn(() => nanoid()),
+		githubRunnerPoolId: text("githubRunnerPoolId")
+			.notNull()
+			.references(() => githubRunnerPools.githubRunnerPoolId, {
+				onDelete: "cascade",
+			}),
+		repository: text("repository").notNull(),
+		runId: text("runId").notNull(),
+		runAttempt: integer("runAttempt").notNull(),
+		workflow: text("workflow").notNull(),
+		status: githubRunnerRerouteStatus("status").notNull().default("cancelling"),
+		note: text("note"),
+		createdAt: text("createdAt")
+			.notNull()
+			.$defaultFn(() => new Date().toISOString()),
+		updatedAt: text("updatedAt")
+			.notNull()
+			.$defaultFn(() => new Date().toISOString()),
+	},
+	(table) => [
+		uniqueIndex("github_runner_reroute_run_unique").on(
+			table.githubRunnerPoolId,
+			table.repository,
+			table.runId,
+		),
+	],
+);
+
 /** Usage samples behind the monitoring charts, kept seven days. */
 export const githubRunnerMetrics = pgTable(
 	"github_runner_metric",
@@ -559,10 +633,27 @@ const poolFields = z.object({
 	jobStartedHook: absolutePath,
 	jobCompletedHook: absolutePath,
 	rerunInterruptedJobs: z.boolean().default(true),
+	routingVariable: z
+		.string()
+		.trim()
+		.max(100)
+		.regex(
+			/^[A-Za-z_][A-Za-z0-9_]*$/,
+			"Letters, digits and underscores, not starting with a digit",
+		)
+		.refine((name) => !/^github_/i.test(name), "Cannot start with GITHUB_")
+		.nullable()
+		.default(null),
+	fallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
 });
 
 const checkPoolTarget = (
-	pool: { scope: "organization" | "repository"; repository: string | null },
+	pool: {
+		scope: "organization" | "repository";
+		repository: string | null;
+		labels: string[];
+		routingVariable: string | null;
+	},
 	ctx: z.RefinementCtx,
 ) => {
 	if ((pool.scope === "repository") !== Boolean(pool.repository)) {
@@ -571,6 +662,14 @@ const checkPoolTarget = (
 			path: ["repository"],
 			message:
 				"A repository pool needs a repository, an organization pool none",
+		});
+	}
+	if (pool.routingVariable && !pool.labels.length) {
+		ctx.addIssue({
+			code: "custom",
+			path: ["labels"],
+			message:
+				"The fallback needs a label: without one, every self-hosted job would count as waiting for this pool",
 		});
 	}
 };

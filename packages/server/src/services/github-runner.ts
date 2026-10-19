@@ -11,13 +11,17 @@ import {
 	githubRunnerNodes,
 	githubRunnerOperations,
 	githubRunnerPools,
+	githubRunnerReroutes,
 	sshKeys,
 } from "@dokploy/server/db/schema";
 import {
 	effectiveBudget,
 	resolveMaxRunners,
 } from "@dokploy/server/utils/github-runners/budget";
-import { checkRunnerMachine } from "@dokploy/server/utils/github-runners/controller";
+import {
+	checkRunnerMachine,
+	clearPoolRouting,
+} from "@dokploy/server/utils/github-runners/controller";
 import {
 	diskThresholds,
 	vmDiskThresholds,
@@ -30,7 +34,7 @@ import {
 } from "@dokploy/server/utils/github-runners/github-api";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
 import type { z } from "zod";
 
 const notFound = (what: string) =>
@@ -156,9 +160,10 @@ export const testGithubRunnerCredentials = async (
 		},
 		auth,
 	);
-	const [groups, tokenExpiresAt] = await Promise.all([
+	const [groups, tokenExpiresAt, variables] = await Promise.all([
 		input.scope === "organization" ? client.runnerGroups() : [],
 		auth.type === "token" ? tokenExpiration(auth.token, input.apiUrl) : null,
+		input.routingVariable ? client.canManageVariables() : null,
 	]);
 	const group =
 		input.scope === "organization"
@@ -169,6 +174,8 @@ export const testGithubRunnerCredentials = async (
 	return {
 		installationId,
 		tokenExpiresAt,
+		/** Whether the routing variable can be written; null without routing. */
+		variablesAccess: variables,
 		groups,
 		group,
 		runners: runners?.length ?? null,
@@ -196,6 +203,7 @@ export const createGithubRunnerPool = async (
 	input: z.infer<typeof apiCreateGithubRunnerPool>,
 	organizationId: string,
 ) => {
+	await assertRoutingVariableFree(input, organizationId, null);
 	const access = await verifyPoolAccess(
 		{ ...input, githubRunnerPoolId: null },
 		organizationId,
@@ -221,6 +229,7 @@ export const updateGithubRunnerPool = async (
 		organizationId,
 	);
 	const { githubRunnerPoolId, ...values } = input;
+	await assertRoutingVariableFree(values, organizationId, githubRunnerPoolId);
 	const nodes = await db.query.githubRunnerNodes.findMany({
 		where: eq(githubRunnerNodes.githubRunnerPoolId, githubRunnerPoolId),
 		columns: { githubRunnerNodeId: true },
@@ -268,19 +277,63 @@ export const removeGithubRunnerPool = async (
 	poolId: string,
 	organizationId: string,
 ) => {
-	await findGithubRunnerPool(poolId, organizationId);
-	const node = await db.query.githubRunnerNodes.findFirst({
-		where: eq(githubRunnerNodes.githubRunnerPoolId, poolId),
-	});
+	const [pool, node] = await Promise.all([
+		findGithubRunnerPool(poolId, organizationId),
+		db.query.githubRunnerNodes.findFirst({
+			where: eq(githubRunnerNodes.githubRunnerPoolId, poolId),
+		}),
+	]);
 	if (node) {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
 			message: "Remove the machines of this pool first",
 		});
 	}
+	await clearPoolRouting(pool);
 	await db
 		.delete(githubRunnerPools)
 		.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+};
+
+/** Two pools of the same target cannot publish to the same variable. */
+const assertRoutingVariableFree = async (
+	pool: {
+		scope: "organization" | "repository";
+		owner: string;
+		repository: string | null;
+		routingVariable: string | null;
+	},
+	organizationId: string,
+	poolId: string | null,
+) => {
+	if (!pool.routingVariable) return;
+	const others = await db.query.githubRunnerPools.findMany({
+		where: eq(githubRunnerPools.organizationId, organizationId),
+		columns: {
+			githubRunnerPoolId: true,
+			name: true,
+			scope: true,
+			owner: true,
+			repository: true,
+			routingVariable: true,
+		},
+	});
+	const clash = others.find(
+		(other) =>
+			other.githubRunnerPoolId !== poolId &&
+			other.routingVariable?.toLowerCase() ===
+				pool.routingVariable?.toLowerCase() &&
+			other.owner.toLowerCase() === pool.owner.toLowerCase() &&
+			(other.scope === "organization" ||
+				pool.scope === "organization" ||
+				other.repository?.toLowerCase() === pool.repository?.toLowerCase()),
+	);
+	if (clash) {
+		throw new TRPCError({
+			code: "CONFLICT",
+			message: `Pool ${clash.name} already publishes ${pool.routingVariable} for ${pool.owner}: pick another variable name`,
+		});
+	}
 };
 
 const findSshKey = async (sshKeyId: string, organizationId: string) => {
@@ -386,11 +439,12 @@ export const resetGithubRunnerHostKey = async (
 
 /** Everything the runners page shows, refreshed every few seconds. */
 export const getGithubRunnerOverview = async (organizationId: string) => {
-	const [pools, nodes, operations] = await Promise.all([
-		db.query.githubRunnerPools.findMany({
-			where: eq(githubRunnerPools.organizationId, organizationId),
-			orderBy: asc(githubRunnerPools.name),
-		}),
+	const pools = await db.query.githubRunnerPools.findMany({
+		where: eq(githubRunnerPools.organizationId, organizationId),
+		orderBy: asc(githubRunnerPools.name),
+	});
+	const poolIds = pools.map((pool) => pool.githubRunnerPoolId);
+	const [nodes, operations, reroutes] = await Promise.all([
 		db.query.githubRunnerNodes.findMany({
 			where: eq(githubRunnerNodes.organizationId, organizationId),
 			orderBy: asc(githubRunnerNodes.name),
@@ -402,9 +456,25 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 				eq(githubRunnerOperations.status, "running"),
 			),
 		}),
+		poolIds.length
+			? db.query.githubRunnerReroutes.findMany({
+					where: and(
+						inArray(githubRunnerReroutes.githubRunnerPoolId, poolIds),
+						gte(
+							githubRunnerReroutes.createdAt,
+							new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString(),
+						),
+					),
+					orderBy: desc(githubRunnerReroutes.createdAt),
+				})
+			: [],
 	]);
 	return pools.map((pool) => ({
 		...publicPool(pool),
+		/** Runs sent to the fallback in the last week, latest first. */
+		reroutes: reroutes
+			.filter((row) => row.githubRunnerPoolId === pool.githubRunnerPoolId)
+			.slice(0, 10),
 		nodes: nodes
 			.filter((node) => node.githubRunnerPoolId === pool.githubRunnerPoolId)
 			.map(({ lockedBy: _lockedBy, lockedUntil: _lockedUntil, ...node }) => {

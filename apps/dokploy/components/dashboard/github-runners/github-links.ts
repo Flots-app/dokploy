@@ -10,14 +10,21 @@ export const githubWebUrl = (apiUrl: string | undefined) => {
 		: api.replace(/\/api\/v3$/, "");
 };
 
-/** Runner registration, plus Actions to re-run the jobs a crash interrupted. */
+/**
+ * Runner registration, Actions to re-run the jobs a crash interrupted or move
+ * stuck ones to the fallback, and Variables to publish where jobs go.
+ */
 const permissions = (scope: Scope): Record<string, string> =>
 	scope === "organization"
-		? { organization_self_hosted_runners: "write", actions: "write" }
-		: { administration: "write", actions: "write" };
+		? {
+				organization_self_hosted_runners: "write",
+				organization_actions_variables: "write",
+				actions: "write",
+			}
+		: { administration: "write", actions_variables: "write", actions: "write" };
 
 const DESCRIPTION =
-	"Lets Dokploy register self-hosted runners and re-run the jobs a stopped machine interrupted.";
+	"Lets Dokploy register self-hosted runners, re-run interrupted jobs and send jobs to GitHub-hosted runners when no machine is on.";
 
 /** Fine-grained token creation page, pre-filled (GitHub token templates). */
 export const tokenTemplateUrl = (web: string, scope: Scope, owner: string) =>

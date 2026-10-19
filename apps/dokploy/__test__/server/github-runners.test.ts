@@ -71,6 +71,13 @@ import {
 	MAX_RUN_ATTEMPTS,
 } from "@dokploy/server/utils/github-runners/rerun";
 import {
+	decideRouting,
+	ROUTING_GRACE_MS,
+	routingSyncDue,
+	runsOnExpression,
+	waitsForPool,
+} from "@dokploy/server/utils/github-runners/routing";
+import {
 	installRuntimeScript,
 	linuxFactsScript,
 	runnerEnvironment,
@@ -1480,7 +1487,14 @@ describe("recovery of interrupted jobs", () => {
 		runnerName: string | null,
 		status: string,
 		conclusion: string | null = null,
-	) => ({ name: "job", status, conclusion, runnerName });
+	) => ({
+		name: "job",
+		status,
+		conclusion,
+		runnerName,
+		labels: ["self-hosted", "flots-ci"],
+		createdAt: null,
+	});
 
 	it("decides whether an interrupted job is re-run at all", () => {
 		expect(initialRerunStatus(true, "1")).toBe("pending");
@@ -1622,11 +1636,16 @@ describe("guided setup", () => {
 			target_name: "Flots-app",
 			expires_in: "366",
 			organization_self_hosted_runners: "write",
+			organization_actions_variables: "write",
 			actions: "write",
 		});
 		expect(
 			params(tokenTemplateUrl("https://github.com", "repository", "s1nyx")),
-		).toMatchObject({ administration: "write", actions: "write" });
+		).toMatchObject({
+			administration: "write",
+			actions_variables: "write",
+			actions: "write",
+		});
 		const app = appRegistrationUrl(
 			"https://github.com",
 			"organization",
@@ -1762,5 +1781,232 @@ describe("guided setup", () => {
 					}),
 			}),
 		).resolves.toBe("2027-10-19 08:00:00 UTC");
+	});
+});
+
+describe("routing with a GitHub-hosted fallback", () => {
+	const minutes = (count: number) => count * 60_000;
+	const start = Date.parse("2026-10-19T08:00:00.000Z");
+	const base = {
+		labels: ["flots-app"],
+		fallbackLabels: ["ubuntu-24.04"],
+		anyEnabled: true,
+	};
+
+	it("sends jobs to the pool while a runner is ON, after a grace otherwise", () => {
+		const on = decideRouting({
+			...base,
+			previous: null,
+			available: true,
+			now: start,
+		});
+		expect(on).toMatchObject({
+			target: "pool",
+			value: '["self-hosted","flots-app"]',
+			unavailableSince: null,
+		});
+		// A runner being replaced: the pool stays the target for two minutes.
+		const blip = decideRouting({
+			...base,
+			previous: on,
+			available: false,
+			now: start + minutes(1),
+		});
+		expect(blip).toMatchObject({
+			target: "pool",
+			unavailableSince: "2026-10-19T08:01:00.000Z",
+		});
+		const off = decideRouting({
+			...base,
+			previous: blip,
+			available: false,
+			now: start + minutes(1) + ROUTING_GRACE_MS,
+		});
+		expect(off).toMatchObject({
+			target: "fallback",
+			value: '"ubuntu-24.04"',
+			since: "2026-10-19T08:03:00.000Z",
+		});
+		// Back as soon as one runner is ON.
+		expect(
+			decideRouting({
+				...base,
+				previous: off,
+				available: true,
+				now: start + minutes(10),
+			}),
+		).toMatchObject({ target: "pool", unavailableSince: null });
+	});
+
+	it("falls back at once when no machine is enabled or nothing ran yet", () => {
+		const on = decideRouting({
+			...base,
+			previous: null,
+			available: true,
+			now: start,
+		});
+		expect(
+			decideRouting({
+				...base,
+				anyEnabled: false,
+				previous: on,
+				available: false,
+				now: start + 1000,
+			}).target,
+		).toBe("fallback");
+		expect(
+			decideRouting({ ...base, previous: null, available: false, now: start })
+				.target,
+		).toBe("fallback");
+		expect(
+			decideRouting({
+				...base,
+				fallbackLabels: ["ubuntu-24.04", "x64"],
+				previous: null,
+				available: false,
+				now: start,
+			}).value,
+		).toBe('["ubuntu-24.04","x64"]');
+	});
+
+	it("writes the variable when it changes, retries errors, re-checks it", () => {
+		const routing = {
+			...decideRouting({
+				...base,
+				previous: null,
+				available: true,
+				now: start,
+			}),
+			variable: "DOKPLOY_RUNS_ON",
+			syncedValue: '["self-hosted","flots-app"]',
+			syncedAt: "2026-10-19T08:00:00.000Z",
+			attemptedAt: "2026-10-19T08:00:00.000Z",
+		};
+		expect(routingSyncDue(routing, "DOKPLOY_RUNS_ON", start + 1000)).toBe(
+			false,
+		);
+		expect(routingSyncDue(routing, "OTHER", start + 1000)).toBe(true);
+		expect(
+			routingSyncDue(
+				{ ...routing, value: '"ubuntu-24.04"' },
+				"DOKPLOY_RUNS_ON",
+				start + 1000,
+			),
+		).toBe(true);
+		const failing = {
+			...routing,
+			value: '"ubuntu-24.04"',
+			error: "403",
+		};
+		expect(routingSyncDue(failing, "DOKPLOY_RUNS_ON", start + 10_000)).toBe(
+			false,
+		);
+		expect(routingSyncDue(failing, "DOKPLOY_RUNS_ON", start + 31_000)).toBe(
+			true,
+		);
+		expect(
+			routingSyncDue(routing, "DOKPLOY_RUNS_ON", start + minutes(16)),
+		).toBe(true);
+	});
+
+	it("only moves the jobs that ask for every label of the pool", () => {
+		expect(waitsForPool(["self-hosted", "Flots-App"], ["flots-app"])).toBe(
+			true,
+		);
+		expect(
+			waitsForPool(["self-hosted", "flots-app", "dokploy-m6"], ["flots-app"]),
+		).toBe(true);
+		expect(waitsForPool(["ubuntu-24.04"], ["flots-app"])).toBe(false);
+		expect(
+			waitsForPool(
+				["self-hosted", "macOS", "flots-mac-mini-m4"],
+				["flots-app"],
+			),
+		).toBe(false);
+		// A pool without label would match every self-hosted job.
+		expect(waitsForPool(["self-hosted"], [])).toBe(false);
+		expect(runsOnExpression("DOKPLOY_RUNS_ON", ["ubuntu-24.04"])).toBe(
+			`\${{ fromJSON(vars.DOKPLOY_RUNS_ON || '"ubuntu-24.04"') }}`,
+		);
+	});
+
+	it("creates or updates the variable, private repositories only", async () => {
+		const calls: { method: string; url: string; body: unknown }[] = [];
+		const client = createGithubRunnerClient(
+			{
+				scope: "organization",
+				owner: "Flots-app",
+				repository: null,
+				runnerGroup: "Default",
+				apiUrl: "https://api.github.com",
+			},
+			{ type: "token", token: "t" },
+			{
+				fetch: async (url, init) => {
+					const method = init?.method ?? "GET";
+					calls.push({
+						method,
+						url: String(url),
+						body: init?.body ? JSON.parse(String(init.body)) : null,
+					});
+					if (method === "PATCH") return json(404, { message: "Not Found" });
+					if (method === "POST") return json(201, {});
+					if (method === "DELETE") return json(404, {});
+					return json(200, [
+						{ full_name: "Flots-app/monorepo", private: true },
+						{ full_name: "Flots-app/old", private: true, archived: true },
+						{ full_name: "Flots-app/dokploy", private: false },
+					]);
+				},
+			},
+		);
+		await client.setVariable("DOKPLOY_RUNS_ON", '"ubuntu-24.04"');
+		expect(calls.slice(0, 2)).toEqual([
+			{
+				method: "PATCH",
+				url: "https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON",
+				body: {
+					name: "DOKPLOY_RUNS_ON",
+					value: '"ubuntu-24.04"',
+					visibility: "private",
+				},
+			},
+			{
+				method: "POST",
+				url: "https://api.github.com/orgs/Flots-app/actions/variables",
+				body: {
+					name: "DOKPLOY_RUNS_ON",
+					value: '"ubuntu-24.04"',
+					visibility: "private",
+				},
+			},
+		]);
+		await expect(client.deleteVariable("DOKPLOY_RUNS_ON")).resolves.toBe(
+			undefined,
+		);
+		await expect(client.listRepositories()).resolves.toEqual([
+			"Flots-app/monorepo",
+		]);
+		await expect(client.listQueuedRuns("someone/else")).rejects.toThrow(
+			"outside this pool",
+		);
+	});
+
+	it("names the missing permission when GitHub refuses the variable", async () => {
+		const client = createGithubRunnerClient(
+			{
+				scope: "repository",
+				owner: "s1nyx",
+				repository: "dokploy-runner-e2e",
+				runnerGroup: "Default",
+				apiUrl: "https://api.github.com",
+			},
+			{ type: "token", token: "t" },
+			{ fetch: async () => json(403, { message: "Resource not accessible" }) },
+		);
+		await expect(client.setVariable("X", "1")).rejects.toThrow(
+			'"Variables: read and write" on the repository',
+		);
+		await expect(client.canManageVariables()).resolves.toBe(false);
 	});
 });

@@ -1,3 +1,4 @@
+import { runsOnExpression } from "@dokploy/server/utils/github-runners/routing";
 import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import { Pencil, PlusIcon } from "lucide-react";
 import { useState } from "react";
@@ -49,6 +50,7 @@ import {
 	poolFormSchema,
 	toPoolInput,
 } from "./pool-form";
+import { RoutingFields } from "./pool-routing";
 
 type PoolForm = UseFormReturn<PoolFormValues>;
 
@@ -171,8 +173,22 @@ const TargetingFields = ({
 	pool?: RunnerPool;
 	access: Parameters<typeof RunnerGroupField>[0]["access"];
 }) => {
-	const [scope, labels] = form.watch(["scope", "labels"]);
-	const runsOn = ["self-hosted", ...parseLabels(labels)].join(", ");
+	const [scope, labels, routingEnabled, routingVariable, fallbackLabels] =
+		form.watch([
+			"scope",
+			"labels",
+			"routingEnabled",
+			"routingVariable",
+			"fallbackLabels",
+		]);
+	const poolRunsOn = `[${["self-hosted", ...parseLabels(labels)].join(", ")}]`;
+	const fallback = parseLabels(fallbackLabels);
+	const runsOn = routingEnabled
+		? runsOnExpression(
+				routingVariable,
+				fallback.length ? fallback : ["ubuntu-24.04"],
+			)
+		: poolRunsOn;
 	return (
 		<>
 			{scope === "organization" && (
@@ -213,11 +229,18 @@ const TargetingFields = ({
 					)}
 				/>
 			</div>
+			<RoutingFields form={form} />
 			<div className="grid gap-1 rounded-md bg-muted p-3 text-xs">
 				<span className="text-muted-foreground">
 					Workflows send their jobs to these machines with:
 				</span>
-				<code className="font-mono">runs-on: [{runsOn}]</code>
+				<code className="break-all font-mono">runs-on: {runsOn}</code>
+				{routingEnabled && (
+					<span className="text-muted-foreground">
+						The variable holds <code>{poolRunsOn}</code> while a runner of the
+						pool is ON, and the fallback otherwise.
+					</span>
+				)}
 				{!parseLabels(labels).length && (
 					<span className="text-orange-600 dark:text-orange-500">
 						Without a label, every self-hosted job of the{" "}

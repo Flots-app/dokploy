@@ -33,11 +33,28 @@ export const poolFormSchema = z
 		jobStartedHook: optional,
 		jobCompletedHook: optional,
 		rerunInterruptedJobs: z.boolean().optional(),
+		routingEnabled: z.boolean(),
+		routingVariable: z
+			.string()
+			.trim()
+			.regex(
+				/^[A-Za-z_][A-Za-z0-9_]*$/,
+				"Letters, digits and underscores, not starting with a digit",
+			)
+			.refine((name) => !/^github_/i.test(name), "Cannot start with GITHUB_"),
+		fallbackLabels: z.string(),
 	})
 	.refine((value) => value.scope === "organization" || value.repository, {
 		path: ["repository"],
 		message: "Repository is required",
-	});
+	})
+	.refine(
+		(value) => !value.routingEnabled || parseLabels(value.labels).length > 0,
+		{
+			path: ["labels"],
+			message: "The fallback needs a label to tell this pool's jobs apart",
+		},
+	);
 
 export type PoolFormValues = z.infer<typeof poolFormSchema>;
 
@@ -61,6 +78,10 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 	jobStartedHook: pool?.jobStartedHook ?? "",
 	jobCompletedHook: pool?.jobCompletedHook ?? "",
 	rerunInterruptedJobs: pool?.rerunInterruptedJobs ?? true,
+	// New pools send their jobs to GitHub-hosted runners when no machine is ON.
+	routingEnabled: pool ? Boolean(pool.routingVariable) : true,
+	routingVariable: pool?.routingVariable ?? "DOKPLOY_RUNS_ON",
+	fallbackLabels: (pool?.fallbackLabels ?? ["ubuntu-24.04"]).join(", "),
 });
 
 /** Undefined (an unmounted field) keeps the stored value; empty clears it. */
@@ -94,4 +115,8 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 	jobStartedHook: keepOr(values.jobStartedHook, pool?.jobStartedHook),
 	jobCompletedHook: keepOr(values.jobCompletedHook, pool?.jobCompletedHook),
 	rerunInterruptedJobs: values.rerunInterruptedJobs ?? true,
+	routingVariable: values.routingEnabled ? values.routingVariable : null,
+	fallbackLabels: parseLabels(values.fallbackLabels).length
+		? parseLabels(values.fallbackLabels)
+		: ["ubuntu-24.04"],
 });

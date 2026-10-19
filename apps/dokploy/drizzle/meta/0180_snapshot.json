@@ -1,5 +1,5 @@
 {
-  "id": "c8ff5915-7967-4542-af9a-077b50992724",
+  "id": "4d417bf9-d817-4b22-8020-784d450fe245",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -4645,6 +4645,25 @@
           "notNull": true,
           "default": true
         },
+        "routingVariable": {
+          "name": "routingVariable",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fallbackLabels": {
+          "name": "fallbackLabels",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[\"ubuntu-24.04\"]'::jsonb"
+        },
+        "routing": {
+          "name": "routing",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "createdAt": {
           "name": "createdAt",
           "type": "text",
@@ -4712,6 +4731,123 @@
           "value": "(\"github_runner_pool\".\"scope\" = 'repository') = (\"github_runner_pool\".\"repository\" IS NOT NULL)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.github_runner_reroute": {
+      "name": "github_runner_reroute",
+      "schema": "",
+      "columns": {
+        "githubRunnerRerouteId": {
+          "name": "githubRunnerRerouteId",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "githubRunnerPoolId": {
+          "name": "githubRunnerPoolId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository": {
+          "name": "repository",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "runId": {
+          "name": "runId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "runAttempt": {
+          "name": "runAttempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workflow": {
+          "name": "workflow",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "githubRunnerRerouteStatus",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'cancelling'"
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "github_runner_reroute_run_unique": {
+          "name": "github_runner_reroute_run_unique",
+          "columns": [
+            {
+              "expression": "githubRunnerPoolId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repository",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "runId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "github_runner_reroute_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk": {
+          "name": "github_runner_reroute_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk",
+          "tableFrom": "github_runner_reroute",
+          "tableTo": "github_runner_pool",
+          "columnsFrom": [
+            "githubRunnerPoolId"
+          ],
+          "columnsTo": [
+            "githubRunnerPoolId"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.gitlab": {
@@ -9722,6 +9858,16 @@
       "values": [
         "linux",
         "macos"
+      ]
+    },
+    "public.githubRunnerRerouteStatus": {
+      "name": "githubRunnerRerouteStatus",
+      "schema": "public",
+      "values": [
+        "cancelling",
+        "requested",
+        "rerouted",
+        "failed"
       ]
     },
     "public.githubRunnerRerunStatus": {

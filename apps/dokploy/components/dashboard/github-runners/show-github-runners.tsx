@@ -21,6 +21,7 @@ import { formatDuration, type RunnerPool } from "./format";
 import { HandlePool } from "./handle-pool";
 import { MachineCard } from "./machine-card";
 import { JobsTable } from "./machine-monitoring";
+import { RoutingStatus } from "./pool-routing";
 import { GettingStarted, WorkflowSnippet } from "./pool-usage";
 
 const PoolStats = ({ pool }: { pool: RunnerPool }) => {
@@ -154,6 +155,7 @@ const PoolSection = ({
 					)}
 				</div>
 			</div>
+			<RoutingStatus pool={pool} />
 			<WorkflowSnippet pool={pool} />
 			<PoolStats pool={pool} />
 			{pool.nodes.length === 0 ? (

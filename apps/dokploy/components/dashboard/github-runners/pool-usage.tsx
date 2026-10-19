@@ -1,3 +1,4 @@
+import { runsOnExpression } from "@dokploy/server/utils/github-runners/routing";
 import { Github } from "lucide-react";
 import type { ReactNode } from "react";
 import type { RunnerPool } from "./format";
@@ -14,7 +15,11 @@ export const WorkflowSnippet = ({ pool }: { pool: RunnerPool }) => (
 			:
 		</span>
 		<CopyCode
-			code={`runs-on: [${["self-hosted", ...pool.labels].join(", ")}]`}
+			code={`runs-on: ${
+				pool.routingVariable
+					? runsOnExpression(pool.routingVariable, pool.fallbackLabels)
+					: `[${["self-hosted", ...pool.labels].join(", ")}]`
+			}`}
 		/>
 		<span>
 			Add <code>dokploy-&lt;machine&gt;</code> to the list to pin one machine.

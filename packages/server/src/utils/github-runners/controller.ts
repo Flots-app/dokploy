@@ -14,8 +14,20 @@ import {
 	githubRunnerMetrics,
 	githubRunnerNodes,
 	githubRunnerOperations,
+	githubRunnerPools,
+	githubRunnerReroutes,
 } from "@dokploy/server/db/schema";
-import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import {
+	and,
+	asc,
+	eq,
+	inArray,
+	isNotNull,
+	isNull,
+	lt,
+	or,
+	sql,
+} from "drizzle-orm";
 import { sequentially } from "../service-migration/concurrency";
 import {
 	effectiveBudget,
@@ -75,6 +87,13 @@ import {
 } from "./reconcile";
 import { decideRerun, initialRerunStatus } from "./rerun";
 import {
+	decideRouting,
+	fallbackRunsOn,
+	REROUTE_MIN_QUEUED_MS,
+	routingSyncDue,
+	waitsForPool,
+} from "./routing";
+import {
 	installRuntimeScript,
 	RUNNERCTL,
 	RUNTIME_VERSION,
@@ -121,6 +140,11 @@ interface ControllerState {
 	lastCachesAt: Map<string, number>;
 	lastHealAt: Map<string, number>;
 	lastRecoveryAt: Map<string, number>;
+	/** Runners of each pool as GitHub listed them at the last tick. */
+	poolRunners: Map<string, { at: number; runners: GithubRunner[] }>;
+	/** Repositories a pool routes jobs for, refreshed hourly. */
+	repositories: Map<string, { at: number; names: string[] }>;
+	lastRerouteScan: Map<string, number>;
 	/** Free space seen by the last ticks, for the fill rate (VM disk on a Mac). */
 	diskSamples: Map<string, { host: DiskSample[]; vm: DiskSample[] }>;
 	lastCleanups: Map<string, LastCleanup>;
@@ -145,6 +169,9 @@ shared.__dokployGithubRunners ??= {
 	lastCachesAt: new Map(),
 	lastHealAt: new Map(),
 	lastRecoveryAt: new Map(),
+	poolRunners: new Map(),
+	repositories: new Map(),
+	lastRerouteScan: new Map(),
 	diskSamples: new Map(),
 	lastCleanups: new Map(),
 	pendingEvents: new Map(),
@@ -2351,6 +2378,280 @@ const recoverInterruptedJobs = async (pool: GithubRunnerPool) => {
 	});
 };
 
+// ------------------------------------------------------------- routing
+
+const REPOSITORIES_TTL_MS = 60 * 60_000;
+const REROUTE_SCAN_EVERY_MS = 60_000;
+const REROUTE_FORCE_CANCEL_MS = 3 * 60_000;
+const REROUTE_VERIFY_AFTER_MS = 60_000;
+
+/**
+ * A machine whose runners take jobs: enabled, provisioned, reachable, above its
+ * disk reserve, with at least one of its runners online on GitHub.
+ */
+const runnerOn = (node: GithubRunnerNode, runners: GithubRunner[]): boolean =>
+	node.enabled &&
+	node.phase === "ready" &&
+	node.observed?.reachable !== false &&
+	node.observed?.admission?.ok !== false &&
+	runners.some(
+		(runner) =>
+			runner.status === "online" &&
+			runner.name.startsWith(runnerNamePrefix(node.name)),
+	);
+
+const routingChanged = (
+	previous: GithubRunnerPool["routing"],
+	next: GithubRunnerPool["routing"],
+) => JSON.stringify(previous) !== JSON.stringify(next);
+
+/**
+ * Publishes where the jobs of a pool go: its runners while at least one is ON,
+ * the fallback otherwise. Runs after every tick, for every pool with routing.
+ */
+const routePool = async (pool: GithubRunnerPool) => {
+	const poolId = pool.githubRunnerPoolId;
+	const client = await poolClient(pool);
+	const variable = pool.routingVariable;
+	if (!variable) {
+		// Routing turned off: the variable goes, and workflows use their default.
+		if (pool.routing?.variable) {
+			await client.deleteVariable(pool.routing.variable).catch(() => undefined);
+		}
+		await db
+			.update(githubRunnerPools)
+			.set({ routing: null })
+			.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+		return;
+	}
+	const now = Date.now();
+	const nodes = await db.query.githubRunnerNodes.findMany({
+		where: eq(githubRunnerNodes.githubRunnerPoolId, poolId),
+	});
+	const listed = state.poolRunners.get(poolId);
+	const candidates = nodes.filter(
+		(node) => node.enabled && node.phase === "ready",
+	);
+	// Without a recent view of GitHub, the jobs keep going where they go.
+	if (candidates.length && (!listed || now - listed.at > 60_000)) return;
+	let routing = decideRouting({
+		previous: pool.routing,
+		available: candidates.some((node) => runnerOn(node, listed?.runners ?? [])),
+		anyEnabled: nodes.some((node) => node.enabled),
+		labels: pool.labels,
+		fallbackLabels: pool.fallbackLabels,
+		now,
+	});
+	if (pool.routing?.variable && pool.routing.variable !== variable) {
+		await client.deleteVariable(pool.routing.variable).catch(() => undefined);
+	}
+	if (routingSyncDue(routing, variable, now)) {
+		const at = new Date(now).toISOString();
+		try {
+			await client.setVariable(variable, routing.value);
+			routing = {
+				...routing,
+				variable,
+				syncedValue: routing.value,
+				syncedAt: at,
+				attemptedAt: at,
+				error: null,
+			};
+		} catch (error) {
+			routing = {
+				...routing,
+				attemptedAt: at,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+	if (routing.target !== pool.routing?.target) {
+		console.log(
+			`[github-runners] ${pool.name}: jobs now go to ${routing.target === "pool" ? "the pool" : routing.value}`,
+		);
+	}
+	if (routingChanged(pool.routing, routing)) {
+		await db
+			.update(githubRunnerPools)
+			.set({ routing })
+			.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+	}
+	// Jobs queued for the pool before GitHub saw the fallback go there too.
+	if (
+		routing.target === "fallback" &&
+		routing.syncedValue === routing.value &&
+		now - (state.lastRerouteScan.get(poolId) ?? 0) >= REROUTE_SCAN_EVERY_MS
+	) {
+		state.lastRerouteScan.set(poolId, now);
+		await rerouteQueuedRuns(pool, client);
+	}
+	await advanceReroutes(pool, client);
+};
+
+const poolRepositories = async (
+	pool: GithubRunnerPool,
+	client: GithubRunnerClient,
+) => {
+	const cached = state.repositories.get(pool.githubRunnerPoolId);
+	if (cached && Date.now() - cached.at < REPOSITORIES_TTL_MS) {
+		return cached.names;
+	}
+	const names = await client.listRepositories();
+	state.repositories.set(pool.githubRunnerPoolId, { at: Date.now(), names });
+	return names;
+};
+
+/**
+ * Cancels the runs whose jobs wait for the pool while none of its runners is
+ * ON, once nothing else of the run is still running: their re-run reads the
+ * variable again and lands on the fallback runners.
+ */
+const rerouteQueuedRuns = async (
+	pool: GithubRunnerPool,
+	client: GithubRunnerClient,
+) => {
+	const repositories = await poolRepositories(pool, client);
+	const known = new Set(
+		(
+			await db.query.githubRunnerReroutes.findMany({
+				where: eq(
+					githubRunnerReroutes.githubRunnerPoolId,
+					pool.githubRunnerPoolId,
+				),
+				columns: { repository: true, runId: true },
+			})
+		).map((row) => `${row.repository}#${row.runId}`),
+	);
+	await sequentially(repositories, async (repository) => {
+		const runs = await client.listQueuedRuns(repository).catch(() => []);
+		await sequentially(runs, async (run) => {
+			const runId = String(run.id);
+			if (known.has(`${repository}#${runId}`)) return;
+			const jobs = await client.listRunJobs(repository, runId).catch(() => []);
+			const waiting = jobs.filter(
+				(job) =>
+					job.status === "queued" &&
+					waitsForPool(job.labels, pool.labels) &&
+					Date.now() - Date.parse(job.createdAt ?? run.createdAt) >=
+						REROUTE_MIN_QUEUED_MS,
+			);
+			// Cancelling stops the whole run: wait for the jobs that do run.
+			if (!waiting.length || jobs.some((job) => job.status === "in_progress")) {
+				return;
+			}
+			try {
+				await client.cancelRun(repository, runId);
+				await db.insert(githubRunnerReroutes).values({
+					githubRunnerPoolId: pool.githubRunnerPoolId,
+					repository,
+					runId,
+					runAttempt: run.runAttempt,
+					workflow: run.workflow,
+					note: `${waiting.length} job(s) waited for the pool`,
+				});
+				console.log(
+					`[github-runners] ${pool.name}: rerouting ${repository} run ${runId}`,
+				);
+			} catch (error) {
+				console.error(
+					`[github-runners] ${pool.name}: cannot reroute ${repository} run ${runId}`,
+					error,
+				);
+			}
+		});
+	});
+};
+
+/** Re-runs the cancelled runs, then checks their jobs left the pool. */
+const advanceReroutes = async (
+	pool: GithubRunnerPool,
+	client: GithubRunnerClient,
+) => {
+	const open = await db.query.githubRunnerReroutes.findMany({
+		where: and(
+			eq(githubRunnerReroutes.githubRunnerPoolId, pool.githubRunnerPoolId),
+			inArray(githubRunnerReroutes.status, ["cancelling", "requested"]),
+		),
+	});
+	await sequentially(open, async (row) => {
+		const mark = (status: "requested" | "rerouted" | "failed", note: string) =>
+			db
+				.update(githubRunnerReroutes)
+				.set({ status, note, updatedAt: new Date().toISOString() })
+				.where(
+					eq(
+						githubRunnerReroutes.githubRunnerRerouteId,
+						row.githubRunnerRerouteId,
+					),
+				);
+		try {
+			if (row.status === "requested") {
+				if (Date.now() - Date.parse(row.updatedAt) < REROUTE_VERIFY_AFTER_MS) {
+					return;
+				}
+				const jobs = await client.listRunJobs(row.repository, row.runId);
+				const stuck = jobs.some(
+					(job) =>
+						job.status === "queued" && waitsForPool(job.labels, pool.labels),
+				);
+				await (stuck
+					? mark(
+							"failed",
+							"Re-run, but its jobs ask for the pool labels directly: use the routing variable in runs-on",
+						)
+					: mark(
+							"rerouted",
+							`Re-run on ${fallbackRunsOn(pool.fallbackLabels)}`,
+						));
+				return;
+			}
+			const run = await client.getRun(row.repository, row.runId);
+			if (run.status !== "completed") {
+				if (Date.now() - Date.parse(row.createdAt) > REROUTE_FORCE_CANCEL_MS) {
+					await client.forceCancelRun(row.repository, row.runId);
+				}
+				return;
+			}
+			if (run.conclusion !== "cancelled") {
+				await mark("failed", `The run ended on its own (${run.conclusion})`);
+				return;
+			}
+			await client.rerunFailedJobs(row.repository, row.runId);
+			await mark("requested", "Cancelled, then its jobs re-run");
+		} catch (error) {
+			await mark(
+				"failed",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	});
+};
+
+const routePools = async () => {
+	const pools = await db.query.githubRunnerPools.findMany({
+		where: or(
+			isNotNull(githubRunnerPools.routingVariable),
+			isNotNull(githubRunnerPools.routing),
+		),
+	});
+	await Promise.all(
+		pools.map((pool) =>
+			routePool(pool).catch((error) =>
+				console.error(`GitHub runner routing failed for ${pool.name}`, error),
+			),
+		),
+	);
+};
+
+/** Removes the routing variable of a pool being deleted. */
+export const clearPoolRouting = async (pool: GithubRunnerPool) => {
+	const variable = pool.routing?.variable ?? pool.routingVariable;
+	if (!variable) return;
+	await (await poolClient(pool))
+		.deleteVariable(variable)
+		.catch(() => undefined);
+};
+
 const tickPool = async (nodes: NodeWithRelations[]) => {
 	const pool = nodes[0]?.pool;
 	if (!pool) return;
@@ -2370,6 +2671,10 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 		let listError: string | null = null;
 		try {
 			runners = await (await poolClient(pool)).listRunners();
+			state.poolRunners.set(pool.githubRunnerPoolId, {
+				at: Date.now(),
+				runners,
+			});
 		} catch (error) {
 			listError = `GitHub: ${error instanceof Error ? error.message : String(error)}`;
 		}
@@ -2418,6 +2723,7 @@ const tickGithubRunners = async () => {
 			byPool.set(node.githubRunnerPoolId, list);
 		}
 		await Promise.all([...byPool.values()].map(tickPool));
+		await routePools();
 		const pools = new Map(
 			nodes.map((node) => [node.githubRunnerPoolId, node.pool]),
 		);

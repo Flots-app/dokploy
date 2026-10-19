@@ -61,6 +61,16 @@ export interface WorkflowRunJob {
 	status: string;
 	conclusion: string | null;
 	runnerName: string | null;
+	/** The runs-on labels GitHub resolved when it queued the job. */
+	labels: string[];
+	createdAt: string | null;
+}
+
+export interface QueuedRun {
+	id: number;
+	runAttempt: number;
+	workflow: string;
+	createdAt: string;
 }
 
 export interface GithubRunnerClient {
@@ -71,6 +81,15 @@ export interface GithubRunnerClient {
 	getRun: (repository: string, runId: string) => Promise<WorkflowRun>;
 	listRunJobs: (repository: string, runId: string) => Promise<WorkflowRunJob[]>;
 	forceCancelRun: (repository: string, runId: string) => Promise<void>;
+	cancelRun: (repository: string, runId: string) => Promise<void>;
+	/** Private repositories the pool may route jobs for ("owner/name"). */
+	listRepositories: () => Promise<string[]>;
+	listQueuedRuns: (repository: string) => Promise<QueuedRun[]>;
+	/** Writes the Actions variable of the pool target (organization: private repositories). */
+	setVariable: (name: string, value: string) => Promise<void>;
+	deleteVariable: (name: string) => Promise<void>;
+	/** Whether the credentials may manage the Actions variables of the target. */
+	canManageVariables: () => Promise<boolean>;
 	rerunFailedJobs: (repository: string, runId: string) => Promise<void>;
 	listRunners: () => Promise<GithubRunner[]>;
 	/** Organization runner groups, with which repositories may use them. */
@@ -101,6 +120,16 @@ const describeFailure = (status: number, body: string, path: string) => {
 	}
 	return `GitHub API ${path} failed (${status}): ${message}`;
 };
+
+/** Writing the routing variable needs one more permission than the runners. */
+const describeVariableFailure = (
+	status: number,
+	body: string,
+	target: Pick<GithubRunnerTarget, "scope">,
+) =>
+	status === 403 || status === 404
+		? `GitHub refused to write the routing variable (${status}). The credentials need "Variables: read and write" on the ${target.scope === "organization" ? "organization" : "repository"}.`
+		: describeFailure(status, body, "actions/variables");
 
 const createAuthorization = (auth: GithubRunnerAuth, apiUrl: string) => {
 	if (auth.type === "token") {
@@ -456,6 +485,8 @@ export const createGithubRunnerClient = (
 					status: string;
 					conclusion: string | null;
 					runner_name: string | null;
+					labels?: string[];
+					created_at?: string;
 				}[];
 			}>("GET", `${runPath(repository, runId)}/jobs?per_page=100&page=${page}`);
 			for (const job of data.jobs) {
@@ -464,6 +495,8 @@ export const createGithubRunnerClient = (
 					status: job.status,
 					conclusion: job.conclusion,
 					runnerName: job.runner_name,
+					labels: job.labels ?? [],
+					createdAt: job.created_at ?? null,
 				});
 			}
 			if (data.jobs.length < 100 || jobs.length >= data.total_count) break;
@@ -481,11 +514,119 @@ export const createGithubRunnerClient = (
 		}
 	};
 
+	const owner = encodeURIComponent(target.owner);
+	const variablesPath =
+		target.scope === "organization"
+			? `/orgs/${owner}/actions/variables`
+			: `/repos/${owner}/${encodeURIComponent(target.repository ?? "")}/actions/variables`;
+
+	const setVariable: GithubRunnerClient["setVariable"] = async (
+		name,
+		value,
+	) => {
+		const body =
+			target.scope === "organization"
+				? { name, value, visibility: "private" }
+				: { name, value };
+		const updated = await request(
+			"PATCH",
+			`${variablesPath}/${encodeURIComponent(name)}`,
+			body,
+		);
+		if (updated.status === 204) return;
+		if (updated.status !== 404) {
+			throw new GithubRunnerApiError(
+				describeVariableFailure(updated.status, updated.text, target),
+				updated.status,
+			);
+		}
+		const created = await request("POST", variablesPath, body);
+		if (created.status !== 201) {
+			throw new GithubRunnerApiError(
+				describeVariableFailure(created.status, created.text, target),
+				created.status,
+			);
+		}
+	};
+
+	const deleteVariable: GithubRunnerClient["deleteVariable"] = async (name) => {
+		const response = await request(
+			"DELETE",
+			`${variablesPath}/${encodeURIComponent(name)}`,
+		);
+		if (response.status !== 204 && response.status !== 404) {
+			throw new GithubRunnerApiError(
+				describeVariableFailure(response.status, response.text, target),
+				response.status,
+			);
+		}
+	};
+
+	const listRepositories: GithubRunnerClient["listRepositories"] = async () => {
+		if (target.scope === "repository") {
+			return [`${target.owner}/${target.repository}`];
+		}
+		const names: string[] = [];
+		for (let page = 1; page <= 20; page++) {
+			const data = await json<
+				{ full_name: string; private: boolean; archived?: boolean }[]
+			>("GET", `/orgs/${owner}/repos?type=private&per_page=100&page=${page}`);
+			for (const repo of data) {
+				if (repo.private && !repo.archived) names.push(repo.full_name);
+			}
+			if (data.length < 100) break;
+		}
+		return names;
+	};
+
+	const listQueuedRuns: GithubRunnerClient["listQueuedRuns"] = async (
+		repository,
+	) => {
+		const [repoOwner, name] = repository.split("/");
+		if (
+			repoOwner?.toLowerCase() !== target.owner.toLowerCase() ||
+			!name ||
+			!/^[A-Za-z0-9._-]+$/.test(name)
+		) {
+			throw new GithubRunnerApiError(
+				`${repository} is outside this pool`,
+				null,
+			);
+		}
+		const data = await json<{
+			workflow_runs: {
+				id: number;
+				run_attempt: number;
+				name: string | null;
+				created_at: string;
+			}[];
+		}>(
+			"GET",
+			`/repos/${owner}/${encodeURIComponent(name)}/actions/runs?status=queued&per_page=50`,
+		);
+		return data.workflow_runs.map((run) => ({
+			id: run.id,
+			runAttempt: run.run_attempt,
+			workflow: run.name ?? "workflow",
+			createdAt: run.created_at,
+		}));
+	};
+
 	return {
 		target,
 		authorization,
 		getRun,
 		listRunJobs,
+		cancelRun: async (repository, runId) =>
+			post(`${runPath(repository, runId)}/cancel`),
+		listRepositories,
+		listQueuedRuns,
+		setVariable,
+		deleteVariable,
+		canManageVariables: async () => {
+			const response = await request("GET", `${variablesPath}?per_page=1`);
+			return response.status === 200;
+		},
 		forceCancelRun: async (repository, runId) =>
 			post(`${runPath(repository, runId)}/force-cancel`),
 		rerunFailedJobs: async (repository, runId) =>
