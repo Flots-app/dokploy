@@ -3,6 +3,7 @@ export interface BudgetValues {
 	memoryPercent: number;
 	maxRunners: number;
 	diskReserveGb: number;
+	diskCleanupGb: number;
 	vmDiskGb: number;
 	extraLabels: string;
 }
@@ -12,6 +13,7 @@ export const defaultBudget: BudgetValues = {
 	memoryPercent: 70,
 	maxRunners: 0,
 	diskReserveGb: 15,
+	diskCleanupGb: 30,
 	vmDiskGb: 60,
 	extraLabels: "",
 };

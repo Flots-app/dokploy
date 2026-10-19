@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { db } from "@dokploy/server/db";
 import {
 	type GithubRunnerAppliedConfig,
+	type GithubRunnerCleanup,
 	type GithubRunnerJobRecord,
 	type GithubRunnerNode,
 	type GithubRunnerNodeObservation,
@@ -26,6 +27,20 @@ import {
 	vmSize,
 } from "./budget";
 import { linuxChecks, macChecks, type NodeCheck } from "./checks";
+import {
+	cleanupDue,
+	type DiskPressure,
+	type DiskSample,
+	diskPressure,
+	diskThresholds,
+	FILL_HORIZON_MS,
+	fillRate,
+	type LastCleanup,
+	trimSamples,
+	VM_MIN_FREE_BYTES,
+	vmCleanupGoal,
+	vmDiskThresholds,
+} from "./disk";
 import {
 	createNodeDriver,
 	detectPlatform,
@@ -51,7 +66,7 @@ import {
 	macStartVmScript,
 	macStopVmScript,
 } from "./macos";
-import { parseCaches, type RuntimeStatus } from "./probe";
+import { parseCaches, parseCleanup, type RuntimeStatus } from "./probe";
 import {
 	isKillDrain,
 	type PlannedAction,
@@ -73,14 +88,12 @@ const TICK_LEASE_MS = 2 * 60_000;
 const TASK_LEASE_MS = 45 * 60_000;
 const METRIC_EVERY_MS = 30_000;
 const CACHES_EVERY_MS = 10 * 60_000;
-const ROUTINE_PRUNE_EVERY_MS = 6 * 60 * 60_000;
-const PRESSURE_PRUNE_EVERY_MS = 15 * 60_000;
+const ROUTINE_CLEANUP_EVERY_MS = 6 * 60 * 60_000;
+const MAX_CLEANUPS = 20;
 const HEAL_EVERY_MS = 5 * 60_000;
 const RELEASE_TTL_MS = 6 * 60 * 60_000;
 const METRIC_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const MAX_ARMS_PER_TICK = 4;
-/** Inside the macOS VM: below this the runtime refuses new jobs whatever the host has. */
-const VM_MIN_FREE_BYTES = 3 * GiB;
 const MAX_EVENTS = 30;
 
 /**
@@ -108,6 +121,11 @@ interface ControllerState {
 	lastCachesAt: Map<string, number>;
 	lastHealAt: Map<string, number>;
 	lastRecoveryAt: Map<string, number>;
+	/** Free space seen by the last ticks, for the fill rate (VM disk on a Mac). */
+	diskSamples: Map<string, { host: DiskSample[]; vm: DiskSample[] }>;
+	lastCleanups: Map<string, LastCleanup>;
+	/** Messages of background tasks, added to the events by the next tick. */
+	pendingEvents: Map<string, { at: string; message: string }[]>;
 	timer: NodeJS.Timeout | null;
 	running: boolean;
 	rerun: boolean;
@@ -127,6 +145,9 @@ shared.__dokployGithubRunners ??= {
 	lastCachesAt: new Map(),
 	lastHealAt: new Map(),
 	lastRecoveryAt: new Map(),
+	diskSamples: new Map(),
+	lastCleanups: new Map(),
+	pendingEvents: new Map(),
 	timer: null,
 	running: false,
 	rerun: false,
@@ -499,6 +520,7 @@ export const checkRunnerMachine = async (input: {
 	vmName: string;
 	vmDiskGb: number;
 	diskReserveGb: number;
+	diskCleanupGb: number;
 	cpuPercent: number;
 	memoryPercent: number;
 	maxRunners: number;
@@ -1530,45 +1552,206 @@ const recordJobs = async (node: NodeWithRelations, runtime: RuntimeStatus) => {
 	);
 };
 
-const runBackgroundMaintenance = (
-	node: NodeWithRelations,
-	kind: "caches" | "prune-routine" | "prune-pressure",
-) =>
+const measureCaches = (node: NodeWithRelations) =>
 	runTask(node.githubRunnerNodeId, null, async ({ driver }) => {
-		if (kind === "caches") {
-			const { stdout } = await driver.guest(`${RUNNERCTL} caches`, {
-				timeoutMs: 3 * 60_000,
-				label: "Cache measurement",
-			});
-			const caches = parseCaches(stdout, new Date());
-			const fresh = await loadRunnerNode(node.githubRunnerNodeId);
-			if (fresh.observed) {
-				await db
-					.update(githubRunnerNodes)
-					.set({ observed: { ...fresh.observed, caches } })
-					.where(
-						eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId),
-					);
-			}
-			return;
+		const { stdout } = await driver.guest(`${RUNNERCTL} caches`, {
+			timeoutMs: 3 * 60_000,
+			label: "Cache measurement",
+		});
+		const caches = parseCaches(stdout, new Date());
+		const fresh = await loadRunnerNode(node.githubRunnerNodeId);
+		if (fresh.observed) {
+			await db
+				.update(githubRunnerNodes)
+				.set({ observed: { ...fresh.observed, caches } })
+				.where(
+					eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId),
+				);
 		}
-		await driver.guest(
-			`${RUNNERCTL} prune ${kind === "prune-pressure" ? "aggressive" : "normal"}`,
-			{ timeoutMs: 15 * 60_000, label: "Docker cleanup" },
-		);
+	});
+
+const pushEvent = (nodeId: string, message: string) => {
+	const pending = state.pendingEvents.get(nodeId) ?? [];
+	pending.push({ at: new Date().toISOString(), message });
+	state.pendingEvents.set(nodeId, pending.slice(-MAX_EVENTS));
+};
+
+const CLEANUP_KIND_LABELS: Record<
+	GithubRunnerCleanup["freed"][number]["kind"],
+	string
+> = {
+	containers: "containers",
+	volumes: "volumes",
+	images: "images",
+	build_cache: "build cache",
+	tool_cache: "tool cache",
+	home: "home caches",
+	workspaces: "workspaces",
+	other: "other",
+};
+
+const freedTotal = (cleanup: GithubRunnerCleanup) =>
+	cleanup.freed.reduce((sum, item) => sum + item.bytes, 0);
+
+export const describeCleanup = (cleanup: GithubRunnerCleanup) => {
+	if (cleanup.error) return `Disk cleanup failed: ${cleanup.error}`;
+	const freed = freedTotal(cleanup);
+	const detail = cleanup.freed
+		.filter((item) => item.bytes >= 1024 ** 2)
+		.slice(0, 4)
+		.map(
+			(item) => `${CLEANUP_KIND_LABELS[item.kind]} ${formatBytes(item.bytes)}`,
+		)
+		.join(", ");
+	const parts = [
+		freed < 1024 ** 2
+			? `Disk cleanup found nothing to remove, ${formatBytes(cleanup.freeAfterBytes)} free`
+			: `Disk cleanup freed ${formatBytes(freed)}${detail ? ` (${detail})` : ""}, ${formatBytes(cleanup.freeAfterBytes)} free`,
+	];
+	if (cleanup.targetBytes !== null && !cleanup.reached) {
+		parts.push(`short of the ${formatBytes(cleanup.targetBytes)} target`);
+	}
+	if (cleanup.idle === "skipped-jobs") {
+		parts.push("the caches in use go once the running jobs end");
+	}
+	return parts.join("; ");
+};
+
+interface CleanupRequest {
+	trigger: GithubRunnerCleanup["trigger"];
+	mode: GithubRunnerCleanup["mode"];
+	/** Free space when it was requested, on the disk holding the caches. */
+	freeBytes: number;
+	hostFreeBytes: number | null;
+	pressure?: DiskPressure;
+}
+
+/** Free space of the Mac volume holding the Lima VMs. */
+const macFreeBytes = async (driver: NodeDriver) => {
+	const { stdout } = await driver.host(
+		`lima_home="\${LIMA_HOME:-$HOME/.lima}"; [ -d "$lima_home" ] || lima_home="$HOME"; df -Pk "$lima_home" | awk 'NR==2 {print $4}'`,
+		{ timeoutMs: 30_000, label: "Mac disk space" },
+	);
+	const kib = Number(stdout.trim());
+	return Number.isFinite(kib) ? kib * 1024 : null;
+};
+
+/**
+ * Runs `runnerctl gc` in the background. Automatic cleanups pass the free space
+ * to reach; manual ones remove waste only, or every cache.
+ */
+const startCleanup = (nodeId: string, request: CleanupRequest) =>
+	runTask(nodeId, null, async ({ node, driver }) => {
+		const startedAt = Date.now();
+		const args =
+			request.mode === "auto" && request.pressure
+				? `auto ${Math.floor(request.pressure.thresholdBytes / 1024)} ${Math.ceil(request.pressure.targetBytes / 1024)}`
+				: request.mode === "full"
+					? "full"
+					: "light";
+		let cleanup: GithubRunnerCleanup;
+		try {
+			const { stdout } = await driver.guest(`${RUNNERCTL} gc ${args}`, {
+				timeoutMs: 20 * 60_000,
+				label: "Disk cleanup",
+			});
+			const result = parseCleanup(stdout);
+			if (!result) throw new Error("the runtime reported no result");
+			cleanup = {
+				at: new Date().toISOString(),
+				trigger: request.trigger,
+				...result,
+				...(node.platform === "macos"
+					? {
+							hostFreeBeforeBytes: request.hostFreeBytes,
+							hostFreeAfterBytes: await macFreeBytes(driver).catch(() => null),
+						}
+					: {}),
+				durationMs: Date.now() - startedAt,
+			};
+		} catch (error) {
+			cleanup = {
+				at: new Date().toISOString(),
+				trigger: request.trigger,
+				mode: request.mode,
+				freeBeforeBytes: request.freeBytes,
+				freeAfterBytes: request.freeBytes,
+				targetBytes: request.pressure?.targetBytes ?? null,
+				reached: false,
+				idle: "not-needed",
+				freed: [],
+				durationMs: Date.now() - startedAt,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+		const fresh = await loadRunnerNode(nodeId);
+		// Passes that found nothing are not worth a line each in the history: a
+		// routine one, or the same cleanup again with nothing left to remove.
+		const freedBytes = freedTotal(cleanup);
+		const previous = fresh.cleanups[0];
+		const quiet =
+			!cleanup.error &&
+			freedBytes < 1024 ** 2 &&
+			(request.trigger === "routine" ||
+				(previous !== undefined &&
+					previous.trigger === cleanup.trigger &&
+					!previous.error &&
+					freedTotal(previous) < 1024 ** 2));
 		await db
 			.update(githubRunnerNodes)
-			.set({ lastPrunedAt: new Date().toISOString() })
-			.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
-		lastCachesAt.delete(node.githubRunnerNodeId);
+			.set({
+				cleanups: quiet
+					? fresh.cleanups
+					: [cleanup, ...fresh.cleanups].slice(0, MAX_CLEANUPS),
+				lastPrunedAt: cleanup.at,
+			})
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		if (request.mode === "auto") {
+			state.lastCleanups.set(nodeId, {
+				at: Date.now(),
+				trigger: request.trigger === "filling" ? "filling" : "low-disk",
+				reached: cleanup.reached,
+				freedBytes,
+				skippedForJobs: cleanup.idle === "skipped-jobs",
+			});
+		}
+		if (!quiet) pushEvent(nodeId, describeCleanup(cleanup));
+		lastCachesAt.delete(nodeId);
 	});
+
+/** Cleans the caches of a machine now, on an operator request. */
+export const cleanRunnerCaches = async (
+	nodeId: string,
+	mode: "light" | "full",
+) => {
+	const node = await loadRunnerNode(nodeId);
+	if (!["ready", "draining"].includes(node.phase)) {
+		throw new Error("The machine must be running to clean its caches");
+	}
+	const observed = node.observed;
+	const started = startCleanup(nodeId, {
+		trigger: mode === "full" ? "manual-full" : "manual-light",
+		mode,
+		freeBytes:
+			(node.platform === "macos"
+				? observed?.sandbox?.diskFreeBytes
+				: observed?.host?.diskFreeBytes) ?? 0,
+		hostFreeBytes: observed?.host?.diskFreeBytes ?? null,
+	});
+	if (!started) {
+		throw new Error(
+			"Another task is running on this machine; try again in a moment",
+		);
+	}
+	return true;
+};
 
 /** Refreshes the cache sizes of a machine now (they are measured every 10 minutes). */
 export const refreshRunnerCaches = async (nodeId: string) => {
 	const node = await loadRunnerNode(nodeId);
 	if (!["ready", "draining"].includes(node.phase)) return false;
 	lastCachesAt.set(nodeId, Date.now());
-	return runBackgroundMaintenance(node, "caches");
+	return measureCaches(node);
 };
 
 const executeActions = async (
@@ -1711,6 +1894,64 @@ const executeActions = async (
 	});
 };
 
+/**
+ * Whether the caches of a machine must be cleaned now. On a Mac the caches live
+ * in the VM disk, whose freed blocks go back to the Mac: the VM aims for its own
+ * goal plus what the Mac volume is missing.
+ */
+const diskGoal = (
+	node: NodeWithRelations,
+	host: NonNullable<NodeProbe["host"]>,
+	runtime: RuntimeStatus,
+	now: number,
+): DiskPressure | null => {
+	const samples = state.diskSamples.get(node.githubRunnerNodeId) ?? {
+		host: [],
+		vm: [],
+	};
+	samples.host = [
+		...trimSamples(samples.host, now),
+		{ at: now, freeBytes: host.diskFreeBytes },
+	];
+	if (node.platform === "macos" && runtime.disk) {
+		samples.vm = [
+			...trimSamples(samples.vm, now),
+			{ at: now, freeBytes: runtime.disk.freeBytes },
+		];
+	}
+	state.diskSamples.set(node.githubRunnerNodeId, samples);
+	const hostPressure = diskPressure(
+		host.diskFreeBytes,
+		host.diskTotalBytes,
+		diskThresholds(host.diskTotalBytes, node),
+		fillRate(samples.host, now),
+	);
+	if (node.platform !== "macos") return hostPressure;
+	if (!runtime.disk) return null;
+	return vmCleanupGoal(
+		{
+			freeBytes: runtime.disk.freeBytes,
+			totalBytes: runtime.disk.totalBytes,
+			pressure: diskPressure(
+				runtime.disk.freeBytes,
+				runtime.disk.totalBytes,
+				vmDiskThresholds(runtime.disk.totalBytes),
+				fillRate(samples.vm, now),
+			),
+		},
+		{ freeBytes: host.diskFreeBytes, pressure: hostPressure },
+	);
+};
+
+const describePressure = (node: NodeWithRelations, pressure: DiskPressure) => {
+	const where = node.platform === "macos" ? " in the VM" : "";
+	const why =
+		pressure.trigger === "low-disk"
+			? "Low disk space"
+			: `Disk filling up (${formatBytes(pressure.expectedBytes)} expected within ${FILL_HORIZON_MS / 60_000} minutes)`;
+	return `${why}: removing the least recently used caches${where} until ${formatBytes(pressure.targetBytes)} are free`;
+};
+
 const actOnNode = async (
 	observation: Observation,
 	runners: GithubRunner[] | null,
@@ -1719,6 +1960,12 @@ const actOnNode = async (
 	const { node, driver, probe } = observation;
 	const now = Date.now();
 	const events = [...(node.observed?.events ?? [])];
+	const nodeId = node.githubRunnerNodeId;
+	for (const event of state.pendingEvents.get(nodeId) ?? []) {
+		events.unshift(event);
+	}
+	events.splice(MAX_EVENTS);
+	state.pendingEvents.delete(nodeId);
 	let phase = node.phase;
 	let lastError: string | null = listError;
 	let runtime = probe.runtime;
@@ -1726,7 +1973,6 @@ const actOnNode = async (
 	let busy = 0;
 	let slots: GithubRunnerNodeObservation["slots"] = [];
 	let drained = false;
-	const nodeId = node.githubRunnerNodeId;
 
 	try {
 		// A Mac whose VM stopped while enabled is started again (after a reboot).
@@ -1897,29 +2143,42 @@ const actOnNode = async (
 				probe.vm !== null &&
 				probe.vm.status !== "Running");
 
+		const pressure =
+			runtime && host ? diskGoal(node, host, runtime, now) : null;
 		if (
-			!admission.ok &&
-			now - Date.parse(node.lastPrunedAt ?? "1970-01-01") >
-				PRESSURE_PRUNE_EVERY_MS
+			pressure &&
+			cleanupDue(state.lastCleanups.get(nodeId), now, busy, pressure.trigger) &&
+			startCleanup(nodeId, {
+				trigger: pressure.trigger,
+				mode: "auto",
+				freeBytes:
+					(node.platform === "macos" ? runtime?.disk?.freeBytes : null) ??
+					host?.diskFreeBytes ??
+					0,
+				hostFreeBytes: host?.diskFreeBytes ?? null,
+				pressure,
+			})
 		) {
-			recordEvent(
-				events,
-				`Disk pressure (${admission.reason}): pruning Docker data`,
-			);
-			setTimeout(() => runBackgroundMaintenance(node, "prune-pressure"), 0);
+			recordEvent(events, describePressure(node, pressure));
 		} else if (
+			!pressure &&
 			runtime &&
 			busy === 0 &&
 			now - Date.parse(node.lastPrunedAt ?? "1970-01-01") >
-				ROUTINE_PRUNE_EVERY_MS
+				ROUTINE_CLEANUP_EVERY_MS
 		) {
-			setTimeout(() => runBackgroundMaintenance(node, "prune-routine"), 0);
+			startCleanup(nodeId, {
+				trigger: "routine",
+				mode: "light",
+				freeBytes: runtime.disk?.freeBytes ?? 0,
+				hostFreeBytes: host?.diskFreeBytes ?? null,
+			});
 		} else if (
 			runtime &&
 			now - (lastCachesAt.get(nodeId) ?? 0) > CACHES_EVERY_MS
 		) {
 			lastCachesAt.set(nodeId, now);
-			setTimeout(() => runBackgroundMaintenance(node, "caches"), 0);
+			setTimeout(() => measureCaches(node), 0);
 		}
 	} catch (error) {
 		lastError = error instanceof Error ? error.message : String(error);
@@ -1948,6 +2207,7 @@ const actOnNode = async (
 						cpus: probe.vm?.cpus ?? null,
 						memoryBytes: probe.vm?.memoryBytes ?? null,
 						diskFreeBytes: runtime?.disk?.freeBytes ?? null,
+						diskTotalBytes: runtime?.disk?.totalBytes ?? null,
 						memoryCurrentBytes: usage.memoryBytes,
 					}
 				: {

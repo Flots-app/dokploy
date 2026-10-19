@@ -4,7 +4,7 @@
  * file below changes; the controller reinstalls the runtime when the machine
  * reports an older version.
  */
-export const RUNTIME_VERSION = 3;
+export const RUNTIME_VERSION = 4;
 
 const RUNTIME_ROOT = "/opt/dokploy-runners";
 export const RUNNERCTL = `${RUNTIME_ROOT}/bin/runnerctl`;
@@ -29,6 +29,9 @@ STATE=/var/lib/dokploy-runners
 ETC=/etc/dokploy-runners
 RUNNER_USER=dokploy-runner
 SLICE=dokploy-runners.slice
+GC_LOCK="$STATE/gc.lock"
+SEEN="$STATE/image-seen"
+GC_SUFFIX=.dokploy-gc
 
 die() { echo "runnerctl: $*" >&2; exit 1; }
 
@@ -60,7 +63,17 @@ cmd_status() {
 	else
 		echo "slice usage_usec= memory_current= memory_max="
 	fi
-	echo "docker state=$(systemctl is-active docker 2>/dev/null || true)"
+	local docker_state
+	docker_state=$(systemctl is-active docker 2>/dev/null || true)
+	echo "docker state=$docker_state"
+	# Docker keeps no "last used" time: the images running containers use are
+	# noted here, every probe, for the least-recently-used cleanup.
+	if [ "$docker_state" = active ] && [ -d "$SEEN" ]; then
+		(timeout 5 docker ps --format '{{.Image}}' 2>/dev/null || true) | sort -u |
+			while read -r image; do
+				[ -n "$image" ] && touch "$SEEN/$(printf '%s' "$image" | tr -c 'A-Za-z0-9._-' '_')" 2>/dev/null || true
+			done
+	fi
 	local uptime now
 	uptime=$(cut -d' ' -f1 /proc/uptime)
 	now=$(date +%s)
@@ -229,23 +242,227 @@ cmd_install_release() {
 	echo "release installed=$version"
 }
 
-cmd_prune() {
-	local mode=\${1:-normal}
-	if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
+# ---------------------------------------------------------------- disk cleanup
+# Like the kubelet image garbage collector: caches grow freely, and when the disk
+# runs low the least recently used ones are removed until the target is free.
+#   1. waste, at no speed cost: stopped containers, dangling images and build
+#      cache, unused anonymous volumes, workspaces of stopped slots;
+#   2. caches unused for 30, 7 and 3 days, then for 25 hours: Docker images and
+#      build cache, tool cache versions, caches in the runner home. A running job
+#      has used what it needs within 24 hours (relatime), so it keeps them;
+#   3. still below the threshold: every cache, only while no job runs. Jobs that
+#      start meanwhile wait in their started hook.
+declare -gA GC_FREED=() GC_COUNT=()
+GC_FREE=0
+GC_TARGET=0
+
+gc_reached() { ((GC_FREE >= GC_TARGET)); }
+
+# Adds what an action gave back to its kind (other writers can make it negative).
+gc_note() {
+	local kind=$1 before=$2 counted=\${3:-0} now
+	now=$(kib_free)
+	if ((now > before)); then GC_FREED[$kind]=$((\${GC_FREED[$kind]:-0} + now - before)); fi
+	if ((counted)); then GC_COUNT[$kind]=$((\${GC_COUNT[$kind]:-0} + 1)); fi
+	GC_FREE=$now
+}
+
+gc_docker() { command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; }
+
+slot_state() { systemctl show -p ActiveState --value "$(unit_of "$1")" 2>/dev/null || echo inactive; }
+
+gc_waste() {
+	local before dir slot
+	if gc_docker; then
+		before=$GC_FREE
 		docker container prune -f --filter until=30m >/dev/null 2>&1 || true
 		docker network prune -f --filter until=30m >/dev/null 2>&1 || true
+		gc_note containers "$before"
+		before=$GC_FREE
 		docker volume prune -f >/dev/null 2>&1 || true
-		if [ "$mode" = aggressive ]; then
-			docker image prune -af --filter until=24h >/dev/null 2>&1 || true
-			docker builder prune -af --filter until=24h >/dev/null 2>&1 || true
+		gc_note volumes "$before"
+		before=$GC_FREE
+		docker image prune -f >/dev/null 2>&1 || true
+		gc_note images "$before"
+		before=$GC_FREE
+		docker builder prune -f >/dev/null 2>&1 || true
+		gc_note build_cache "$before"
+	fi
+	for dir in "$ROOT"/slots/*/_work; do
+		[ -d "$dir" ] || continue
+		slot=\${dir%/_work}
+		slot=\${slot##*/}
+		[[ "$slot" =~ ^[0-9]+$ ]] || continue
+		case "$(slot_state "$slot")" in inactive | failed) ;; *) continue ;; esac
+		before=$GC_FREE
+		rm -rf "$dir"
+		gc_note workspaces "$before" 1
+	done
+	before=$GC_FREE
+	find "$ROOT/tool-cache" "$STATE/home" -maxdepth 3 -name "*$GC_SUFFIX-*" -prune -exec rm -rf {} + 2>/dev/null || true
+	find "$ROOT/releases" -maxdepth 1 -name '.download.*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+	find "$SEEN" -type f -mtime +60 -delete 2>/dev/null || true
+	gc_note other "$before"
+}
+
+# Last use of a cache entry, in epoch seconds: the newest access or change of
+# its files, and the newest change of its directories. Directory access times
+# are left out: listing them (du, find, this very scan) updates them.
+gc_last_used() {
+	find "$1" -xdev \( -type f -printf '%A@ %T@\n' \) -o \( -type d -printf '%T@\n' \) 2>/dev/null |
+		awk '{ for (i = 1; i <= NF; i++) if ($i > m) m = $i } END { printf "%d", m }'
+}
+
+# "<last used>\t<kind>\t<target>\t<tags>" for every cache entry no container uses.
+gc_candidates() {
+	local dev id last tags tag file seen dir name home="$STATE/home"
+	dev=$(stat -c %d "$ROOT")
+	if gc_docker && [ "$(stat -c %d "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)" 2>/dev/null)" = "$dev" ]; then
+		local used
+		used=" $( (docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect -f '{{.Image}}' 2>/dev/null || true) | tr '\n' ' ') "
+		(docker image ls -q --no-trunc 2>/dev/null | sort -u | xargs -r docker image inspect 2>/dev/null |
+			jq -r '.[] | [.Id, ((.Metadata.LastTagTime // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0), ((.RepoTags // []) | join(" "))] | @tsv' || true) |
+			while IFS=$'\t' read -r id last tags; do
+				[ -n "$id" ] || continue
+				[[ "$used" == *" $id "* ]] && continue
+				last=\${last%%.*}
+				[[ "$last" =~ ^[0-9]+$ ]] || last=0
+				for tag in $tags; do
+					file="$SEEN/$(printf '%s' "$tag" | tr -c 'A-Za-z0-9._-' '_')"
+					if [ -f "$file" ]; then
+						seen=$(stat -c %Y "$file")
+						if ((seen > last)); then last=$seen; fi
+					fi
+				done
+				printf '%s\timage\t%s\t%s\n' "$last" "$id" "$tags"
+			done
+	fi
+	for dir in "$ROOT"/tool-cache/*/*; do
+		[ -d "$dir" ] && [ ! -L "$dir" ] || continue
+		[[ "$dir" == *"$GC_SUFFIX"* ]] && continue
+		[ "$(stat -c %d "$dir")" = "$dev" ] || continue
+		printf '%s\ttool_cache\t%s\t\n' "$(gc_last_used "$dir")" "$dir"
+	done
+	for dir in "$home"/.cache/* "$home"/.local/share/* "$home"/* "$home"/.[!.]*; do
+		[ -d "$dir" ] && [ ! -L "$dir" ] || continue
+		name=\${dir#"$home"/}
+		case "$name" in
+		.cache | .local | .config | .ssh | .gnupg | .docker | *"$GC_SUFFIX"*) continue ;;
+		esac
+		[ "$(stat -c %d "$dir")" = "$dev" ] || continue
+		printf '%s\thome\t%s\t\n' "$(gc_last_used "$dir")" "$dir"
+	done
+}
+
+gc_remove() {
+	local kind=$1 target=$2 tags=$3 before=$GC_FREE
+	if [ "$kind" = image ]; then
+		if [ -n "$tags" ]; then
+			# shellcheck disable=SC2086 # one argument per tag: the last one deletes the image
+			docker image rm $tags >/dev/null 2>&1 || return 0
 		else
-			# Images and recent build cache make the next jobs fast: keep them.
-			docker image prune -f >/dev/null 2>&1 || true
-			docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+			docker image rm "$target" >/dev/null 2>&1 || return 0
+		fi
+		gc_note images "$before" 1
+		return 0
+	fi
+	[ -d "$target" ] && [ ! -L "$target" ] || return 0
+	# Renamed first: a job looking for it from now on sees a cache miss.
+	mv -T "$target" "$target$GC_SUFFIX-$$" 2>/dev/null || return 0
+	rm -rf "$target$GC_SUFFIX-$$"
+	gc_note "$kind" "$before" 1
+}
+
+gc_build_cache() {
+	local before=$GC_FREE
+	gc_docker || return 0
+	if [ "$1" = all ]; then
+		docker builder prune -af >/dev/null 2>&1 || true
+	else
+		docker builder prune -af --filter "until=\${1}h" >/dev/null 2>&1 || true
+	fi
+	gc_note build_cache "$before"
+}
+
+# A job is running in a slot: its job file has no completion and its unit runs.
+gc_jobs_running() {
+	local file slot
+	for file in "$STATE"/jobs/*; do
+		[ -f "$file" ] || continue
+		slot=\${file##*/}
+		[[ "$slot" =~ ^[0-9]+$ ]] || continue
+		grep -q '^completed=' "$file" && continue
+		case "$(slot_state "$slot")" in active | activating | deactivating | reloading) return 0 ;; esac
+	done
+	return 1
+}
+
+cmd_gc() {
+	local mode=\${1:-light} threshold=\${2:-0} target=\${3:-0} start hours cutoff i last kind entry tags line atime=yes idle=not-needed
+	case "$mode" in
+	auto)
+		[[ "$threshold" =~ ^[0-9]+$ && "$target" =~ ^[0-9]+$ ]] || die "invalid thresholds"
+		;;
+	light) threshold=0 target=0 ;;
+	full)
+		threshold=$(df -Pk "$ROOT" | awk 'NR==2 {print $2}')
+		target=$threshold
+		;;
+	*) die "usage: runnerctl gc auto <threshold_kib> <target_kib> | light | full" ;;
+	esac
+	install -d -m 0700 "$SEEN"
+	trap 'rm -f "$GC_LOCK"' EXIT
+	start=$(kib_free)
+	GC_FREE=$start
+	GC_TARGET=$target
+	gc_waste
+	if [ "$mode" != light ] && ! gc_reached; then
+		# Without access times, file caches only go in the idle step.
+		findmnt -no OPTIONS -T "$ROOT" 2>/dev/null | grep -qw noatime && atime=no
+		local -a entries=()
+		mapfile -t entries < <(gc_candidates | sort -n -k1,1)
+		i=0
+		for hours in 720 168 72 25; do
+			gc_build_cache "$hours"
+			gc_reached && break
+			cutoff=$(($(date +%s) - hours * 3600))
+			while ((i < \${#entries[@]})); do
+				IFS=$'\t' read -r last kind entry tags <<<"\${entries[i]}"
+				((last < cutoff)) || break
+				i=$((i + 1))
+				[ "$kind" = image ] || [ "$atime" = yes ] || continue
+				gc_remove "$kind" "$entry" "$tags"
+				gc_reached && break 2
+			done
+		done
+		if ((GC_FREE < threshold)); then
+			# The lock comes before the job check: a job starting after the check
+			# finds the lock and waits (see the job started hook).
+			printf '%s %s\n' "$$" "$(date +%s)" >"$GC_LOCK"
+			if gc_jobs_running; then
+				idle=skipped-jobs
+				rm -f "$GC_LOCK"
+			else
+				idle="done"
+				gc_build_cache all
+				for line in "\${entries[@]}"; do
+					gc_reached && break
+					IFS=$'\t' read -r last kind entry tags <<<"$line"
+					gc_remove "$kind" "$entry" "$tags"
+				done
+				rm -f "$GC_LOCK"
+			fi
 		fi
 	fi
-	fstrim -a >/dev/null 2>&1 || true
-	echo "pruned mode=$mode free_kib=$(kib_free)"
+	# Hands the freed blocks back to the hypervisor (sparse VM disks): online
+	# discard only runs once the journal commits the deletions, so commit first.
+	sync -f "$ROOT" 2>/dev/null || sync
+	timeout 120 fstrim -a >/dev/null 2>&1 || true
+	GC_FREE=$(kib_free)
+	for kind in "\${!GC_FREED[@]}"; do
+		echo "freed kind=$kind kib=\${GC_FREED[$kind]} count=\${GC_COUNT[$kind]:-0}"
+	done
+	echo "gc mode=$mode before_kib=$start free_kib=$GC_FREE threshold_kib=$threshold target_kib=$target reached=$(gc_reached && echo yes || echo no) idle=$idle"
 }
 
 cmd_uninstall() {
@@ -274,9 +491,9 @@ stop-all) cmd_stop_all ;;
 limits) cmd_limits "\${2:-}" "\${3:-}" "\${4:-}" ;;
 env) cmd_env ;;
 install-release) cmd_install_release "\${2:-}" "\${3:-}" "\${4:-}" ;;
-prune) cmd_prune "\${2:-normal}" ;;
+gc) cmd_gc "\${2:-}" "\${3:-}" "\${4:-}" ;;
 uninstall) cmd_uninstall ;;
-*) die "usage: runnerctl status|caches|arm|stop|stop-all|limits|env|install-release|prune|uninstall" ;;
+*) die "usage: runnerctl status|caches|gc|arm|stop|stop-all|limits|env|install-release|uninstall" ;;
 esac
 `;
 
@@ -289,6 +506,16 @@ const recordJob = sh`	{
 		printf 'started=%s\n' "$(date +%s)"
 	} >"$state.tmp" 2>/dev/null && mv -f "$state.tmp" "$state" 2>/dev/null || true`;
 
+/**
+ * Runs after the job file is written: a cleanup that needs every cache idle
+ * takes its lock before looking for running jobs, so a job either shows up in
+ * that check or finds the lock here. A lock older than 20 minutes is stale.
+ */
+const waitForCleanup = sh`	if [ -e /var/lib/dokploy-runners/gc.lock ]; then
+		echo "Dokploy: waiting for the disk cleanup of this machine to finish"
+		while [ -n "$(find /var/lib/dokploy-runners/gc.lock -mmin -20 2>/dev/null)" ]; do sleep 3; done
+	fi`;
+
 const recordCompletion = sh`	printf 'completed=%s\n' "$(date +%s)" >>"$state" 2>/dev/null || true`;
 
 const jobHook = (phase: "started" | "completed") => sh`#!/bin/bash
@@ -296,7 +523,7 @@ const jobHook = (phase: "started" | "completed") => sh`#!/bin/bash
 slot="\${DOKPLOY_RUNNER_SLOT:-}"
 if [[ "$slot" =~ ^[0-9]+$ ]]; then
 	state="/var/lib/dokploy-runners/jobs/$slot"
-${phase === "started" ? recordJob : recordCompletion}
+${phase === "started" ? `${recordJob}\n${waitForCleanup}` : recordCompletion}
 fi
 hook="\${DOKPLOY_JOB_${phase.toUpperCase()}_HOOK:-}"
 if [ -n "$hook" ]; then
@@ -416,6 +643,7 @@ usermod -aG docker dokploy-runner
 install -d -m 0755 ${RUNTIME_ROOT} ${RUNTIME_ROOT}/bin ${RUNTIME_ROOT}/releases /etc/dokploy-runners
 install -d -m 0755 -o dokploy-runner -g dokploy-runner ${RUNTIME_ROOT}/slots ${RUNTIME_ROOT}/tool-cache
 install -d -m 0700 -o dokploy-runner -g dokploy-runner /var/lib/dokploy-runners/jobs /var/lib/dokploy-runners/home
+install -d -m 0700 /var/lib/dokploy-runners/image-seen
 
 log "Installing the runtime"
 write_file() {

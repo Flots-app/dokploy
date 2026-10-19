@@ -28,6 +28,7 @@ const fromMachine = (machine: RunnerMachine): BudgetValues => ({
 	memoryPercent: machine.memoryPercent,
 	maxRunners: machine.maxRunners,
 	diskReserveGb: machine.diskReserveGb,
+	diskCleanupGb: machine.diskCleanupGb,
 	vmDiskGb: machine.vmDiskGb,
 	extraLabels: machine.extraLabels.join(", "),
 });
@@ -119,6 +120,7 @@ const EditMachineForm = ({
 				memoryPercent: budget.memoryPercent,
 				maxRunners: budget.maxRunners,
 				diskReserveGb: budget.diskReserveGb,
+				diskCleanupGb: budget.diskCleanupGb,
 				vmDiskGb: Math.max(budget.vmDiskGb, machine.applied?.vmDiskGb ?? 0),
 				extraLabels: parseLabels(budget.extraLabels),
 				mode,

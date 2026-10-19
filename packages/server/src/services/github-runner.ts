@@ -18,6 +18,10 @@ import {
 	resolveMaxRunners,
 } from "@dokploy/server/utils/github-runners/budget";
 import { checkRunnerMachine } from "@dokploy/server/utils/github-runners/controller";
+import {
+	diskThresholds,
+	vmDiskThresholds,
+} from "@dokploy/server/utils/github-runners/disk";
 import { createGithubRunnerClient } from "@dokploy/server/utils/github-runners/github-api";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
 import { TRPCError } from "@trpc/server";
@@ -241,6 +245,7 @@ export const checkGithubRunnerMachine = async (
 			cpuPercent: number;
 			memoryPercent: number;
 			diskReserveGb: number;
+			diskCleanupGb: number;
 			maxRunners: number;
 			vmDiskGb: number;
 		};
@@ -353,6 +358,15 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 						node,
 					),
 					budget: host ? effectiveBudget(node.platform, host, node) : null,
+					// Where caches are trimmed and jobs stop, for the disks shown.
+					diskThresholds: {
+						host: host?.diskTotalBytes
+							? diskThresholds(host.diskTotalBytes, node)
+							: null,
+						vm: node.observed?.sandbox?.diskTotalBytes
+							? vmDiskThresholds(node.observed.sandbox.diskTotalBytes)
+							: null,
+					},
 					operation:
 						operations.find(
 							(operation) =>

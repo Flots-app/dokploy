@@ -295,6 +295,7 @@ const budgetInput = (budget: BudgetValues) => ({
 	cpuPercent: budget.cpuPercent,
 	memoryPercent: budget.memoryPercent,
 	diskReserveGb: budget.diskReserveGb,
+	diskCleanupGb: budget.diskCleanupGb,
 	maxRunners: budget.maxRunners,
 	vmDiskGb: budget.vmDiskGb,
 });

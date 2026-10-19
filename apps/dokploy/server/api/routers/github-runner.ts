@@ -1,6 +1,7 @@
 import {
 	applyRunnerNodeConfig,
 	checkGithubRunnerMachine,
+	cleanRunnerCaches,
 	createGithubRunnerNode,
 	createGithubRunnerPool,
 	disableRunnerNode,
@@ -31,6 +32,7 @@ import { createTRPCRouter, withPermission } from "@/server/api/trpc";
 import { audit } from "@/server/api/utils/audit";
 import {
 	apiCheckGithubRunnerNode,
+	apiCleanGithubRunnerNode,
 	apiCreateGithubRunnerNode,
 	apiCreateGithubRunnerPool,
 	apiDisableGithubRunnerNode,
@@ -179,6 +181,7 @@ export const githubRunnerRouter = createTRPCRouter({
 						cpuPercent: input.cpuPercent,
 						memoryPercent: input.memoryPercent,
 						diskReserveGb: input.diskReserveGb,
+						diskCleanupGb: input.diskCleanupGb,
 						maxRunners: input.maxRunners,
 						vmDiskGb: input.vmDiskGb,
 					},
@@ -257,6 +260,7 @@ export const githubRunnerRouter = createTRPCRouter({
 					memoryPercent: node.memoryPercent,
 					maxRunners: node.maxRunners,
 					diskReserveGb: node.diskReserveGb,
+					diskCleanupGb: node.diskCleanupGb,
 					mode: input.mode,
 				},
 			});
@@ -395,6 +399,28 @@ export const githubRunnerRouter = createTRPCRouter({
 				ctx.session.activeOrganizationId,
 			);
 			return refreshRunnerCaches(node.githubRunnerNodeId);
+		}),
+
+	cleanCaches: update
+		.input(apiCleanGithubRunnerNode)
+		.mutation(async ({ input, ctx }) => {
+			const node = await findGithubRunnerNode(
+				input.githubRunnerNodeId,
+				ctx.session.activeOrganizationId,
+			);
+			await cleanRunnerCaches(node.githubRunnerNodeId, input.mode).catch(fail);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "githubRunner",
+				resourceId: node.githubRunnerNodeId,
+				resourceName: node.name,
+				metadata: {
+					kind: "machine",
+					operation: "clean-caches",
+					mode: input.mode,
+				},
+			});
+			return true;
 		}),
 
 	operations: read

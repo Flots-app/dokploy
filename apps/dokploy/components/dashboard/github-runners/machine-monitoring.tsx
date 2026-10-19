@@ -29,6 +29,7 @@ import {
 	type RunnerMachine,
 	runUrl,
 } from "./format";
+import { DiskCleanup } from "./machine-disk";
 import { useNow } from "./use-now";
 
 // recharts is only needed once the monitoring dialog is opened.
@@ -55,7 +56,7 @@ const Caches = ({ machine }: { machine: RunnerMachine }) => {
 		[
 			"BuildKit cache",
 			caches?.dockerBuildCacheBytes,
-			"Layer cache of docker build, pruned after 7 days",
+			"Layer cache of docker build",
 		],
 		["Docker volumes", caches?.dockerVolumesBytes, "Volumes of job containers"],
 		[
@@ -81,7 +82,8 @@ const Caches = ({ machine }: { machine: RunnerMachine }) => {
 	];
 	return (
 		<div className="grid gap-4">
-			<div className="flex items-center justify-between">
+			<DiskCleanup machine={machine} />
+			<div className="flex items-center justify-between border-t pt-4">
 				<p className="text-sm text-muted-foreground">
 					{caches
 						? `Measured ${format(new Date(caches.at), "PPpp")}`
@@ -135,9 +137,8 @@ const Caches = ({ machine }: { machine: RunnerMachine }) => {
 			</Table>
 			{caches?.dockerReclaimableBytes ? (
 				<p className="text-xs text-muted-foreground">
-					{formatBytes(caches.dockerReclaimableBytes)} of Docker data is
-					reclaimable. Dokploy prunes it every 6 hours when idle, and
-					aggressively below the disk reserve.
+					{formatBytes(caches.dockerReclaimableBytes)} of Docker data is not
+					used by any container right now.
 				</p>
 			) : null}
 		</div>
@@ -257,7 +258,7 @@ export const MachineMonitoringDialog = ({
 					<Tabs defaultValue="usage">
 						<TabsList>
 							<TabsTrigger value="usage">Usage</TabsTrigger>
-							<TabsTrigger value="caches">Caches</TabsTrigger>
+							<TabsTrigger value="caches">Disk & caches</TabsTrigger>
 							<TabsTrigger value="jobs">Jobs</TabsTrigger>
 							<TabsTrigger value="events">Events</TabsTrigger>
 						</TabsList>

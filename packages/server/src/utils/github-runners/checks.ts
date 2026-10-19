@@ -17,6 +17,7 @@ export interface CheckSettings {
 	vmName: string;
 	vmDiskGb: number;
 	diskReserveGb: number;
+	diskCleanupGb: number;
 	cpuPercent: number;
 	memoryPercent: number;
 	maxRunners: number;
@@ -179,7 +180,7 @@ export const linuxChecks = (
 				),
 	);
 	const free = facts.diskFreeBytes ?? 0;
-	const wanted = (settings.diskReserveGb + 10) * GiB;
+	const wanted = (settings.diskCleanupGb + 10) * GiB;
 	checks.push(
 		free >= wanted
 			? check("disk", "Disk", "pass", `${formatBytes(free)} free`)
@@ -187,7 +188,7 @@ export const linuxChecks = (
 					"disk",
 					"Disk",
 					free < 5 * GiB ? "fail" : "warn",
-					`${formatBytes(free)} free; the runners stop taking jobs below the ${settings.diskReserveGb} GiB reserve`,
+					`${formatBytes(free)} free: little room for caches, which are trimmed below ${settings.diskCleanupGb} GiB free; no job starts below the ${settings.diskReserveGb} GiB reserve`,
 				),
 	);
 	checks.push(
@@ -285,7 +286,7 @@ export const macChecks = (
 	}
 	const free = status.disk?.freeBytes ?? 0;
 	const needed =
-		(settings.diskReserveGb +
+		(settings.diskCleanupGb +
 			(status.vm.status === "missing" ? settings.vmDiskGb : 0)) *
 		GiB;
 	checks.push(
@@ -295,7 +296,7 @@ export const macChecks = (
 					"disk",
 					"Disk",
 					free < 10 * GiB ? "fail" : "warn",
-					`${formatBytes(free)} free on the Mac; the VM disk can grow to ${settings.vmDiskGb} GiB and runners stop below the ${settings.diskReserveGb} GiB reserve`,
+					`${formatBytes(free)} free on the Mac; the VM disk can grow to ${settings.vmDiskGb} GiB, its caches are trimmed while the Mac has less than ${settings.diskCleanupGb} GiB free, and no job starts below the ${settings.diskReserveGb} GiB reserve`,
 				),
 	);
 	checks.push(

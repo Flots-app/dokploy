@@ -1,5 +1,7 @@
 import type {
 	GithubRunnerCaches,
+	GithubRunnerCleanup,
+	GithubRunnerCleanupKind,
 	GithubRunnerJob,
 } from "@dokploy/server/db/schema";
 
@@ -354,5 +356,62 @@ export const parseCaches = (output: string, at: Date): GithubRunnerCaches => {
 		toolCacheBytes: dir("tool_cache"),
 		homeCacheBytes: dir("home"),
 		workspacesBytes: dir("workspaces"),
+	};
+};
+
+export type CleanupOutput = Pick<
+	GithubRunnerCleanup,
+	| "mode"
+	| "freeBeforeBytes"
+	| "freeAfterBytes"
+	| "targetBytes"
+	| "reached"
+	| "idle"
+	| "freed"
+>;
+
+const CLEANUP_KINDS: GithubRunnerCleanupKind[] = [
+	"containers",
+	"volumes",
+	"images",
+	"build_cache",
+	"tool_cache",
+	"home",
+	"workspaces",
+	"other",
+];
+
+/** Output of `runnerctl gc`: one `freed` line per kind, then the `gc` summary. */
+export const parseCleanup = (output: string): CleanupOutput | null => {
+	const records = parseRecords(output);
+	const summary = records.find((record) => record.kind === "gc")?.fields;
+	if (!summary) return null;
+	const mode = summary.mode;
+	if (mode !== "auto" && mode !== "light" && mode !== "full") return null;
+	const bytes = (kib: string | undefined) => (int(kib) ?? 0) * 1024;
+	const idle = summary.idle;
+	const freed = records
+		.filter((record) => record.kind === "freed")
+		.flatMap((record) => {
+			const kind = CLEANUP_KINDS.find((item) => item === record.fields.kind);
+			if (!kind) return [];
+			return [
+				{
+					kind,
+					bytes: bytes(record.fields.kib),
+					count: int(record.fields.count) ?? 0,
+				},
+			];
+		})
+		.filter((item) => item.bytes > 0 || item.count > 0)
+		.sort((a, b) => b.bytes - a.bytes);
+	return {
+		mode,
+		freeBeforeBytes: bytes(summary.before_kib),
+		freeAfterBytes: bytes(summary.free_kib),
+		targetBytes: mode === "auto" ? bytes(summary.target_kib) : null,
+		reached: summary.reached === "yes",
+		idle: idle === "done" || idle === "skipped-jobs" ? idle : "not-needed",
+		freed,
 	};
 };

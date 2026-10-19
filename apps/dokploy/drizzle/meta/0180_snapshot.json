@@ -1,5 +1,5 @@
 {
-  "id": "efd77ccd-1009-4958-bbf6-87172fb68e55",
+  "id": "c8ff5915-7967-4542-af9a-077b50992724",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -4180,6 +4180,13 @@
           "notNull": true,
           "default": 15
         },
+        "diskCleanupGb": {
+          "name": "diskCleanupGb",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 30
+        },
         "maxRunners": {
           "name": "maxRunners",
           "type": "integer",
@@ -4244,6 +4251,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "cleanups": {
+          "name": "cleanups",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "lockedBy": {
           "name": "lockedBy",
@@ -4334,7 +4348,7 @@
       "checkConstraints": {
         "github_runner_node_budget": {
           "name": "github_runner_node_budget",
-          "value": "\"github_runner_node\".\"cpuPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"memoryPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"maxRunners\" BETWEEN 0 AND 32 AND \"github_runner_node\".\"diskReserveGb\" >= 0"
+          "value": "\"github_runner_node\".\"cpuPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"memoryPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"maxRunners\" BETWEEN 0 AND 32 AND \"github_runner_node\".\"diskReserveGb\" >= 0 AND \"github_runner_node\".\"diskCleanupGb\" >= \"github_runner_node\".\"diskReserveGb\""
         }
       },
       "isRLSEnabled": false

@@ -16,7 +16,19 @@ import {
 	macChecks,
 	versionAtLeast,
 } from "@dokploy/server/utils/github-runners/checks";
-import { limaLogLine } from "@dokploy/server/utils/github-runners/controller";
+import {
+	describeCleanup,
+	limaLogLine,
+} from "@dokploy/server/utils/github-runners/controller";
+import {
+	cleanupDue,
+	type DiskSample,
+	diskPressure,
+	diskThresholds,
+	fillRate,
+	vmCleanupGoal,
+	vmDiskThresholds,
+} from "@dokploy/server/utils/github-runners/disk";
 import {
 	createGithubRunnerClient,
 	decodeJitConfig,
@@ -34,6 +46,7 @@ import {
 import {
 	type LocalSlot,
 	parseCaches,
+	parseCleanup,
 	parseDockerSize,
 	parseLinuxFacts,
 	parseMacStatus,
@@ -979,6 +992,45 @@ describe("runtime scripts", () => {
 		expect(recorded).toMatch(/workflow=CI Pipeline\n/);
 	});
 
+	it("makes a starting job wait for a cleanup that needs every cache", () => {
+		const { started } = files();
+		const lock = join(dir, "gc.lock");
+		writeFileSync(lock, "1 1\n");
+		const hook = join(dir, "job-started-wait.sh");
+		writeFileSync(
+			hook,
+			started
+				.replace("/var/lib/dokploy-runners/jobs", dir)
+				.replaceAll("/var/lib/dokploy-runners/gc.lock", lock),
+		);
+		setTimeout(() => rmSync(lock, { force: true }), 1000);
+		const startedAt = Date.now();
+		return new Promise<void>((resolve, reject) => {
+			const child = spawn("bash", [hook], {
+				env: { ...process.env, DOKPLOY_RUNNER_SLOT: "4", GITHUB_JOB: "build" },
+			});
+			let output = "";
+			child.stdout.on("data", (chunk) => {
+				output += chunk;
+			});
+			child.on("error", reject);
+			child.on("close", (code) => {
+				try {
+					expect(code).toBe(0);
+					expect(output).toContain("waiting for the disk cleanup");
+					expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1000);
+					// The job is recorded before the wait, so the cleanup sees it.
+					expect(execFileSync("cat", [join(dir, "4")]).toString()).toContain(
+						"started=",
+					);
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			});
+		});
+	}, 15_000);
+
 	it("quotes the runner environment for systemd", () => {
 		expect(
 			runnerEnvironment({
@@ -1041,6 +1093,7 @@ describe("machine checks", () => {
 		vmName: "dokploy-runners",
 		vmDiskGb: 60,
 		diskReserveGb: 15,
+		diskCleanupGb: 30,
 		cpuPercent: 70,
 		memoryPercent: 70,
 		maxRunners: 0,
@@ -1118,6 +1171,195 @@ describe("machine checks", () => {
 		expect(versionAtLeast("v1.0.0", "1.0.0")).toBe(true);
 		expect(versionAtLeast("0.23.2", "1.0.0")).toBe(false);
 		expect(versionAtLeast(null, "1.0.0")).toBe(false);
+	});
+});
+
+describe("disk cleanup", () => {
+	const MiB = 1024 ** 2;
+	const minutes = (count: number) => count * 60_000;
+
+	it("cleans between the threshold and a headroom of 5% of the disk", () => {
+		expect(
+			diskThresholds(200 * GiB, { diskReserveGb: 15, diskCleanupGb: 30 }),
+		).toEqual({
+			reserveBytes: 15 * GiB,
+			cleanupBytes: 30 * GiB,
+			targetBytes: 40 * GiB,
+		});
+		// 5% of 2 TiB is capped at 25 GiB, 5% of 50 GiB raised to 5 GiB.
+		expect(
+			diskThresholds(2048 * GiB, { diskReserveGb: 15, diskCleanupGb: 30 })
+				.targetBytes,
+		).toBe(55 * GiB);
+		expect(
+			diskThresholds(50 * GiB, { diskReserveGb: 5, diskCleanupGb: 10 })
+				.targetBytes,
+		).toBe(15 * GiB);
+		// The VM disk keeps 15% free, never less than the job floor plus 5 GiB.
+		expect(vmDiskThresholds(60 * GiB)).toEqual({
+			reserveBytes: 3 * GiB,
+			cleanupBytes: 9 * GiB,
+			targetBytes: 14 * GiB,
+		});
+		expect(vmDiskThresholds(20 * GiB).cleanupBytes).toBe(8 * GiB);
+	});
+
+	it("measures the fill rate over the last minutes", () => {
+		const now = minutes(30);
+		// 512 MiB written per minute for 8 minutes.
+		const filling: DiskSample[] = Array.from({ length: 17 }, (_, index) => ({
+			at: now - minutes(8) + index * 30_000,
+			freeBytes: 100 * GiB - index * 256 * MiB,
+		}));
+		expect(fillRate(filling, now)).toBeCloseTo((512 * MiB) / minutes(1), 3);
+		// Too little history to project anything.
+		expect(fillRate(filling.slice(-3), now)).toBeNull();
+		expect(
+			fillRate(
+				filling.filter((sample) => sample.at > now - minutes(2)),
+				now,
+			),
+		).toBeNull();
+	});
+
+	it("cleans below the threshold, or before the jobs get there", () => {
+		const thresholds = diskThresholds(200 * GiB, {
+			diskReserveGb: 15,
+			diskCleanupGb: 30,
+		});
+		expect(diskPressure(50 * GiB, 200 * GiB, thresholds, null)).toBeNull();
+		expect(diskPressure(29 * GiB, 200 * GiB, thresholds, null)).toEqual({
+			trigger: "low-disk",
+			targetBytes: 40 * GiB,
+			thresholdBytes: 30 * GiB,
+			expectedBytes: 0,
+		});
+		// 2 GiB a minute: 20 GiB within the horizon would cross the threshold.
+		const rate = (2 * GiB) / minutes(1);
+		expect(diskPressure(45 * GiB, 200 * GiB, thresholds, rate)).toEqual({
+			trigger: "filling",
+			targetBytes: 60 * GiB,
+			thresholdBytes: 30 * GiB,
+			expectedBytes: 20 * GiB,
+		});
+		// Emptying disks and slow growth do not trigger anything.
+		expect(diskPressure(45 * GiB, 200 * GiB, thresholds, -rate)).toBeNull();
+		expect(
+			diskPressure(45 * GiB, 200 * GiB, thresholds, rate / 100),
+		).toBeNull();
+	});
+
+	it("frees in the VM what the Mac is missing", () => {
+		const mac = diskPressure(
+			20 * GiB,
+			460 * GiB,
+			diskThresholds(460 * GiB, { diskReserveGb: 15, diskCleanupGb: 30 }),
+			null,
+		);
+		// The Mac needs 33 GiB more (target 30 + 23 GiB of headroom).
+		expect(
+			vmCleanupGoal(
+				{ freeBytes: 40 * GiB, totalBytes: 60 * GiB, pressure: null },
+				{ freeBytes: 20 * GiB, pressure: mac },
+			),
+		).toEqual({
+			trigger: "low-disk",
+			targetBytes: 60 * GiB,
+			thresholdBytes: 50 * GiB,
+			expectedBytes: 0,
+		});
+		const vm = diskPressure(
+			8 * GiB,
+			60 * GiB,
+			vmDiskThresholds(60 * GiB),
+			null,
+		);
+		expect(
+			vmCleanupGoal(
+				{ freeBytes: 8 * GiB, totalBytes: 60 * GiB, pressure: vm },
+				{ freeBytes: 200 * GiB, pressure: null },
+			),
+		).toEqual({
+			trigger: "low-disk",
+			targetBytes: 14 * GiB,
+			thresholdBytes: 9 * GiB,
+			expectedBytes: 0,
+		});
+		expect(
+			vmCleanupGoal(
+				{ freeBytes: 40 * GiB, totalBytes: 60 * GiB, pressure: null },
+				{ freeBytes: 200 * GiB, pressure: null },
+			),
+		).toBeNull();
+	});
+
+	it("retries soon after a cleanup, and at once when jobs it waited for end", () => {
+		const now = minutes(100);
+		expect(cleanupDue(undefined, now, 3, "low-disk")).toBe(true);
+		const reached = {
+			at: now - minutes(1),
+			trigger: "low-disk" as const,
+			reached: true,
+			freedBytes: 4 * GiB,
+			skippedForJobs: false,
+		};
+		expect(cleanupDue(reached, now, 0, "low-disk")).toBe(false);
+		expect(
+			cleanupDue({ ...reached, at: now - minutes(3) }, now, 0, "low-disk"),
+		).toBe(true);
+		const missed = { ...reached, at: now - minutes(5), reached: false };
+		expect(cleanupDue(missed, now, 0, "low-disk")).toBe(false);
+		expect(
+			cleanupDue({ ...missed, at: now - minutes(11) }, now, 2, "low-disk"),
+		).toBe(true);
+		// The disk got low after a cleanup that only anticipated.
+		expect(
+			cleanupDue({ ...missed, trigger: "filling" }, now, 2, "low-disk"),
+		).toBe(true);
+		// Nothing left to remove: the disk is full of something else.
+		const empty = { ...missed, at: now - minutes(11), freedBytes: 0 };
+		expect(cleanupDue(empty, now, 0, "low-disk")).toBe(false);
+		expect(
+			cleanupDue({ ...empty, at: now - minutes(31) }, now, 0, "low-disk"),
+		).toBe(true);
+		// The step removing warm caches waited for jobs: retried once idle.
+		const waited = { ...missed, skippedForJobs: true };
+		expect(cleanupDue(waited, now, 2, "low-disk")).toBe(false);
+		expect(cleanupDue(waited, now, 0, "low-disk")).toBe(true);
+	});
+
+	it("reads the cleanup report", () => {
+		const output = [
+			"freed kind=images kib=3145728 count=4",
+			"freed kind=tool_cache kib=1048576 count=2",
+			"freed kind=volumes kib=0 count=0",
+			"freed kind=bogus kib=9 count=1",
+			"gc mode=auto before_kib=20971520 free_kib=25165824 threshold_kib=31457280 target_kib=41943040 reached=no idle=skipped-jobs",
+		].join("\n");
+		const report = parseCleanup(output);
+		expect(report).toEqual({
+			mode: "auto",
+			freeBeforeBytes: 20 * GiB,
+			freeAfterBytes: 24 * GiB,
+			targetBytes: 40 * GiB,
+			reached: false,
+			idle: "skipped-jobs",
+			freed: [
+				{ kind: "images", bytes: 3 * GiB, count: 4 },
+				{ kind: "tool_cache", bytes: GiB, count: 2 },
+			],
+		});
+		expect(parseCleanup("runnerctl: invalid thresholds")).toBeNull();
+		expect(
+			describeCleanup({
+				at: "2026-10-18T10:00:00.000Z",
+				trigger: "low-disk",
+				durationMs: 1000,
+				...(report as NonNullable<typeof report>),
+			}),
+		).toBe(
+			"Disk cleanup freed 4 GiB (images 3 GiB, tool cache 1 GiB), 24 GiB free; short of the 40 GiB target; the caches in use go once the running jobs end",
+		);
 	});
 });
 

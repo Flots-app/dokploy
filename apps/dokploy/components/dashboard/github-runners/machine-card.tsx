@@ -143,9 +143,11 @@ const SlotGrid = ({ machine }: { machine: RunnerMachine }) => {
 const diskLevel = (machine: RunnerMachine) => {
 	const host = machine.observed?.host;
 	if (!host) return "ok" as const;
-	const reserve = machine.diskReserveGb * GiB;
-	if (host.diskFreeBytes < reserve) return "danger" as const;
-	return host.diskFreeBytes < 2 * reserve ? ("warn" as const) : ("ok" as const);
+	if (host.diskFreeBytes < machine.diskReserveGb * GiB)
+		return "danger" as const;
+	return host.diskFreeBytes < machine.diskCleanupGb * GiB
+		? ("warn" as const)
+		: ("ok" as const);
 };
 
 const MachineUsage = ({ machine }: { machine: RunnerMachine }) => {
@@ -185,7 +187,7 @@ const MachineUsage = ({ machine }: { machine: RunnerMachine }) => {
 				label="Disk free"
 				value={
 					host
-						? `${formatBytes(host.diskFreeBytes)} (reserve ${machine.diskReserveGb} GiB)`
+						? `${formatBytes(host.diskFreeBytes)} · cleans < ${machine.diskCleanupGb} GiB`
 						: "—"
 				}
 				ratio={
