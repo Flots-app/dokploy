@@ -21,6 +21,7 @@ import { formatDuration, type RunnerPool } from "./format";
 import { HandlePool } from "./handle-pool";
 import { MachineCard } from "./machine-card";
 import { JobsTable } from "./machine-monitoring";
+import { GettingStarted, WorkflowSnippet } from "./pool-usage";
 
 const PoolStats = ({ pool }: { pool: RunnerPool }) => {
 	const { data: stats } = api.githubRunner.jobStats.useQuery(
@@ -153,11 +154,18 @@ const PoolSection = ({
 					)}
 				</div>
 			</div>
+			<WorkflowSnippet pool={pool} />
 			<PoolStats pool={pool} />
 			{pool.nodes.length === 0 ? (
-				<p className="py-6 text-center text-sm text-muted-foreground">
-					Add a Mac or a Linux machine to start taking jobs.
-				</p>
+				<div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-8 text-center">
+					<p className="max-w-md text-sm text-muted-foreground">
+						Next: add the machine that runs the jobs, a Mac or a Linux machine
+						reachable over SSH. Dokploy installs everything on it.
+					</p>
+					{permissions.create && (
+						<AddMachine poolId={pool.githubRunnerPoolId} />
+					)}
+				</div>
 			) : (
 				<div className="grid gap-4 lg:grid-cols-2">
 					{pool.nodes.map((node) => (
@@ -226,13 +234,7 @@ export const ShowGithubRunners = () => {
 						) : error ? (
 							<p className="text-sm text-destructive">{error.message}</p>
 						) : data?.length === 0 ? (
-							<div className="flex min-h-[25vh] flex-col items-center justify-center gap-3 text-center">
-								<Github className="size-8 text-muted-foreground" />
-								<p className="max-w-md text-sm text-muted-foreground">
-									Create a pool for a GitHub organization or repository, then
-									add the machines that run its jobs.
-								</p>
-							</div>
+							<GettingStarted action={allowed.create && <HandlePool />} />
 						) : (
 							data?.map((pool) => (
 								<PoolSection

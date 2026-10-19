@@ -33,6 +33,7 @@ import { api, type RouterOutputs } from "@/utils/api";
 import { BudgetFields } from "./budget-fields";
 import { type BudgetValues, defaultBudget, parseLabels } from "./budget-values";
 import { formatBytes, formatCpus } from "./format";
+import { GenerateKeyButton, MachinePrep } from "./machine-setup";
 
 type CheckResult = RouterOutputs["githubRunner"]["checkMachine"];
 
@@ -124,7 +125,7 @@ const ConnectionFields = ({
 					<Label htmlFor="machine-host">Host</Label>
 					<Input
 						id="machine-host"
-						placeholder="m6.tailnet.ts.net"
+						placeholder="192.168.1.20 or m6.tailnet.ts.net"
 						value={value.host}
 						onChange={(event) => set({ host: event.target.value })}
 					/>
@@ -170,17 +171,19 @@ const ConnectionFields = ({
 							))}
 						</SelectContent>
 					</Select>
-					{sshKeys?.length === 0 && (
-						<p className="text-xs text-muted-foreground">
+					<div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+						<GenerateKeyButton onCreated={(sshKeyId) => set({ sshKeyId })} />
+						{sshKeys?.length === 0 ? (
+							"No key yet: generate one for the runner machines."
+						) : (
 							<Link
 								href="/dashboard/settings/ssh-keys"
 								className="text-primary"
 							>
-								Add an SSH key
-							</Link>{" "}
-							and authorize its public key on the machine first.
-						</p>
-					)}
+								Manage keys
+							</Link>
+						)}
+					</div>
 				</div>
 				{value.platform === "macos" && (
 					<div className="space-y-2">
@@ -198,11 +201,14 @@ const ConnectionFields = ({
 					</div>
 				)}
 			</div>
-			<p className="text-xs text-muted-foreground">
-				{value.platform === "macos"
-					? "The Mac needs Remote Login and Lima (brew install lima) for the SSH user. No sudo is needed on the Mac."
-					: "Use a dedicated machine with systemd and cgroup v2; the SSH user needs root or passwordless sudo. Jobs get Docker access."}
-			</p>
+			<MachinePrep
+				platform={value.platform}
+				publicKey={
+					sshKeys?.find((key) => key.sshKeyId === value.sshKeyId)?.publicKey ??
+					null
+				}
+				username={value.username}
+			/>
 		</>
 	);
 };

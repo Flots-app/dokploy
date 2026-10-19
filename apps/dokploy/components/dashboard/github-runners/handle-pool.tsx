@@ -1,14 +1,8 @@
 import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
-import { CheckCircle2, Loader2, Pencil, PlusIcon } from "lucide-react";
+import { Pencil, PlusIcon } from "lucide-react";
 import { useState } from "react";
-import {
-	type FieldErrors,
-	type UseFormReturn,
-	useForm,
-	useWatch,
-} from "react-hook-form";
+import { type FieldErrors, type UseFormReturn, useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import { AlertBlock } from "@/components/shared/alert-block";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,353 +41,191 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/utils/api";
 import { parseLabels } from "./budget-values";
 import type { RunnerPool } from "./format";
+import { labelFromName, parseGithubTarget } from "./github-links";
+import { AccessFields, RunnerGroupField, Step } from "./pool-access";
+import {
+	type PoolFormValues,
+	poolFormDefaults,
+	poolFormSchema,
+	toPoolInput,
+} from "./pool-form";
 
-// Fields shown only for some scopes or authentication methods, and the
-// collapsed advanced settings, are unmounted and then read as undefined.
-const optional = z.string().trim().optional();
+type PoolForm = UseFormReturn<PoolFormValues>;
 
-const schema = z
-	.object({
-		name: z.string().trim().min(1, "Name is required").max(64),
-		description: z.string().max(500).optional(),
-		scope: z.enum(["organization", "repository"]),
-		owner: z.string().trim().min(1, "Owner is required"),
-		repository: optional,
-		runnerGroup: optional,
-		labels: z.string(),
-		authType: z.enum(["token", "app", "provider"]),
-		token: optional,
-		appId: z.string().regex(/^\d*$/, "Digits only").optional(),
-		appInstallationId: z.string().regex(/^\d*$/, "Digits only").optional(),
-		appPrivateKey: optional,
-		githubId: optional,
-		runnerVersion: z
-			.string()
-			.trim()
-			.regex(
-				/^(\d+\.\d+\.\d+)?$/,
-				"Use a version such as 2.329.0, or leave empty",
-			)
-			.optional(),
-		apiUrl: z.string().trim().url().optional(),
-		runnerEnv: z.string().optional(),
-		jobStartedHook: optional,
-		jobCompletedHook: optional,
-		rerunInterruptedJobs: z.boolean().optional(),
-	})
-	.refine((value) => value.scope === "organization" || value.repository, {
-		path: ["repository"],
-		message: "Repository is required",
-	});
+/** Until edited, the name follows the owner and the labels follow the name. */
+const fillName = (form: PoolForm, name: string) => {
+	if (!form.getFieldState("name").isDirty) form.setValue("name", name);
+	fillLabels(form, form.getValues("name"));
+};
 
-type FormValues = z.infer<typeof schema>;
-type PoolForm = UseFormReturn<FormValues>;
+const fillLabels = (form: PoolForm, name: string) => {
+	if (!form.getFieldState("labels").isDirty) {
+		form.setValue("labels", labelFromName(name));
+	}
+};
 
-const defaults = (pool?: RunnerPool): FormValues => ({
-	name: pool?.name ?? "",
-	description: pool?.description ?? "",
-	scope: pool?.scope ?? "organization",
-	owner: pool?.owner ?? "",
-	repository: pool?.repository ?? "",
-	runnerGroup: pool?.runnerGroup ?? "Default",
-	labels: pool?.labels.join(", ") ?? "",
-	authType: pool?.authType ?? "app",
-	token: "",
-	appId: pool?.appId ? String(pool.appId) : "",
-	appInstallationId: pool?.appInstallationId ?? "",
-	appPrivateKey: "",
-	githubId: pool?.githubId ?? "",
-	runnerVersion: pool?.runnerVersion ?? "",
-	apiUrl: pool?.apiUrl ?? "https://api.github.com",
-	runnerEnv: "",
-	jobStartedHook: pool?.jobStartedHook ?? "",
-	jobCompletedHook: pool?.jobCompletedHook ?? "",
-	rerunInterruptedJobs: pool?.rerunInterruptedJobs ?? true,
-});
-
-/** Undefined (an unmounted field) keeps the stored value; empty clears it. */
-const keepOr = <T,>(value: string | undefined, stored: T | null | undefined) =>
-	value === undefined ? (stored ?? null) : value || null;
-
-const toPoolInput = (values: FormValues, pool?: RunnerPool) => ({
-	name: values.name,
-	description: values.description || null,
-	scope: values.scope,
-	owner: values.owner,
-	repository: values.scope === "repository" ? values.repository || null : null,
-	runnerGroup:
-		values.scope === "organization"
-			? values.runnerGroup || "Default"
-			: "Default",
-	labels: parseLabels(values.labels),
-	apiUrl: values.apiUrl || pool?.apiUrl || "https://api.github.com",
-	authType: values.authType,
-	// Secrets are never sent back: an empty field keeps the stored one.
-	token: values.authType === "token" ? values.token || null : null,
-	appId:
-		values.authType === "app" && values.appId ? Number(values.appId) : null,
-	appInstallationId:
-		values.authType === "app" ? values.appInstallationId || null : null,
-	appPrivateKey:
-		values.authType === "app" ? values.appPrivateKey || null : null,
-	githubId: values.authType === "provider" ? values.githubId || null : null,
-	runnerVersion: keepOr(values.runnerVersion, pool?.runnerVersion),
-	runnerEnv: values.runnerEnv ?? "",
-	jobStartedHook: keepOr(values.jobStartedHook, pool?.jobStartedHook),
-	jobCompletedHook: keepOr(values.jobCompletedHook, pool?.jobCompletedHook),
-	rerunInterruptedJobs: values.rerunInterruptedJobs ?? true,
-});
-
-const TextField = ({
-	form,
-	name,
-	label,
-	placeholder,
-	description,
-	disabled,
-}: {
-	form: PoolForm;
-	name: "name" | "owner" | "repository" | "runnerGroup" | "labels";
-	label: string;
-	placeholder?: string;
-	description?: string;
-	disabled?: boolean;
-}) => (
-	<FormField
-		control={form.control}
-		name={name}
-		render={({ field }) => (
-			<FormItem>
-				<FormLabel>{label}</FormLabel>
-				<FormControl>
-					<Input placeholder={placeholder} disabled={disabled} {...field} />
-				</FormControl>
-				{description && <FormDescription>{description}</FormDescription>}
-				<FormMessage />
-			</FormItem>
-		)}
-	/>
-);
-
+/** Step 1: the organization or repository whose jobs the machines run. */
 const TargetFields = ({
 	form,
 	pool,
+	onTargetChange,
 }: {
 	form: PoolForm;
 	pool?: RunnerPool;
+	onTargetChange: () => void;
 }) => {
-	const scope = useWatch({ control: form.control, name: "scope" });
+	const scope = form.watch("scope");
 	// The GitHub target of a pool with machines cannot change.
 	const locked = Boolean(pool?.nodes.length);
+	const onOwner = (value: string) => {
+		// A pasted "owner/repository" or GitHub URL fills both fields.
+		const target = value.includes("/")
+			? parseGithubTarget(value)
+			: { owner: value, repository: null };
+		form.setValue("owner", target.owner, { shouldDirty: true });
+		if (target.repository) {
+			form.setValue("scope", "repository");
+			form.setValue("repository", target.repository, { shouldDirty: true });
+		}
+		if (!pool) fillName(form, target.repository ?? target.owner);
+		onTargetChange();
+	};
 	return (
-		<>
-			<div className="grid gap-4 sm:grid-cols-2">
-				<TextField
-					form={form}
-					name="name"
-					label="Name"
-					placeholder="Flots CI"
-				/>
-				<FormField
-					control={form.control}
-					name="scope"
-					render={({ field }) => (
-						<FormItem>
-							<FormLabel>Runners for</FormLabel>
-							<Select
-								value={field.value}
-								onValueChange={field.onChange}
-								disabled={locked}
-							>
-								<FormControl>
-									<SelectTrigger>
-										<SelectValue />
-									</SelectTrigger>
-								</FormControl>
-								<SelectContent>
-									<SelectItem value="organization">An organization</SelectItem>
-									<SelectItem value="repository">A repository</SelectItem>
-								</SelectContent>
-							</Select>
-							<FormMessage />
-						</FormItem>
-					)}
-				/>
-				<TextField
-					form={form}
-					name="owner"
-					label={scope === "organization" ? "Organization" : "Owner"}
-					placeholder="Flots-app"
-					disabled={locked}
-				/>
-				{scope === "repository" ? (
-					<TextField
-						form={form}
-						name="repository"
-						label="Repository"
-						placeholder="monorepo"
-						disabled={locked}
-					/>
-				) : (
-					<TextField
-						form={form}
-						name="runnerGroup"
-						label="Runner group"
-						placeholder="Default"
-					/>
-				)}
-			</div>
-			<TextField
-				form={form}
-				name="labels"
-				label="Labels"
-				placeholder="flots-mac-mini-parallel, flots-mac-mini-linux"
-				description="Added to self-hosted, Linux, the architecture and dokploy-<machine>. Workflows select the pool with runs-on."
-			/>
-		</>
-	);
-};
-
-const AppFields = ({ form, pool }: { form: PoolForm; pool?: RunnerPool }) => (
-	<div className="grid gap-4 sm:grid-cols-2">
-		<FormField
-			control={form.control}
-			name="appId"
-			render={({ field }) => (
-				<FormItem>
-					<FormLabel>App ID</FormLabel>
-					<FormControl>
-						<Input inputMode="numeric" {...field} />
-					</FormControl>
-					<FormMessage />
-				</FormItem>
-			)}
-		/>
-		<FormField
-			control={form.control}
-			name="appInstallationId"
-			render={({ field }) => (
-				<FormItem>
-					<FormLabel>Installation ID</FormLabel>
-					<FormControl>
-						<Input inputMode="numeric" {...field} />
-					</FormControl>
-					<FormMessage />
-				</FormItem>
-			)}
-		/>
-		<FormField
-			control={form.control}
-			name="appPrivateKey"
-			render={({ field }) => (
-				<FormItem className="sm:col-span-2">
-					<FormLabel>Private key</FormLabel>
-					<FormControl>
-						<Textarea
-							rows={4}
-							className="font-mono text-xs"
-							placeholder={
-								pool?.hasAppPrivateKey
-									? "Unchanged"
-									: "-----BEGIN RSA PRIVATE KEY-----"
-							}
-							{...field}
-						/>
-					</FormControl>
-					<FormMessage />
-				</FormItem>
-			)}
-		/>
-	</div>
-);
-
-const ProviderField = ({ form }: { form: PoolForm }) => {
-	const { data: providers } = api.github.githubProviders.useQuery();
-	return (
-		<FormField
-			control={form.control}
-			name="githubId"
-			render={({ field }) => (
-				<FormItem>
-					<FormLabel>GitHub provider</FormLabel>
-					<Select value={field.value} onValueChange={field.onChange}>
-						<FormControl>
-							<SelectTrigger>
-								<SelectValue placeholder="Select a provider" />
-							</SelectTrigger>
-						</FormControl>
-						<SelectContent>
-							{providers?.map((provider) => (
-								<SelectItem key={provider.githubId} value={provider.githubId}>
-									{provider.gitProvider.name}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
-					<FormDescription>
-						Its GitHub App must also be granted the runner permission above.
-					</FormDescription>
-					<FormMessage />
-				</FormItem>
-			)}
-		/>
-	);
-};
-
-const AuthFields = ({ form, pool }: { form: PoolForm; pool?: RunnerPool }) => {
-	const authType = useWatch({ control: form.control, name: "authType" });
-	return (
-		<>
+		<div className="grid gap-4 sm:grid-cols-2">
 			<FormField
 				control={form.control}
-				name="authType"
+				name="scope"
 				render={({ field }) => (
 					<FormItem>
-						<FormLabel>Authentication</FormLabel>
-						<Select value={field.value} onValueChange={field.onChange}>
+						<FormLabel>Jobs of</FormLabel>
+						<Select
+							value={field.value}
+							onValueChange={(value) => {
+								field.onChange(value);
+								onTargetChange();
+							}}
+							disabled={locked}
+						>
 							<FormControl>
 								<SelectTrigger>
 									<SelectValue />
 								</SelectTrigger>
 							</FormControl>
 							<SelectContent>
-								<SelectItem value="app">GitHub App (recommended)</SelectItem>
-								<SelectItem value="provider">
-									Dokploy GitHub provider
+								<SelectItem value="organization">
+									An organization (all its repositories)
 								</SelectItem>
-								<SelectItem value="token">Fine-grained token</SelectItem>
+								<SelectItem value="repository">One repository</SelectItem>
 							</SelectContent>
 						</Select>
-						<FormDescription>
-							Needs "Self-hosted runners: read and write" on the organization,
-							or "Administration: read and write" on the repository. Credentials
-							stay encrypted in Dokploy and never reach the machines.
-						</FormDescription>
+						<FormMessage />
 					</FormItem>
 				)}
 			/>
-			{authType === "token" && (
+			<FormField
+				control={form.control}
+				name="owner"
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>
+							{scope === "organization" ? "Organization" : "Owner"}
+						</FormLabel>
+						<FormControl>
+							<Input
+								placeholder="Flots-app or its GitHub URL"
+								disabled={locked}
+								{...field}
+								onChange={(event) => onOwner(event.target.value)}
+							/>
+						</FormControl>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
+			{scope === "repository" && (
 				<FormField
 					control={form.control}
-					name="token"
+					name="repository"
 					render={({ field }) => (
-						<FormItem>
-							<FormLabel>Token</FormLabel>
+						<FormItem className="sm:col-start-2">
+							<FormLabel>Repository</FormLabel>
 							<FormControl>
-								<Input
-									type="password"
-									autoComplete="off"
-									placeholder={pool?.hasToken ? "Unchanged" : "github_pat_…"}
-									{...field}
-								/>
+								<Input placeholder="monorepo" disabled={locked} {...field} />
 							</FormControl>
 							<FormMessage />
 						</FormItem>
 					)}
 				/>
 			)}
-			{authType === "app" && <AppFields form={form} pool={pool} />}
-			{authType === "provider" && <ProviderField form={form} />}
+		</div>
+	);
+};
+
+/** Step 3: how workflows reach the machines. */
+const TargetingFields = ({
+	form,
+	pool,
+	access,
+}: {
+	form: PoolForm;
+	pool?: RunnerPool;
+	access: Parameters<typeof RunnerGroupField>[0]["access"];
+}) => {
+	const [scope, labels] = form.watch(["scope", "labels"]);
+	const runsOn = ["self-hosted", ...parseLabels(labels)].join(", ");
+	return (
+		<>
+			{scope === "organization" && (
+				<RunnerGroupField form={form} access={access} />
+			)}
+			<div className="grid gap-4 sm:grid-cols-2">
+				<FormField
+					control={form.control}
+					name="name"
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Pool name</FormLabel>
+							<FormControl>
+								<Input
+									placeholder="Flots CI"
+									{...field}
+									onChange={(event) => {
+										field.onChange(event);
+										if (!pool) fillLabels(form, event.target.value);
+									}}
+								/>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={form.control}
+					name="labels"
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Labels</FormLabel>
+							<FormControl>
+								<Input placeholder="flots-ci" {...field} />
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			</div>
+			<div className="grid gap-1 rounded-md bg-muted p-3 text-xs">
+				<span className="text-muted-foreground">
+					Workflows send their jobs to these machines with:
+				</span>
+				<code className="font-mono">runs-on: [{runsOn}]</code>
+				{!parseLabels(labels).length && (
+					<span className="text-orange-600 dark:text-orange-500">
+						Without a label, every self-hosted job of the{" "}
+						{scope === "organization" ? "organization" : "repository"} can land
+						on these machines.
+					</span>
+				)}
+			</div>
 		</>
 	);
 };
@@ -409,8 +241,8 @@ const RerunField = ({ form }: { form: PoolForm }) => (
 					<FormDescription>
 						When a machine crashes or is stopped with its jobs interrupted,
 						their failed jobs are re-run once the run completes and land on the
-						other machines (3 attempts at most). The token or App also needs
-						"Actions: read and write".
+						other machines (3 attempts at most). Uses the "Actions" permission
+						the GitHub links above include.
 					</FormDescription>
 				</div>
 				<FormControl>
@@ -546,23 +378,20 @@ const PoolFormContent = ({
 	const create = api.githubRunner.createPool.useMutation();
 	const update = api.githubRunner.updatePool.useMutation();
 	const test = api.githubRunner.testCredentials.useMutation();
-	const form = useForm<FormValues>({
-		defaultValues: defaults(pool),
-		resolver: zodResolver(schema),
+	const form = useForm<PoolFormValues>({
+		defaultValues: poolFormDefaults(pool),
+		resolver: zodResolver(poolFormSchema),
 	});
 
 	// Some fields are hidden depending on the scope and the authentication: name
 	// the invalid one instead of failing silently.
-	const reportInvalid = (errors: FieldErrors<FormValues>) => {
+	const reportInvalid = (errors: FieldErrors<PoolFormValues>) => {
 		const [field, error] = Object.entries(errors)[0] ?? [];
 		if (field) toast.error(`${field}: ${error?.message ?? "invalid value"}`);
 	};
 
-	const onTest = async () => {
-		if (!(await form.trigger())) {
-			reportInvalid(form.formState.errors);
-			return;
-		}
+	const onCheck = async () => {
+		if (!(await form.trigger(["owner", "repository"]))) return;
 		await test
 			.mutateAsync({
 				...toPoolInput(form.getValues(), pool),
@@ -571,7 +400,7 @@ const PoolFormContent = ({
 			.catch(() => undefined);
 	};
 
-	const onSubmit = async (values: FormValues) => {
+	const onSubmit = async (values: PoolFormValues) => {
 		const input = toPoolInput(values, pool);
 		try {
 			if (pool) {
@@ -585,7 +414,9 @@ const PoolFormContent = ({
 				await create.mutateAsync(input);
 			}
 			await utils.githubRunner.overview.invalidate();
-			toast.success(pool ? "Pool updated" : "Pool created");
+			toast.success(
+				pool ? "Pool updated" : "Pool created: now add a machine to it",
+			);
 			onDone();
 		} catch (error) {
 			toast.error(
@@ -598,45 +429,55 @@ const PoolFormContent = ({
 
 	return (
 		<>
-			{error && <AlertBlock type="error">{error.message}</AlertBlock>}
 			<Form {...form}>
 				<form
 					id="runner-pool-form"
 					onSubmit={form.handleSubmit(onSubmit, reportInvalid)}
-					className="grid gap-4"
+					className="grid gap-6"
 				>
-					<TargetFields form={form} pool={pool} />
-					<AuthFields form={form} pool={pool} />
-					<RerunField form={form} />
-					<AdvancedFields form={form} pool={pool} />
+					<Step number={1} title="Where the jobs come from">
+						<TargetFields
+							form={form}
+							pool={pool}
+							onTargetChange={() => test.reset()}
+						/>
+					</Step>
+					<Step
+						number={2}
+						title="Give Dokploy access"
+						description="Dokploy registers a fresh runner for each job and removes it afterwards."
+					>
+						<AccessFields
+							form={form}
+							pool={pool}
+							access={test.data}
+							checking={test.isPending}
+							checkError={test.error?.message ?? null}
+							onCheck={() => void onCheck()}
+							onReset={() => test.reset()}
+						/>
+					</Step>
+					<Step number={3} title="How workflows reach the machines">
+						<TargetingFields form={form} pool={pool} access={test.data} />
+					</Step>
+					<div className="grid gap-2">
+						<RerunField form={form} />
+						<AdvancedFields form={form} pool={pool} />
+					</div>
 				</form>
 			</Form>
-			{test.data && (
-				<AlertBlock type="success">
-					<span className="flex items-center gap-2">
-						<CheckCircle2 className="size-4" />
-						Connected: {test.data.runners} runner(s) registered,{" "}
-						{test.data.online} online, runner group #{test.data.groupId}.
-					</span>
-				</AlertBlock>
-			)}
-			{test.error && <AlertBlock type="error">{test.error.message}</AlertBlock>}
-			<DialogFooter className="gap-2">
-				<Button
-					type="button"
-					variant="outline"
-					onClick={onTest}
-					disabled={test.isPending}
-				>
-					{test.isPending && <Loader2 className="size-4 animate-spin" />}
-					Test connection
-				</Button>
+			{error && <AlertBlock type="error">{error.message}</AlertBlock>}
+			<DialogFooter>
 				<Button
 					type="submit"
 					form="runner-pool-form"
 					disabled={create.isPending || update.isPending}
 				>
-					{pool ? "Save" : "Create"}
+					{create.isPending || update.isPending
+						? "Checking access…"
+						: pool
+							? "Save"
+							: "Create pool"}
 				</Button>
 			</DialogFooter>
 		</>
@@ -665,8 +506,8 @@ export const HandlePool = ({ pool }: { pool?: RunnerPool }) => {
 						{pool ? "Edit runner pool" : "Create a runner pool"}
 					</DialogTitle>
 					<DialogDescription>
-						A pool registers ephemeral self-hosted runners for one GitHub
-						organization or repository. Every job gets a fresh runner; caches
+						A pool runs the GitHub Actions jobs of an organization or a
+						repository on your machines. Every job gets a fresh runner; caches
 						stay on the machines.
 					</DialogDescription>
 				</DialogHeader>

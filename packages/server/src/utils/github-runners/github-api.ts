@@ -30,6 +30,15 @@ export interface GithubRunner {
 	version: string | null;
 }
 
+export interface GithubRunnerGroup {
+	id: number;
+	name: string;
+	default: boolean;
+	/** Repositories allowed to use it: every one, a selection, or private ones only. */
+	visibility: "all" | "selected" | "private";
+	allowsPublicRepositories: boolean;
+}
+
 export class GithubRunnerApiError extends Error {
 	constructor(
 		message: string,
@@ -64,6 +73,8 @@ export interface GithubRunnerClient {
 	forceCancelRun: (repository: string, runId: string) => Promise<void>;
 	rerunFailedJobs: (repository: string, runId: string) => Promise<void>;
 	listRunners: () => Promise<GithubRunner[]>;
+	/** Organization runner groups, with which repositories may use them. */
+	runnerGroups: () => Promise<GithubRunnerGroup[]>;
 	runnerGroupId: () => Promise<number>;
 	generateJitConfig: (options: {
 		name: string;
@@ -113,6 +124,107 @@ const createAuthorization = (auth: GithubRunnerAuth, apiUrl: string) => {
 			);
 		}
 	};
+};
+
+export const findRunnerGroup = (groups: GithubRunnerGroup[], name: string) => {
+	const wanted = name.trim().toLowerCase();
+	return groups.find((group) => group.name.toLowerCase() === wanted) ?? null;
+};
+
+/**
+ * The installation of a GitHub App on the pool owner, found from the App ID and
+ * its private key alone, so nobody has to look the installation ID up.
+ */
+export const findAppInstallation = async (
+	app: { appId: number; privateKey: string },
+	target: Pick<GithubRunnerTarget, "scope" | "owner" | "repository" | "apiUrl">,
+	options: { fetch?: Fetch } = {},
+) => {
+	const fetcher = options.fetch ?? fetch;
+	const base = target.apiUrl.replace(/\/+$/, "");
+	let jwt: string;
+	try {
+		const appAuth = createAppAuth({
+			appId: app.appId,
+			privateKey: app.privateKey,
+		});
+		jwt = (await appAuth({ type: "app" })).token;
+	} catch {
+		throw new GithubRunnerApiError(
+			"The private key is not a GitHub App key: load the .pem file GitHub downloaded when you generated it.",
+			null,
+		);
+	}
+	const get = (path: string) =>
+		fetcher(`${base}${path}`, {
+			headers: {
+				Accept: "application/vnd.github+json",
+				Authorization: `Bearer ${jwt}`,
+				"X-GitHub-Api-Version": "2022-11-28",
+				"User-Agent": "dokploy-github-runners",
+			},
+			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+		}).catch((error: unknown) => {
+			throw new GithubRunnerApiError(
+				`GitHub API ${path} unreachable: ${error instanceof Error ? error.message : String(error)}`,
+				null,
+			);
+		});
+	const owner = encodeURIComponent(target.owner);
+	const path =
+		target.scope === "organization"
+			? `/orgs/${owner}/installation`
+			: `/repos/${owner}/${encodeURIComponent(target.repository ?? "")}/installation`;
+	const response = await get(path);
+	if (response.ok) {
+		return String(((await response.json()) as { id: number }).id);
+	}
+	if (response.status === 401) {
+		throw new GithubRunnerApiError(
+			"GitHub rejected the App ID or the private key (401): check that both belong to the same GitHub App.",
+			401,
+		);
+	}
+	if (response.status === 404) {
+		const where =
+			target.scope === "organization"
+				? target.owner
+				: `${target.owner}/${target.repository}`;
+		const page = await get("/app")
+			.then((res) => (res.ok ? (res.json() as Promise<{ html_url?: string }>) : null))
+			.catch(() => null);
+		throw new GithubRunnerApiError(
+			`The GitHub App is not installed on ${where}.${page?.html_url ? ` Install it from ${page.html_url}/installations/new, then try again.` : ""}`,
+			404,
+		);
+	}
+	throw new GithubRunnerApiError(
+		describeFailure(response.status, await response.text(), path),
+		response.status,
+	);
+};
+
+/**
+ * When a token expires, from the header GitHub adds to the responses it
+ * authenticates with one; null for tokens without expiry or on failure.
+ */
+export const tokenExpiration = async (
+	token: string,
+	apiUrl: string,
+	options: { fetch?: Fetch } = {},
+) => {
+	const response = await (options.fetch ?? fetch)(
+		`${apiUrl.replace(/\/+$/, "")}/rate_limit`,
+		{
+			headers: {
+				Accept: "application/vnd.github+json",
+				Authorization: `Bearer ${token}`,
+				"User-Agent": "dokploy-github-runners",
+			},
+			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+		},
+	).catch(() => null);
+	return response?.headers.get("github-authentication-token-expiration") ?? null;
 };
 
 /** Base path of the runner endpoints for the target. */
@@ -221,21 +333,38 @@ export const createGithubRunnerClient = (
 		return runners;
 	};
 
-	const runnerGroupId = async () => {
-		if (groupId !== null) return groupId;
+	const runnerGroups = async (): Promise<GithubRunnerGroup[]> => {
 		const data = await json<{
-			runner_groups: { id: number; name: string; default?: boolean }[];
+			runner_groups: {
+				id: number;
+				name: string;
+				default?: boolean;
+				visibility?: string;
+				allows_public_repositories?: boolean;
+			}[];
 		}>(
 			"GET",
 			`/orgs/${encodeURIComponent(target.owner)}/actions/runner-groups?per_page=100`,
 		);
-		const wanted = target.runnerGroup.trim().toLowerCase();
-		const group = data.runner_groups.find(
-			(item) => item.name.toLowerCase() === wanted,
-		);
+		return data.runner_groups.map((group) => ({
+			id: group.id,
+			name: group.name,
+			default: Boolean(group.default),
+			visibility:
+				group.visibility === "selected" || group.visibility === "private"
+					? group.visibility
+					: "all",
+			allowsPublicRepositories: Boolean(group.allows_public_repositories),
+		}));
+	};
+
+	const runnerGroupId = async () => {
+		if (groupId !== null) return groupId;
+		const groups = await runnerGroups();
+		const group = findRunnerGroup(groups, target.runnerGroup);
 		if (!group) {
 			throw new GithubRunnerApiError(
-				`Runner group "${target.runnerGroup}" not found in ${target.owner}. Available: ${data.runner_groups.map((item) => item.name).join(", ")}`,
+				`Runner group "${target.runnerGroup}" not found in ${target.owner}. Available: ${groups.map((item) => item.name).join(", ")}`,
 				404,
 			);
 		}
@@ -358,6 +487,7 @@ export const createGithubRunnerClient = (
 		rerunFailedJobs: async (repository, runId) =>
 			post(`${runPath(repository, runId)}/rerun-failed-jobs`),
 		listRunners,
+		runnerGroups,
 		runnerGroupId,
 		generateJitConfig,
 		deleteRunner,

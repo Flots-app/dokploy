@@ -579,8 +579,7 @@ export const apiCreateGithubRunnerPool = poolFields.superRefine((pool, ctx) => {
 	checkPoolTarget(pool, ctx);
 	const missing =
 		(pool.authType === "token" && !pool.token) ||
-		(pool.authType === "app" &&
-			(!pool.appId || !pool.appInstallationId || !pool.appPrivateKey)) ||
+		(pool.authType === "app" && (!pool.appId || !pool.appPrivateKey)) ||
 		(pool.authType === "provider" && !pool.githubId);
 	if (missing) {
 		ctx.addIssue({

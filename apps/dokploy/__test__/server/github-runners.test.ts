@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,8 +33,10 @@ import {
 import {
 	createGithubRunnerClient,
 	decodeJitConfig,
+	findAppInstallation,
 	type GithubRunner,
 	resolveRunnerRelease,
+	tokenExpiration,
 } from "@dokploy/server/utils/github-runners/github-api";
 import {
 	macCreateVmScript,
@@ -80,6 +83,13 @@ import {
 } from "@dokploy/server/utils/github-runners/ssh";
 import { Server, utils } from "ssh2";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+	appRegistrationUrl,
+	githubWebUrl,
+	labelFromName,
+	parseGithubTarget,
+	tokenTemplateUrl,
+} from "@/components/dashboard/github-runners/github-links";
 
 const GiB = 1024 ** 3;
 
@@ -1592,5 +1602,165 @@ describe("recovery of interrupted jobs", () => {
 		await expect(
 			org.rerunFailedJobs("other-org/monorepo", "7"),
 		).rejects.toThrow(/outside this pool/);
+	});
+});
+
+describe("guided setup", () => {
+	const params = (url: string) =>
+		Object.fromEntries(new URL(url).searchParams.entries());
+
+	it("pre-fills the token and the App with the permissions a pool needs", () => {
+		const token = tokenTemplateUrl(
+			"https://github.com",
+			"organization",
+			"Flots-app",
+		);
+		expect(token).toMatch(
+			/^https:\/\/github\.com\/settings\/personal-access-tokens\/new\?/,
+		);
+		expect(params(token)).toMatchObject({
+			target_name: "Flots-app",
+			expires_in: "366",
+			organization_self_hosted_runners: "write",
+			actions: "write",
+		});
+		expect(
+			params(tokenTemplateUrl("https://github.com", "repository", "s1nyx")),
+		).toMatchObject({ administration: "write", actions: "write" });
+		const app = appRegistrationUrl(
+			"https://github.com",
+			"organization",
+			"Flots-app",
+			"https://dokploy.example.com",
+		);
+		expect(app).toMatch(
+			/^https:\/\/github\.com\/organizations\/Flots-app\/settings\/apps\/new\?/,
+		);
+		expect(params(app)).toMatchObject({
+			public: "false",
+			webhook_active: "false",
+			url: "https://dokploy.example.com",
+			organization_self_hosted_runners: "write",
+		});
+		expect(params(app).name?.length).toBeLessThanOrEqual(34);
+		expect(githubWebUrl("https://ghe.example.com/api/v3")).toBe(
+			"https://ghe.example.com",
+		);
+	});
+
+	it("reads what people paste as the owner", () => {
+		expect(parseGithubTarget("https://github.com/Flots-app")).toEqual({
+			owner: "Flots-app",
+			repository: null,
+		});
+		expect(parseGithubTarget("https://github.com/orgs/Flots-app/")).toEqual({
+			owner: "Flots-app",
+			repository: null,
+		});
+		expect(
+			parseGithubTarget("https://github.com/Flots-app/monorepo.git"),
+		).toEqual({ owner: "Flots-app", repository: "monorepo" });
+		expect(parseGithubTarget("Flots-app/monorepo")).toEqual({
+			owner: "Flots-app",
+			repository: "monorepo",
+		});
+		expect(labelFromName("Flots CI (Mac minis)")).toBe("flots-ci-mac-minis");
+	});
+
+	const { privateKey } = generateKeyPairSync("rsa", {
+		modulusLength: 2048,
+		privateKeyEncoding: { type: "pkcs1", format: "pem" },
+		publicKeyEncoding: { type: "spki", format: "pem" },
+	});
+	const target = {
+		scope: "organization" as const,
+		owner: "Flots-app",
+		repository: null,
+		apiUrl: "https://api.github.com",
+	};
+
+	it("finds the App installation from the App ID and its key", async () => {
+		const urls: string[] = [];
+		await expect(
+			findAppInstallation({ appId: 1, privateKey }, target, {
+				fetch: async (url, init) => {
+					urls.push(String(url));
+					expect(new Headers(init?.headers).get("authorization")).toMatch(
+						/^Bearer ey/,
+					);
+					return json(200, { id: 987654 });
+				},
+			}),
+		).resolves.toBe("987654");
+		expect(urls).toEqual([
+			"https://api.github.com/orgs/Flots-app/installation",
+		]);
+	});
+
+	it("says where to install an App that is not installed", async () => {
+		await expect(
+			findAppInstallation({ appId: 1, privateKey }, target, {
+				fetch: async (url) =>
+					String(url).endsWith("/app")
+						? json(200, { html_url: "https://github.com/apps/dokploy-runners" })
+						: json(404, { message: "Not Found" }),
+			}),
+		).rejects.toThrow(
+			"The GitHub App is not installed on Flots-app. Install it from https://github.com/apps/dokploy-runners/installations/new",
+		);
+		await expect(
+			findAppInstallation({ appId: 1, privateKey: "nope" }, target, {
+				fetch: async () => json(200, {}),
+			}),
+		).rejects.toThrow("not a GitHub App key");
+	});
+
+	it("lists the runner groups with who may use them, and the token expiry", async () => {
+		const client = createGithubRunnerClient(
+			{ ...target, runnerGroup: "Default" },
+			{ type: "token", token: "t" },
+			{
+				fetch: async () =>
+					json(200, {
+						runner_groups: [
+							{
+								id: 1,
+								name: "Default",
+								default: true,
+								visibility: "all",
+								allows_public_repositories: false,
+							},
+							{ id: 4, name: "ci", visibility: "selected" },
+						],
+					}),
+			},
+		);
+		await expect(client.runnerGroups()).resolves.toEqual([
+			{
+				id: 1,
+				name: "Default",
+				default: true,
+				visibility: "all",
+				allowsPublicRepositories: false,
+			},
+			{
+				id: 4,
+				name: "ci",
+				default: false,
+				visibility: "selected",
+				allowsPublicRepositories: false,
+			},
+		]);
+		await expect(
+			tokenExpiration("t", "https://api.github.com", {
+				fetch: async () =>
+					new Response("{}", {
+						headers: {
+							"github-authentication-token-expiration":
+								"2027-10-19 08:00:00 UTC",
+						},
+					}),
+			}),
+		).resolves.toBe("2027-10-19 08:00:00 UTC");
 	});
 });

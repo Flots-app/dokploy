@@ -22,7 +22,12 @@ import {
 	diskThresholds,
 	vmDiskThresholds,
 } from "@dokploy/server/utils/github-runners/disk";
-import { createGithubRunnerClient } from "@dokploy/server/utils/github-runners/github-api";
+import {
+	createGithubRunnerClient,
+	findAppInstallation,
+	findRunnerGroup,
+	tokenExpiration,
+} from "@dokploy/server/utils/github-runners/github-api";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte } from "drizzle-orm";
@@ -82,8 +87,16 @@ const credentialsOf = (
 	appPrivateKey: input.appPrivateKey ?? stored?.appPrivateKey ?? null,
 });
 
+type PoolAccessInput = z.infer<typeof apiTestGithubRunnerCredentials>;
+
+/**
+ * Reaches GitHub with the pool settings: finds the App installation when it is
+ * not given, lists the runner groups of an organization and the runners. A
+ * missing runner group is reported, not thrown, so the form can offer the
+ * existing ones.
+ */
 export const testGithubRunnerCredentials = async (
-	input: z.infer<typeof apiTestGithubRunnerCredentials>,
+	input: PoolAccessInput,
 	organizationId: string,
 ) => {
 	const stored = input.githubRunnerPoolId
@@ -91,19 +104,24 @@ export const testGithubRunnerCredentials = async (
 		: null;
 	const secrets = credentialsOf(input, stored);
 	let auth: Parameters<typeof createGithubRunnerClient>[1];
+	let installationId: string | null = null;
 	if (input.authType === "token") {
-		if (!secrets.token) throw new Error("Enter a token");
+		if (!secrets.token) throw new Error("Paste the token created on GitHub");
 		auth = { type: "token", token: secrets.token };
 	} else if (input.authType === "app") {
-		if (!input.appId || !input.appInstallationId || !secrets.appPrivateKey) {
-			throw new Error(
-				"Enter the App ID, the installation ID and the private key",
-			);
+		if (!input.appId || !secrets.appPrivateKey) {
+			throw new Error("Enter the App ID and the private key of the GitHub App");
 		}
+		installationId =
+			input.appInstallationId ??
+			(await findAppInstallation(
+				{ appId: input.appId, privateKey: secrets.appPrivateKey },
+				input,
+			));
 		auth = {
 			type: "app",
 			appId: input.appId,
-			installationId: input.appInstallationId,
+			installationId,
 			privateKey: secrets.appPrivateKey,
 		};
 	} else {
@@ -138,24 +156,57 @@ export const testGithubRunnerCredentials = async (
 		},
 		auth,
 	);
-	const [runners, groupId] = await Promise.all([
-		client.listRunners(),
-		client.runnerGroupId(),
+	const [groups, tokenExpiresAt] = await Promise.all([
+		input.scope === "organization" ? client.runnerGroups() : [],
+		auth.type === "token" ? tokenExpiration(auth.token, input.apiUrl) : null,
 	]);
+	const group =
+		input.scope === "organization"
+			? findRunnerGroup(groups, input.runnerGroup)
+			: null;
+	const runners =
+		input.scope === "repository" || group ? await client.listRunners() : null;
 	return {
-		runners: runners.length,
-		online: runners.filter((runner) => runner.status === "online").length,
-		groupId,
+		installationId,
+		tokenExpiresAt,
+		groups,
+		group,
+		runners: runners?.length ?? null,
+		online:
+			runners?.filter((runner) => runner.status === "online").length ?? null,
 	};
+};
+
+/** Refuses settings GitHub does not accept, before they are saved. */
+const verifyPoolAccess = async (
+	input: PoolAccessInput,
+	organizationId: string,
+) => {
+	const access = await testGithubRunnerCredentials(input, organizationId);
+	if (input.scope === "organization" && !access.group) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Runner group "${input.runnerGroup}" does not exist in ${input.owner}. Available: ${access.groups.map((group) => group.name).join(", ")}`,
+		});
+	}
+	return access;
 };
 
 export const createGithubRunnerPool = async (
 	input: z.infer<typeof apiCreateGithubRunnerPool>,
 	organizationId: string,
 ) => {
+	const access = await verifyPoolAccess(
+		{ ...input, githubRunnerPoolId: null },
+		organizationId,
+	);
 	const [pool] = await db
 		.insert(githubRunnerPools)
-		.values({ ...input, organizationId })
+		.values({
+			...input,
+			appInstallationId: input.appInstallationId ?? access.installationId,
+			organizationId,
+		})
 		.returning();
 	if (!pool) throw new Error("Unable to create the pool");
 	return publicPool(pool);
@@ -187,10 +238,21 @@ export const updateGithubRunnerPool = async (
 				"The GitHub target of a pool with machines cannot change: remove its machines first",
 		});
 	}
+	// The App installation is looked up again: the App may have been reinstalled.
+	const appInstallationId =
+		values.authType === "app" && !values.appInstallationId
+			? (
+					await verifyPoolAccess(
+						{ ...input, runnerEnv: input.runnerEnv ?? stored.runnerEnv },
+						organizationId,
+					)
+				).installationId
+			: values.appInstallationId;
 	const [pool] = await db
 		.update(githubRunnerPools)
 		.set({
 			...values,
+			appInstallationId,
 			// Empty secrets keep the stored ones.
 			token: values.token ?? stored.token,
 			appPrivateKey: values.appPrivateKey ?? stored.appPrivateKey,
