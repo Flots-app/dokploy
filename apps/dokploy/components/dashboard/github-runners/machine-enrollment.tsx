@@ -188,6 +188,98 @@ const ScriptStep = ({ enrolling }: { enrolling: Enrolling }) => {
 	);
 };
 
+/** Where Dokploy connects: an address the code lists, or one typed in, and a port. */
+const useSetupTarget = (code: string) => {
+	const [selected, setSelected] = useState("");
+	const [custom, setCustom] = useState("");
+	const [port, setPort] = useState("");
+	const parsed = readSetupCode(code);
+	const hosts = parsed?.hosts ?? [];
+	const listed = hosts.includes(selected) ? selected : (hosts[0] ?? "");
+	const targetPort = port ? Number(port) : (parsed?.port ?? 22);
+	return {
+		parsed,
+		hosts,
+		listed,
+		setSelected,
+		custom,
+		setCustom,
+		port,
+		setPort,
+		host: custom || listed,
+		targetPort,
+		portValid:
+			Number.isInteger(targetPort) && targetPort > 0 && targetPort < 65536,
+	};
+};
+
+type SetupTarget = ReturnType<typeof useSetupTarget>;
+
+const ListedAddresses = ({ target }: { target: SetupTarget }) => (
+	<div className="space-y-2">
+		<Label htmlFor="enroll-listed">Dokploy reaches it at</Label>
+		<Select
+			value={target.listed}
+			onValueChange={target.setSelected}
+			disabled={Boolean(target.custom)}
+		>
+			<SelectTrigger id="enroll-listed">
+				<SelectValue />
+			</SelectTrigger>
+			<SelectContent>
+				{target.hosts.map((item) => (
+					<SelectItem key={item} value={item}>
+						{item}
+					</SelectItem>
+				))}
+			</SelectContent>
+		</Select>
+	</div>
+);
+
+const AddressFields = ({
+	target,
+	defaultPort,
+}: {
+	target: SetupTarget;
+	defaultPort: number;
+}) => {
+	const listed = target.hosts.length > 0;
+	return (
+		<div className="grid gap-2 sm:grid-cols-[1fr_1fr_6rem]">
+			{listed && <ListedAddresses target={target} />}
+			<div className="space-y-2">
+				<Label htmlFor="enroll-host">
+					{listed ? "Or another address" : "Address"}
+				</Label>
+				<Input
+					id="enroll-host"
+					placeholder="m6.tailnet.ts.net"
+					value={target.custom}
+					onChange={(event) => target.setCustom(event.target.value.trim())}
+				/>
+			</div>
+			<div className="space-y-2">
+				<Label htmlFor="enroll-port">Port</Label>
+				<Input
+					id="enroll-port"
+					inputMode="numeric"
+					placeholder={String(defaultPort)}
+					value={target.port}
+					onChange={(event) =>
+						target.setPort(event.target.value.replace(/\D/g, ""))
+					}
+				/>
+			</div>
+			<p className="text-xs text-muted-foreground sm:col-span-3">
+				A Tailscale address comes first when the machine has one: it reaches the
+				machine wherever it is, without opening a port. Dokploy only connects if
+				the machine shows one of the host keys in the code.
+			</p>
+		</div>
+	);
+};
+
 /** Step 3: the code the script printed; the host key must be one it lists. */
 const CodeStep = ({
 	enrolling,
@@ -198,24 +290,16 @@ const CodeStep = ({
 }) => {
 	const complete = api.githubRunner.completeEnrollment.useMutation();
 	const [code, setCode] = useState("");
-	const [selected, setSelected] = useState("");
-	const [custom, setCustom] = useState("");
-	const [port, setPort] = useState("");
-	const parsed = readSetupCode(code);
-	const hosts = parsed?.hosts ?? [];
-	const listed = hosts.includes(selected) ? selected : (hosts[0] ?? "");
-	const target = custom || listed;
-	const targetPort = port ? Number(port) : (parsed?.port ?? 22);
-	const portValid =
-		Number.isInteger(targetPort) && targetPort > 0 && targetPort < 65536;
+	const target = useSetupTarget(code);
+	const ready = Boolean(target.parsed && target.host && target.portValid);
 	const onCheck = async () => {
 		try {
 			onChecked(
 				await complete.mutateAsync({
 					githubRunnerNodeId: enrolling.id,
 					code,
-					host: target,
-					port: targetPort,
+					host: target.host,
+					port: target.targetPort,
 				}),
 			);
 		} catch {
@@ -232,65 +316,15 @@ const CodeStep = ({
 				value={code}
 				onChange={(event) => setCode(event.target.value)}
 			/>
-			{parsed && (
-				<div className="grid gap-2 sm:grid-cols-[1fr_1fr_6rem]">
-					{hosts.length > 0 && (
-						<div className="space-y-2">
-							<Label htmlFor="enroll-listed">Dokploy reaches it at</Label>
-							<Select
-								value={listed}
-								onValueChange={setSelected}
-								disabled={Boolean(custom)}
-							>
-								<SelectTrigger id="enroll-listed">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{hosts.map((item) => (
-										<SelectItem key={item} value={item}>
-											{item}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-						</div>
-					)}
-					<div className="space-y-2">
-						<Label htmlFor="enroll-host">
-							{hosts.length > 0 ? "Or another address" : "Address"}
-						</Label>
-						<Input
-							id="enroll-host"
-							placeholder="m6.tailnet.ts.net"
-							value={custom}
-							onChange={(event) => setCustom(event.target.value.trim())}
-						/>
-					</div>
-					<div className="space-y-2">
-						<Label htmlFor="enroll-port">Port</Label>
-						<Input
-							id="enroll-port"
-							inputMode="numeric"
-							placeholder={String(parsed.port)}
-							value={port}
-							onChange={(event) =>
-								setPort(event.target.value.replace(/\D/g, ""))
-							}
-						/>
-					</div>
-					<p className="text-xs text-muted-foreground sm:col-span-3">
-						A Tailscale address comes first when the machine has one: it reaches
-						the machine wherever it is, without opening a port. Dokploy only
-						connects if the machine shows one of the host keys in the code.
-					</p>
-				</div>
+			{target.parsed && (
+				<AddressFields target={target} defaultPort={target.parsed.port} />
 			)}
 			{complete.error && (
 				<AlertBlock type="error">{complete.error.message}</AlertBlock>
 			)}
 			<Button
 				onClick={() => void onCheck()}
-				disabled={!parsed || !target || !portValid || complete.isPending}
+				disabled={!ready || complete.isPending}
 				className="w-fit"
 			>
 				{complete.isPending && <Loader2 className="size-4 animate-spin" />}
