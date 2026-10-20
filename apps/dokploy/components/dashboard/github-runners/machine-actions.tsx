@@ -17,6 +17,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/utils/api";
 import { elapsed, formatDuration, type RunnerMachine, runUrl } from "./format";
+import { CopyCode } from "./shared";
 import { useNow } from "./use-now";
 
 type Mode = "wait" | "deadline" | "kill";
@@ -231,6 +232,8 @@ const RemoveMachineForm = ({
 	const [uninstall, setUninstall] = useState(true);
 	const [force, setForce] = useState(false);
 	const unreachable = machine.observed ? !machine.observed.reachable : false;
+	// Nothing is installed yet: the machine is only forgotten.
+	const enrolling = machine.phase === "enrolling";
 
 	const onConfirm = async () => {
 		try {
@@ -254,12 +257,13 @@ const RemoveMachineForm = ({
 			<DialogHeader>
 				<DialogTitle>Remove {machine.name}</DialogTitle>
 				<DialogDescription>
-					Its runners are unregistered from GitHub, then the machine leaves the
-					pool.
+					{enrolling
+						? "Its setup never finished: Dokploy forgets it and its key."
+						: "Its runners are unregistered from GitHub, then the machine leaves the pool."}
 				</DialogDescription>
 			</DialogHeader>
-			<RunningJobs machine={machine} />
-			{!force && (
+			{!enrolling && <RunningJobs machine={machine} />}
+			{!force && !enrolling && (
 				<ModeChoice
 					mode={mode}
 					setMode={setMode}
@@ -269,40 +273,54 @@ const RemoveMachineForm = ({
 					rerun={rerun}
 				/>
 			)}
-			<div className="grid gap-3">
-				<div className="flex items-center justify-between gap-4 text-sm">
-					<Label htmlFor="remove-uninstall" className="block font-normal">
-						Uninstall the runtime
-						<span className="block text-xs text-muted-foreground">
-							{machine.platform === "macos"
-								? machine.applied?.vmCreatedByDokploy
-									? `Deletes the VM ${machine.vmName} and its caches.`
-									: `Removes the runtime from ${machine.vmName}; this VM was not created by Dokploy and is kept.`
-								: "Removes the runner account, services and caches."}
-						</span>
-					</Label>
-					<Switch
-						id="remove-uninstall"
-						checked={uninstall}
-						onCheckedChange={setUninstall}
-						disabled={force}
+			{!enrolling && (
+				<div className="grid gap-3">
+					<div className="flex items-center justify-between gap-4 text-sm">
+						<Label htmlFor="remove-uninstall" className="block font-normal">
+							Uninstall the runtime
+							<span className="block text-xs text-muted-foreground">
+								{machine.platform === "macos"
+									? machine.applied?.vmCreatedByDokploy
+										? `Deletes the VM ${machine.vmName} and its caches.`
+										: `Removes the runtime from ${machine.vmName}; this VM was not created by Dokploy and is kept.`
+									: "Removes the runner account, services and caches."}
+							</span>
+						</Label>
+						<Switch
+							id="remove-uninstall"
+							checked={uninstall}
+							onCheckedChange={setUninstall}
+							disabled={force}
+						/>
+					</div>
+					<div className="flex items-center justify-between gap-4 text-sm">
+						<Label htmlFor="remove-force" className="block font-normal">
+							Forget without reaching the machine
+							<span className="block text-xs text-muted-foreground">
+								For a machine that is gone. Nothing is stopped or uninstalled on
+								it.
+							</span>
+						</Label>
+						<Switch
+							id="remove-force"
+							checked={force}
+							onCheckedChange={setForce}
+						/>
+					</div>
+				</div>
+			)}
+			{machine.hasOwnKey && (
+				<div className="grid gap-1.5 text-sm text-muted-foreground">
+					<span>
+						{enrolling ? "If its setup script already ran, the" : "The"}{" "}
+						dokploy-manager account it created stays on the machine. Once the
+						machine is removed, delete it with any copy of that script:
+					</span>
+					<CopyCode
+						code={`sudo bash dokploy-runner-setup-${machine.name}.sh --uninstall`}
 					/>
 				</div>
-				<div className="flex items-center justify-between gap-4 text-sm">
-					<Label htmlFor="remove-force" className="block font-normal">
-						Forget without reaching the machine
-						<span className="block text-xs text-muted-foreground">
-							For a machine that is gone. Nothing is stopped or uninstalled on
-							it.
-						</span>
-					</Label>
-					<Switch
-						id="remove-force"
-						checked={force}
-						onCheckedChange={setForce}
-					/>
-				</div>
-			</div>
+			)}
 			{unreachable && !force && (
 				<AlertBlock type="warning">
 					{machine.name} is unreachable: the removal waits until it answers,

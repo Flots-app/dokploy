@@ -2,6 +2,7 @@ import {
 	applyRunnerNodeConfig,
 	checkGithubRunnerMachine,
 	cleanRunnerCaches,
+	completeGithubRunnerEnrollment,
 	createGithubRunnerNode,
 	createGithubRunnerPool,
 	disableRunnerNode,
@@ -9,9 +10,11 @@ import {
 	findGithubRunnerNode,
 	findGithubRunnerOperation,
 	findGithubRunnerPool,
+	finishGithubRunnerEnrollment,
 	getGithubRunnerJobStats,
 	getGithubRunnerMetrics,
 	getGithubRunnerOverview,
+	githubRunnerSetupScript,
 	IS_CLOUD,
 	listGithubRunnerJobs,
 	listGithubRunnerOperations,
@@ -21,6 +24,8 @@ import {
 	removeGithubRunnerPool,
 	removeRunnerNode,
 	resetGithubRunnerHostKey,
+	rotateRunnerNodeKey,
+	startGithubRunnerEnrollment,
 	testGithubRunnerCredentials,
 	updateGithubRunnerNode,
 	updateGithubRunnerPool,
@@ -33,16 +38,19 @@ import { audit } from "@/server/api/utils/audit";
 import {
 	apiCheckGithubRunnerNode,
 	apiCleanGithubRunnerNode,
+	apiCompleteGithubRunnerEnrollment,
 	apiCreateGithubRunnerNode,
 	apiCreateGithubRunnerPool,
 	apiDisableGithubRunnerNode,
 	apiFindGithubRunnerNode,
 	apiFindGithubRunnerOperation,
 	apiFindGithubRunnerPool,
+	apiFinishGithubRunnerEnrollment,
 	apiGithubRunnerJobs,
 	apiGithubRunnerMetrics,
 	apiGithubRunnerOperations,
 	apiRemoveGithubRunnerNode,
+	apiStartGithubRunnerEnrollment,
 	apiTestGithubRunnerCredentials,
 	apiUpdateGithubRunnerNode,
 	apiUpdateGithubRunnerPool,
@@ -214,6 +222,104 @@ export const githubRunnerRouter = createTRPCRouter({
 				fail,
 			);
 			return node;
+		}),
+
+	/** Setup with a script: the machine's own key and the script to run on it. */
+	startEnrollment: create
+		.input(apiStartGithubRunnerEnrollment)
+		.mutation(async ({ input, ctx }) => {
+			const result = await startGithubRunnerEnrollment(
+				input,
+				ctx.session.activeOrganizationId,
+			).catch(fail);
+			await audit(ctx, {
+				action: "create",
+				resourceType: "githubRunner",
+				resourceId: result.node.githubRunnerNodeId,
+				resourceName: result.node.name,
+				metadata: {
+					kind: "machine",
+					platform: result.node.platform,
+					setup: "script",
+					keyFingerprint: result.keyFingerprint,
+				},
+			});
+			return result;
+		}),
+
+	setupScript: update
+		.input(apiFindGithubRunnerNode)
+		.query(async ({ input, ctx }) => {
+			const node = await findGithubRunnerNode(
+				input.githubRunnerNodeId,
+				ctx.session.activeOrganizationId,
+			);
+			return githubRunnerSetupScript(node);
+		}),
+
+	completeEnrollment: update
+		.input(apiCompleteGithubRunnerEnrollment)
+		.mutation(async ({ input, ctx }) => {
+			const result = await completeGithubRunnerEnrollment(
+				input,
+				ctx.session.activeOrganizationId,
+			).catch(fail);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "githubRunner",
+				resourceId: input.githubRunnerNodeId,
+				metadata: {
+					kind: "machine",
+					operation: "setup-code",
+					host: input.host,
+					hostKey: result.fingerprint,
+				},
+			});
+			return result;
+		}),
+
+	finishEnrollment: update
+		.input(apiFinishGithubRunnerEnrollment)
+		.mutation(async ({ input, ctx }) => {
+			const node = await finishGithubRunnerEnrollment(
+				input,
+				ctx.session.activeOrganizationId,
+			).catch(fail);
+			const operation = await provisionRunnerNode(
+				node.githubRunnerNodeId,
+				ctx.user.id,
+			).catch(fail);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "githubRunner",
+				resourceId: node.githubRunnerNodeId,
+				resourceName: node.name,
+				metadata: {
+					kind: "machine",
+					operation: "provision",
+					cpuPercent: node.cpuPercent,
+					memoryPercent: node.memoryPercent,
+				},
+			});
+			return operation;
+		}),
+
+	rotateKey: update
+		.input(apiFindGithubRunnerNode)
+		.mutation(async ({ input, ctx }) => {
+			const node = await findGithubRunnerNode(
+				input.githubRunnerNodeId,
+				ctx.session.activeOrganizationId,
+			);
+			await rotateRunnerNodeKey(node.githubRunnerNodeId).catch(fail);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "githubRunner",
+				resourceId: node.githubRunnerNodeId,
+				resourceName: node.name,
+				metadata: { kind: "machine", operation: "rotate-key" },
+			});
+			return true;
 		}),
 
 	provisionMachine: update

@@ -198,6 +198,16 @@ export interface MacStatus {
 	disk: { totalBytes: number; freeBytes: number } | null;
 	githubReachable: boolean;
 	limaVersion: string | null;
+	/** Lima installed by Dokploy in ~/.dokploy, rather than Homebrew's. */
+	limaManaged: boolean;
+	/** What the setup script configures, as the machine reports it now. */
+	setup: {
+		admin: boolean;
+		/** System sleep after this many minutes; 0 never sleeps. */
+		sleepMinutes: number | null;
+		fileVault: boolean;
+		bootDaemon: boolean;
+	} | null;
 	vm: {
 		status: string;
 		cpus: number | null;
@@ -242,6 +252,18 @@ export const parseMacStatus = (output: string): MacStatus => {
 				: null,
 		githubReachable: /^[1-5]\d\d$/.test(find(records, "network").github ?? ""),
 		limaVersion: find(records, "lima").version || null,
+		limaManaged: find(records, "lima").managed === "yes",
+		setup: (() => {
+			const facts = find(records, "macsetup");
+			return facts.admin
+				? {
+						admin: facts.admin === "yes",
+						sleepMinutes: int(facts.sleep),
+						fileVault: facts.filevault === "on",
+						bootDaemon: facts.daemon === "yes",
+					}
+				: null;
+		})(),
 		vm: {
 			status: vm.status ?? "missing",
 			cpus: int(vm.cpus),

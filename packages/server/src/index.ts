@@ -119,6 +119,7 @@ export {
 	readPresentedHostKey,
 	refreshRunnerCaches,
 	removeRunnerNode,
+	rotateRunnerNodeKey,
 	startGithubRunnerController,
 	stopGithubRunnerController,
 } from "./utils/github-runners/controller";

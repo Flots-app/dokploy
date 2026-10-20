@@ -13,6 +13,7 @@ const PHASES: Record<
 		variant: "green" | "yellow" | "red" | "blank" | "blue" | "orange";
 	}
 > = {
+	enrolling: { label: "Setup pending", variant: "yellow" },
 	new: { label: "New", variant: "blank" },
 	provisioning: { label: "Provisioning", variant: "blue" },
 	ready: { label: "Active", variant: "green" },

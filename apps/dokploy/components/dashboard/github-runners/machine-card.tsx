@@ -3,10 +3,12 @@ import {
 	Activity,
 	Apple,
 	KeyRound,
+	KeySquare,
 	ListChecks,
 	Loader2,
 	MoreHorizontal,
 	Pencil,
+	Play,
 	Power,
 	PowerOff,
 	RotateCw,
@@ -45,6 +47,7 @@ import {
 } from "./format";
 import { HostKeyDialog } from "./host-key-dialog";
 import { DisableMachineDialog, RemoveMachineDialog } from "./machine-actions";
+import { ContinueEnrollmentDialog } from "./machine-enrollment";
 import { MachineMonitoringDialog } from "./machine-monitoring";
 import { MachineOperationsDialog } from "./machine-operations";
 import { PhaseBadge, UsageBar } from "./shared";
@@ -56,7 +59,8 @@ type DialogName =
 	| "monitoring"
 	| "operations"
 	| "remove"
-	| "hostkey";
+	| "hostkey"
+	| "enroll";
 
 const GiB = 1024 ** 3;
 
@@ -316,8 +320,10 @@ const MachineActions = ({
 	const utils = api.useUtils();
 	const enable = api.githubRunner.enableMachine.useMutation();
 	const provision = api.githubRunner.provisionMachine.useMutation();
+	const rotate = api.githubRunner.rotateKey.useMutation();
 	const working =
 		machine.phase === "provisioning" || Boolean(machine.operation);
+	const enrolling = machine.phase === "enrolling";
 
 	const run = async (action: () => Promise<unknown>, success: string) => {
 		try {
@@ -332,7 +338,14 @@ const MachineActions = ({
 
 	return (
 		<div className="flex shrink-0 items-center gap-1">
+			{canUpdate && enrolling && (
+				<Button size="sm" onClick={() => onOpen("enroll")}>
+					<Play className="size-4" />
+					Continue setup
+				</Button>
+			)}
 			{canUpdate &&
+				!enrolling &&
 				(machine.enabled ? (
 					<Button
 						size="sm"
@@ -366,13 +379,15 @@ const MachineActions = ({
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
-					<DropdownMenuItem onSelect={() => onOpen("monitoring")}>
-						<Activity className="size-4" /> Monitoring
-					</DropdownMenuItem>
+					{!enrolling && (
+						<DropdownMenuItem onSelect={() => onOpen("monitoring")}>
+							<Activity className="size-4" /> Monitoring
+						</DropdownMenuItem>
+					)}
 					<DropdownMenuItem onSelect={() => onOpen("operations")}>
 						<ListChecks className="size-4" /> Operations
 					</DropdownMenuItem>
-					{canUpdate && (
+					{canUpdate && !enrolling && (
 						<>
 							<DropdownMenuItem onSelect={() => onOpen("edit")}>
 								<Pencil className="size-4" /> Resources
@@ -388,6 +403,19 @@ const MachineActions = ({
 							<DropdownMenuItem onSelect={() => onOpen("hostkey")}>
 								<KeyRound className="size-4" /> SSH host key
 							</DropdownMenuItem>
+							{machine.hasOwnKey && (
+								<DropdownMenuItem
+									disabled={rotate.isPending || working}
+									onSelect={() =>
+										run(
+											() => rotate.mutateAsync(id),
+											`New SSH key installed on ${machine.name}, the old one removed`,
+										)
+									}
+								>
+									<KeySquare className="size-4" /> Rotate SSH key
+								</DropdownMenuItem>
+							)}
 						</>
 					)}
 					{canDelete && (
@@ -426,7 +454,9 @@ const MachineTitle = ({ machine }: { machine: RunnerMachine }) => {
 				)}
 			</div>
 			<p className="truncate text-xs text-muted-foreground">
-				{machine.username}@{machine.host}
+				{machine.host
+					? `${machine.username}@${machine.host}`
+					: "Waiting for its setup script to run"}
 				{machine.platform === "macos" ? ` · VM ${machine.vmName}` : ""}
 				{host
 					? ` · ${host.os} · ${formatCpus(host.cpus)} · ${formatBytes(host.memoryBytes)}`
@@ -488,7 +518,9 @@ export const MachineCard = ({
 	const busy = (machine.observed?.slots ?? []).filter(
 		(slot) => slot.state === "busy",
 	).length;
-	const installed = machine.phase !== "new" && machine.phase !== "provisioning";
+	const enrolling = machine.phase === "enrolling";
+	const installed =
+		!enrolling && machine.phase !== "new" && machine.phase !== "provisioning";
 	const dialogProps = (name: DialogName) => ({
 		machine,
 		open: dialog === name,
@@ -516,7 +548,7 @@ export const MachineCard = ({
 				<MachineUsage machine={machine} speedRef={speedRef} isNext={isNext} />
 			)}
 			{installed && <SlotGrid machine={machine} />}
-			<MachineFooter machine={machine} busy={busy} />
+			{!enrolling && <MachineFooter machine={machine} busy={busy} />}
 
 			<DisableMachineDialog
 				{...dialogProps("disable")}
@@ -530,6 +562,7 @@ export const MachineCard = ({
 			<MachineMonitoringDialog {...dialogProps("monitoring")} />
 			<MachineOperationsDialog {...dialogProps("operations")} />
 			<HostKeyDialog {...dialogProps("hostkey")} />
+			<ContinueEnrollmentDialog {...dialogProps("enroll")} />
 		</div>
 	);
 };

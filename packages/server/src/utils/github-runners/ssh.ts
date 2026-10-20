@@ -10,6 +10,11 @@ export interface NodeConnection {
 	privateKey: string;
 	/** Pinned SHA256 fingerprint; null accepts the first key presented (checks only). */
 	hostKeyFingerprint: string | null;
+	/**
+	 * Without a pinned key: the host keys known out of band (from the setup
+	 * script of the machine); any other key is refused before authenticating.
+	 */
+	knownHostKeys?: string[];
 }
 
 export class NodeCommandError extends Error {
@@ -31,6 +36,14 @@ export class HostKeyMismatchError extends Error {
 	constructor(node: string, expected: string, presented: string) {
 		super(
 			`The SSH host key of ${node} changed (expected ${expected}, presented ${presented}). Refusing to connect: verify the machine, then reset its host key in Dokploy.`,
+		);
+	}
+}
+
+export class UnknownHostKeyError extends Error {
+	constructor(node: string, presented: string) {
+		super(
+			`${node} presented the host key ${presented}, which the setup code of the machine does not list. Refusing to connect: check the address, or run the setup script again and paste its new code.`,
 		);
 	}
 }
@@ -68,7 +81,7 @@ export const openNodeSession = async (
 ): Promise<NodeSession> => {
 	const client = new Client();
 	let presented = "";
-	let mismatch: HostKeyMismatchError | null = null;
+	let mismatch: HostKeyMismatchError | UnknownHostKeyError | null = null;
 	await new Promise<void>((resolve, reject) => {
 		client
 			.once("ready", () => resolve())
@@ -99,6 +112,14 @@ export const openNodeSession = async (
 							connection.hostKeyFingerprint,
 							presented,
 						);
+						return false;
+					}
+					if (
+						!connection.hostKeyFingerprint &&
+						connection.knownHostKeys &&
+						!connection.knownHostKeys.includes(presented)
+					) {
+						mismatch = new UnknownHostKeyError(connection.name, presented);
 						return false;
 					}
 					return true;
@@ -184,4 +205,133 @@ export const openNodeSession = async (
 		run,
 		close: () => client.end(),
 	};
+};
+
+// ------------------------------------------------------------ shared sessions
+
+/** Shared sessions are closed after this long without a command. */
+const SHARED_IDLE_MS = 5 * 60_000;
+
+interface SharedEntry {
+	/** user@host:port, to close the connections of one machine. */
+	target: string;
+	session: Promise<NodeSession>;
+	lastUsed: number;
+	busy: number;
+}
+
+const targetOf = (
+	connection: Pick<NodeConnection, "host" | "port" | "username">,
+) => `${connection.username}@${connection.host}:${connection.port}`;
+
+/**
+ * One SSH connection per machine, shared by the controller ticks and tasks:
+ * a new login every few seconds costs a handshake each time and fills the
+ * machine's auth logs. Lives on globalThis like the controller state, so the
+ * server entry point and the Next.js routes share it.
+ */
+const sharedState = globalThis as {
+	__dokployRunnerSessions?: {
+		entries: Map<string, SharedEntry>;
+		sweeper: NodeJS.Timeout | null;
+	};
+};
+sharedState.__dokployRunnerSessions ??= { entries: new Map(), sweeper: null };
+const shared = sharedState.__dokployRunnerSessions;
+
+const sharedKey = (connection: NodeConnection) =>
+	createHash("sha256")
+		.update(
+			JSON.stringify([
+				connection.host,
+				connection.port,
+				connection.username,
+				connection.privateKey,
+				connection.hostKeyFingerprint,
+			]),
+		)
+		.digest("hex");
+
+const evict = (key: string, entry: SharedEntry) => {
+	if (shared.entries.get(key) !== entry) return;
+	shared.entries.delete(key);
+	entry.session.then((session) => session.close()).catch(() => undefined);
+};
+
+const sweep = () => {
+	const now = Date.now();
+	for (const [key, entry] of shared.entries) {
+		if (entry.busy === 0 && now - entry.lastUsed > SHARED_IDLE_MS) {
+			evict(key, entry);
+		}
+	}
+	if (!shared.entries.size && shared.sweeper) {
+		clearInterval(shared.sweeper);
+		shared.sweeper = null;
+	}
+};
+
+/**
+ * A session on the shared connection of a machine. close() only releases it;
+ * the connection goes when it dies (keepalive), fails to open a channel, or
+ * idles. A command that could not even start is retried once on a fresh
+ * connection: nothing ran, so nothing runs twice.
+ */
+export const sharedNodeSession = async (
+	connection: NodeConnection,
+	open: typeof openNodeSession = openNodeSession,
+): Promise<NodeSession> => {
+	const key = sharedKey(connection);
+	const acquire = () => {
+		let entry = shared.entries.get(key);
+		if (!entry) {
+			const session = open(connection);
+			entry = {
+				target: targetOf(connection),
+				session,
+				lastUsed: Date.now(),
+				busy: 0,
+			};
+			const created = entry;
+			shared.entries.set(key, created);
+			session.catch(() => evict(key, created));
+			shared.sweeper ??= setInterval(sweep, 60_000);
+			shared.sweeper.unref?.();
+		}
+		return entry;
+	};
+	const first = acquire();
+	const session = await first.session;
+	const run: NodeSession["run"] = async (script, options) => {
+		for (let attempt = 0; ; attempt++) {
+			const entry = attempt === 0 ? first : acquire();
+			entry.busy++;
+			entry.lastUsed = Date.now();
+			try {
+				return await (await entry.session).run(script, options);
+			} catch (error) {
+				const notStarted =
+					error instanceof Error &&
+					!(error instanceof NodeCommandError) &&
+					/could not start/.test(error.message);
+				if (!notStarted) throw error;
+				evict(key, entry);
+				if (attempt > 0) throw error;
+			} finally {
+				entry.busy--;
+				entry.lastUsed = Date.now();
+			}
+		}
+	};
+	return { fingerprint: session.fingerprint, run, close: () => undefined };
+};
+
+/** Closes the shared connections to a machine, e.g. after its key changed. */
+export const closeSharedSessions = (
+	connection: Pick<NodeConnection, "host" | "port" | "username">,
+) => {
+	const target = targetOf(connection);
+	for (const [key, entry] of shared.entries) {
+		if (entry.target === target) evict(key, entry);
+	}
 };

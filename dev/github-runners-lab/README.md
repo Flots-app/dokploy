@@ -35,8 +35,19 @@ make down     # stop the sshd and both VMs
 make destroy  # delete both VMs and the lab key
 ```
 
-In Dokploy: add the SSH key printed by `make up`, create a pool for the test
-repository (label `dokploy-e2e`), then add both machines.
+In Dokploy: create a pool for the test repository (label `dokploy-e2e`), then
+add both machines.
+
+- **Setup script (the default path).** Add machine → Setup script, name the
+  machine, then run the script it gives as an administrator:
+  `limactl shell dokploy-runner-linux sudo bash -s < dokploy-runner-setup-<name>.sh`
+  for the Linux VM, `sudo bash dokploy-runner-setup-<name>.sh` on the Mac.
+  Paste the code it prints. The VM answers on `127.0.0.1` port `22231`: type
+  them under "Or another address" and "Port", since the addresses in the code
+  are the guest's own.
+- **Existing SSH access.** Add the SSH key printed by `make up` and use the
+  `dokploy` account on `127.0.0.1:22231`, or the Mac's lab `sshd` on
+  `127.0.0.1:22230`.
 
 ## Scenarios
 
@@ -46,6 +57,10 @@ Dispatch jobs with
 
 | Scenario | Expected |
 | --- | --- |
+| Setup script on the Linux VM | `dokploy-manager` created (sudo, key only, no TTY, no forwarding), the code pasted, checks pass; the jobs account `dokploy-runner` gets no sudo |
+| Wrong code: another machine's, cut, tampered, other host keys | refused with a readable message, before any login when the code is wrong |
+| Rotate SSH key | `authorized_keys` holds the new key only, and the next operation connects with it |
+| Remove, then `sudo bash <script> --uninstall` | runtime removed by Dokploy, then the account, sudoers rule and sshd drop-in; `sshd -t` still passes |
 | Provision Linux / Mac | Linux ready in about a minute (Docker included); the Mac VM is created, sized to the budget, and ready in about a minute |
 | Job on Linux at 50% CPU of 2 CPUs | `nproc=1`, `cpu.max=100000 100000`, `cpuset` pinned, the job's own `docker run` sees `nproc=1` |
 | Job on the Mac | `nproc` equals the VM CPUs, workspace clean, tool cache and home persistent |

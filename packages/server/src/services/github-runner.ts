@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
 import { db } from "@dokploy/server/db";
 import {
+	type apiCompleteGithubRunnerEnrollment,
 	type apiCreateGithubRunnerNode,
 	type apiCreateGithubRunnerPool,
+	type apiFinishGithubRunnerEnrollment,
+	type apiStartGithubRunnerEnrollment,
 	type apiTestGithubRunnerCredentials,
 	type apiUpdateGithubRunnerNode,
 	type apiUpdateGithubRunnerPool,
@@ -21,6 +25,7 @@ import {
 import {
 	checkRunnerMachine,
 	clearPoolRouting,
+	generateMachineKey,
 } from "@dokploy/server/utils/github-runners/controller";
 import {
 	diskThresholds,
@@ -34,12 +39,38 @@ import {
 } from "@dokploy/server/utils/github-runners/github-api";
 import { nextMachine } from "@dokploy/server/utils/github-runners/placement";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
+import {
+	MANAGER_ACCOUNT,
+	machineSetupScript,
+	parseSetupCode,
+	publicKeyFingerprint,
+	type SetupCode,
+} from "@dokploy/server/utils/github-runners/setup";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
 import type { z } from "zod";
 
 const notFound = (what: string) =>
 	new TRPCError({ code: "NOT_FOUND", message: `${what} not found` });
+
+/** Machines as sent to the browser: never their private key nor the lease. */
+const publicNode = <
+	T extends {
+		sshPrivateKey?: unknown;
+		lockedBy?: unknown;
+		lockedUntil?: unknown;
+	},
+>(
+	node: T,
+) => {
+	const {
+		sshPrivateKey: _key,
+		lockedBy: _lockedBy,
+		lockedUntil: _lockedUntil,
+		...rest
+	} = node;
+	return { ...rest, hasOwnKey: Boolean(_key) };
+};
 
 /** Pools as sent to the browser: secrets are replaced by whether they are set. */
 const publicPool = (pool: GithubRunnerPool) => {
@@ -408,7 +439,188 @@ export const createGithubRunnerNode = async (
 		.values({ ...input, organizationId })
 		.returning();
 	if (!node) throw new Error("Unable to create the machine");
-	return node;
+	return publicNode(node);
+};
+
+const assertNameFree = async (name: string, organizationId: string) => {
+	const sameName = await db.query.githubRunnerNodes.findFirst({
+		where: and(
+			eq(githubRunnerNodes.organizationId, organizationId),
+			eq(githubRunnerNodes.name, name),
+		),
+		columns: { githubRunnerNodeId: true },
+	});
+	if (sameName) {
+		throw new TRPCError({
+			code: "CONFLICT",
+			message: `A runner machine named ${name} already exists`,
+		});
+	}
+};
+
+/** The setup script of an enrolling machine, with what the dialog shows of it. */
+export const githubRunnerSetupScript = (node: {
+	name: string;
+	platform: "linux" | "macos";
+	sshPublicKey: string | null;
+	keepAwake: boolean;
+}) => {
+	if (!node.sshPublicKey) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `${node.name} has no key of its own`,
+		});
+	}
+	const script = machineSetupScript({
+		platform: node.platform,
+		machine: node.name,
+		publicKey: node.sshPublicKey,
+		keepAwake: node.keepAwake,
+	});
+	return {
+		fileName: `dokploy-runner-setup-${node.name}.sh`,
+		script,
+		sha256: createHash("sha256").update(script).digest("hex"),
+		keyFingerprint: publicKeyFingerprint(node.sshPublicKey),
+	};
+};
+
+/**
+ * First step of the setup of a machine: its own key, and the script an
+ * administrator runs on it. The machine waits in the "enrolling" phase.
+ */
+export const startGithubRunnerEnrollment = async (
+	input: z.infer<typeof apiStartGithubRunnerEnrollment>,
+	organizationId: string,
+) => {
+	await findGithubRunnerPool(input.githubRunnerPoolId, organizationId);
+	await assertNameFree(input.name, organizationId);
+	const keys = generateMachineKey(input.name);
+	const [node] = await db
+		.insert(githubRunnerNodes)
+		.values({
+			...input,
+			organizationId,
+			host: "",
+			port: 22,
+			username: MANAGER_ACCOUNT,
+			phase: "enrolling",
+			sshPrivateKey: keys.privateKey,
+			sshPublicKey: keys.publicKey,
+		})
+		.returning();
+	if (!node) throw new Error("Unable to create the machine");
+	return { node: publicNode(node), ...githubRunnerSetupScript(node) };
+};
+
+/**
+ * Second step: the code the script printed. The connection only goes ahead
+ * when the machine presents one of the host keys the code lists, and the code
+ * must come from this machine's own script.
+ */
+export const completeGithubRunnerEnrollment = async (
+	input: z.infer<typeof apiCompleteGithubRunnerEnrollment>,
+	organizationId: string,
+) => {
+	const node = await findGithubRunnerNode(
+		input.githubRunnerNodeId,
+		organizationId,
+	);
+	if (node.phase !== "enrolling" || !node.sshPrivateKey || !node.sshPublicKey) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `${node.name} is not waiting for a setup code`,
+		});
+	}
+	let setup: SetupCode;
+	try {
+		setup = parseSetupCode(input.code);
+	} catch (error) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: error instanceof Error ? error.message : "Invalid setup code",
+		});
+	}
+	const refuse = (message: string) => {
+		throw new TRPCError({ code: "BAD_REQUEST", message });
+	};
+	if (setup.machine !== node.name) {
+		refuse(
+			`This code comes from the setup script of ${setup.machine}, not ${node.name}`,
+		);
+	}
+	if (setup.platform !== node.platform) {
+		refuse(
+			`This code comes from a ${setup.platform === "macos" ? "Mac" : "Linux"} script`,
+		);
+	}
+	if (setup.key !== publicKeyFingerprint(node.sshPublicKey)) {
+		refuse(
+			`This code was printed by an older setup script of ${node.name}: download the current one and run it again`,
+		);
+	}
+	const result = await checkRunnerMachine({
+		name: node.name,
+		host: input.host,
+		port: input.port,
+		username: setup.user,
+		privateKey: node.sshPrivateKey,
+		hostKeyFingerprint: null,
+		knownHostKeys: setup.hostKeys,
+		platform: node.platform,
+		vmName: node.vmName,
+		vmDiskGb: node.vmDiskGb,
+		diskReserveGb: node.diskReserveGb,
+		diskCleanupGb: node.diskCleanupGb,
+		cpuPercent: node.cpuPercent,
+		memoryPercent: node.memoryPercent,
+		maxRunners: node.maxRunners,
+	});
+	// The key it presented is one the script listed, checked before logging in.
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			host: input.host,
+			port: input.port,
+			username: setup.user,
+			hostKeyFingerprint: result.fingerprint,
+			setup: {
+				at: new Date().toISOString(),
+				os: setup.os,
+				arch: setup.arch,
+				hosts: setup.hosts,
+				hostKeys: setup.hostKeys,
+				fileVault: setup.fileVault,
+				keepAwake: setup.keepAwake,
+			},
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
+	return result;
+};
+
+/** Last step: the budget, then provisioning starts. */
+export const finishGithubRunnerEnrollment = async (
+	input: z.infer<typeof apiFinishGithubRunnerEnrollment>,
+	organizationId: string,
+) => {
+	const node = await findGithubRunnerNode(
+		input.githubRunnerNodeId,
+		organizationId,
+	);
+	if (node.phase !== "enrolling" || !node.hostKeyFingerprint || !node.host) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Paste the setup code of ${node.name} first`,
+		});
+	}
+	const { githubRunnerNodeId, ...budget } = input;
+	const [updated] = await db
+		.update(githubRunnerNodes)
+		.set({ ...budget, phase: "new" })
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, githubRunnerNodeId))
+		.returning();
+	if (!updated) throw notFound("Runner machine");
+	return publicNode(updated);
 };
 
 export const updateGithubRunnerNode = async (
@@ -423,7 +635,7 @@ export const updateGithubRunnerNode = async (
 		.where(eq(githubRunnerNodes.githubRunnerNodeId, githubRunnerNodeId))
 		.returning();
 	if (!node) throw notFound("Runner machine");
-	return node;
+	return publicNode(node);
 };
 
 export const resetGithubRunnerHostKey = async (
@@ -473,7 +685,8 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 	return pools.map((pool) => {
 		const poolNodes = nodes
 			.filter((node) => node.githubRunnerPoolId === pool.githubRunnerPoolId)
-			.map(({ lockedBy: _lockedBy, lockedUntil: _lockedUntil, ...node }) => {
+			.map((row) => {
+				const node = publicNode(row);
 				const host = node.observed?.host ?? null;
 				return {
 					...node,

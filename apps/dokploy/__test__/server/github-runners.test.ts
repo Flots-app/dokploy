@@ -1,6 +1,12 @@
 import { execFileSync, spawn } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GithubRunnerDrain } from "@dokploy/server/db/schema";
@@ -19,6 +25,7 @@ import {
 } from "@dokploy/server/utils/github-runners/checks";
 import {
 	describeCleanup,
+	generateMachineKey,
 	limaLogLine,
 } from "@dokploy/server/utils/github-runners/controller";
 import {
@@ -35,16 +42,20 @@ import {
 	decodeJitConfig,
 	findAppInstallation,
 	type GithubRunner,
+	resolveLimaRelease,
 	resolveRunnerRelease,
 	tokenExpiration,
 } from "@dokploy/server/utils/github-runners/github-api";
 import {
+	LIMA_VERSION,
 	macCreateVmScript,
 	macDeleteVmScript,
+	macInstallLimaScript,
 	macProbeScript,
 	macResizeVmScript,
 	macStartVmScript,
 	macStopVmScript,
+	macWriteBootScript,
 } from "@dokploy/server/utils/github-runners/macos";
 import {
 	nextMachine,
@@ -91,12 +102,23 @@ import {
 	sh,
 } from "@dokploy/server/utils/github-runners/runtime";
 import {
+	machineSetupScript,
+	parseSetupCode,
+	publicKeyFingerprint,
+	SETUP_CODE_PREFIX,
+} from "@dokploy/server/utils/github-runners/setup";
+import {
+	closeSharedSessions,
 	fingerprintOf,
 	HostKeyMismatchError,
+	type NodeSession,
 	openNodeSession,
+	sharedNodeSession,
+	UnknownHostKeyError,
 } from "@dokploy/server/utils/github-runners/ssh";
 import { Server, utils } from "ssh2";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { readSetupCode } from "@/components/dashboard/github-runners/enrollment-code";
 import {
 	appRegistrationUrl,
 	githubWebUrl,
@@ -905,7 +927,27 @@ describe("reconcile planner", () => {
 	});
 });
 
+const machineKey = generateMachineKey("m6");
+
 const scripts = () => ({
+	setupMac: machineSetupScript({
+		platform: "macos",
+		machine: "m6",
+		publicKey: machineKey.publicKey,
+		keepAwake: true,
+	}),
+	setupLinux: machineSetupScript({
+		platform: "linux",
+		machine: "vm-1",
+		publicKey: machineKey.publicKey,
+		keepAwake: false,
+	}),
+	installLima: macInstallLimaScript({
+		version: LIMA_VERSION,
+		url: `https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/lima-${LIMA_VERSION}-Darwin-arm64.tar.gz`,
+		sha256: "a".repeat(64),
+	}),
+	writeBoot: macWriteBootScript("dokploy-runners"),
 	install: installRuntimeScript(),
 	facts: linuxFactsScript(),
 	probe: macProbeScript("dokploy-runners", true),
@@ -1162,7 +1204,7 @@ describe("machine checks", () => {
 		expect(failed).toEqual(["cgroup", "dedicated"]);
 	});
 
-	it("requires Lima on a Mac and adopts an existing VM", () => {
+	it("installs Lima on a Mac and adopts an existing VM", () => {
 		const mac = parseMacStatus(
 			[
 				"mac cpus=10 memory_bytes=17179869184 arch=arm64 version=26.1 load=1",
@@ -1171,9 +1213,9 @@ describe("machine checks", () => {
 				"lima version=",
 			].join("\n"),
 		);
-		expect(
-			macChecks(mac, settings).find((item) => item.id === "lima")?.status,
-		).toBe("fail");
+		const lima = macChecks(mac, settings).find((item) => item.id === "lima");
+		expect(lima?.status).toBe("pass");
+		expect(lima?.message).toMatch(/Dokploy installs Lima/);
 		const adopted = macChecks(
 			{
 				...mac,
@@ -1192,6 +1234,36 @@ describe("machine checks", () => {
 			/adopted/,
 		);
 		expect(adopted.every((item) => item.status !== "fail")).toBe(true);
+	});
+
+	it("reports what the setup script of a Mac configures", () => {
+		const status = (setup: string) =>
+			parseMacStatus(
+				[
+					"mac cpus=10 memory_bytes=34359738368 arch=arm64 version=26.1 load=1",
+					"macdisk total_kib=482797652 free_kib=104857600",
+					"network github=200",
+					setup,
+					`lima version=${LIMA_VERSION} managed=yes`,
+				].join("\n"),
+			);
+		const enrolled = status(
+			"macsetup admin=no sleep=0 filevault=off daemon=yes",
+		);
+		expect(enrolled.limaManaged).toBe(true);
+		expect(
+			macChecks(enrolled, settings).filter((item) => item.status !== "pass"),
+		).toEqual([]);
+		const legacy = macChecks(
+			status("macsetup admin=yes sleep=10 filevault=on daemon=no"),
+			settings,
+		);
+		expect(
+			legacy.filter((item) => item.status === "warn").map((item) => item.id),
+		).toEqual(["account", "power", "filevault", "boot"]);
+		expect(legacy.every((item) => item.status !== "fail")).toBe(true);
+		// Older probes report nothing about the setup: no warning either.
+		expect(status("").setup).toBeNull();
 	});
 
 	it("compares versions", () => {
@@ -1396,6 +1468,7 @@ describe("SSH session", () => {
 	const clientKey = utils.generateKeyPairSync("ed25519");
 	let server: Server;
 	let port = 0;
+	let logins = 0;
 
 	beforeAll(async () => {
 		server = new Server({ hostKeys: [hostKey.private] }, (client) => {
@@ -1406,6 +1479,7 @@ describe("SSH session", () => {
 						: context.reject(["publickey"]),
 				)
 				.on("ready", () => {
+					logins++;
 					client.on("session", (accept) => {
 						const session = accept();
 						session.on("exec", (acceptExec, _reject, info) => {
@@ -1479,6 +1553,116 @@ describe("SSH session", () => {
 		).rejects.toBeInstanceOf(HostKeyMismatchError);
 		const pinned = await openNodeSession(connection(expected()));
 		pinned.close();
+	});
+
+	it("only trusts the host keys the setup code lists", async () => {
+		const other = utils.generateKeyPairSync("ed25519");
+		const otherFingerprint = publicKeyFingerprint(other.public);
+		await expect(
+			openNodeSession({
+				...connection(null),
+				knownHostKeys: [otherFingerprint],
+			}),
+		).rejects.toBeInstanceOf(UnknownHostKeyError);
+		const known = await openNodeSession({
+			...connection(null),
+			knownHostKeys: [otherFingerprint, expected()],
+		});
+		expect(known.fingerprint).toBe(expected());
+		known.close();
+	});
+
+	it("shares one connection per machine", async () => {
+		const target = { ...connection(expected()), name: "shared" };
+		const before = logins;
+		const [first, second] = await Promise.all([
+			sharedNodeSession(target),
+			sharedNodeSession(target),
+		]);
+		const outputs = await Promise.all(
+			[1, 2, 3].map((value) =>
+				(value % 2 ? first : second).run(`echo ${value}`),
+			),
+		);
+		expect(outputs.map((output) => output.stdout)).toEqual([
+			"1\n",
+			"2\n",
+			"3\n",
+		]);
+		first.close();
+		await second.run("true");
+		expect(logins - before).toBe(1);
+		closeSharedSessions(target);
+		await (await sharedNodeSession(target)).run("true");
+		expect(logins - before).toBe(2);
+		closeSharedSessions(target);
+	});
+});
+
+describe("shared SSH connections", () => {
+	const fakeSession = (run: NodeSession["run"]): NodeSession => ({
+		fingerprint: "SHA256:fake",
+		run,
+		close: () => undefined,
+	});
+	const target = (name: string) => ({
+		name,
+		host: `${name}.test`,
+		port: 22,
+		username: "dokploy-manager",
+		privateKey: "key",
+		hostKeyFingerprint: null,
+	});
+	const notStarted = () =>
+		new Error("Probe could not start on m6: Not connected");
+
+	it("runs a command again on a new connection when it could not start", async () => {
+		const runs = [
+			vi.fn().mockRejectedValue(notStarted()),
+			vi.fn().mockResolvedValue({ stdout: "ok", stderr: "", exitCode: 0 }),
+		];
+		const open = vi.fn(async () =>
+			fakeSession(runs[open.mock.calls.length - 1]!),
+		);
+		const session = await sharedNodeSession(target("retry"), open);
+		await expect(session.run("true")).resolves.toMatchObject({ stdout: "ok" });
+		expect(open).toHaveBeenCalledTimes(2);
+		closeSharedSessions(target("retry"));
+	});
+
+	it("never runs a command twice once it started", async () => {
+		const run = vi.fn().mockRejectedValue(new Error("Connection lost"));
+		const open = vi.fn(async () => fakeSession(run));
+		const session = await sharedNodeSession(target("started"), open);
+		await expect(session.run("deploy")).rejects.toThrow("Connection lost");
+		expect(run).toHaveBeenCalledTimes(1);
+		closeSharedSessions(target("started"));
+	});
+
+	it("gives up after one retry", async () => {
+		const open = vi.fn(async () =>
+			fakeSession(vi.fn().mockRejectedValue(notStarted())),
+		);
+		const session = await sharedNodeSession(target("down"), open);
+		await expect(session.run("true")).rejects.toThrow(/could not start/);
+		expect(open).toHaveBeenCalledTimes(2);
+		closeSharedSessions(target("down"));
+	});
+
+	it("forgets a connection that failed to open", async () => {
+		const open = vi
+			.fn<typeof openNodeSession>()
+			.mockRejectedValueOnce(new Error("ECONNREFUSED"))
+			.mockResolvedValue(
+				fakeSession(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+			);
+		await expect(sharedNodeSession(target("flaky"), open)).rejects.toThrow(
+			"ECONNREFUSED",
+		);
+		await expect(
+			(await sharedNodeSession(target("flaky"), open)).run("true"),
+		).resolves.toMatchObject({ exitCode: 0 });
+		closeSharedSessions(target("flaky"));
 	});
 });
 
@@ -2131,5 +2315,241 @@ describe("fastest-first placement", () => {
 			multi: 8890,
 		});
 		expect(parseBenchmark("Failed to start transient service")).toBeNull();
+	});
+});
+
+describe("machine enrollment", () => {
+	const code = (data: Record<string, unknown>) =>
+		`${SETUP_CODE_PREFIX}${Buffer.from(JSON.stringify(data)).toString("base64")}`;
+	const valid = {
+		v: 1,
+		machine: "m6",
+		platform: "macos",
+		user: "dokploy-manager",
+		port: 22,
+		key: publicKeyFingerprint(machineKey.publicKey),
+		hostKeys: [
+			publicKeyFingerprint(utils.generateKeyPairSync("ed25519").public),
+		],
+		hosts: ["100.115.98.81", "m6.local"],
+		os: "macOS 26.1",
+		arch: "arm64",
+		fileVault: "on",
+		keepAwake: true,
+	};
+
+	it("gives every machine its own ed25519 key", () => {
+		const other = generateMachineKey("m4");
+		expect(machineKey.publicKey).toMatch(/^ssh-ed25519 \S+ dokploy-runner@m6$/);
+		expect(machineKey.privateKey).toContain("OPENSSH PRIVATE KEY");
+		expect(other.publicKey).not.toBe(machineKey.publicKey);
+	});
+
+	it("fingerprints a key like ssh-keygen", () => {
+		const dir = mkdtempSync(join(tmpdir(), "dokploy-runner-key-"));
+		try {
+			const file = join(dir, "key.pub");
+			writeFileSync(file, `${machineKey.publicKey}\n`);
+			const printed = execFileSync("ssh-keygen", ["-lf", file]).toString();
+			expect(printed.split(" ")[1]).toBe(
+				publicKeyFingerprint(machineKey.publicKey),
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("only writes scripts for a valid machine and key", () => {
+		const input = {
+			platform: "macos" as const,
+			machine: "m6",
+			publicKey: machineKey.publicKey,
+			keepAwake: true,
+		};
+		expect(() =>
+			machineSetupScript({ ...input, machine: "m6; reboot" }),
+		).toThrow(/Invalid machine name/);
+		expect(() =>
+			machineSetupScript({
+				...input,
+				publicKey: `${machineKey.publicKey}\ncommand="sh" ssh-ed25519 AAAA`,
+			}),
+		).toThrow(/ed25519/);
+		const script = machineSetupScript(input);
+		expect(script).toContain(`PUBLIC_KEY='${machineKey.publicKey}'`);
+		expect(script).toContain("Match User dokploy-manager");
+		expect(script).toContain("Match all");
+		expect(script).toContain("pmset -a");
+		expect(machineSetupScript({ ...input, keepAwake: false })).toContain(
+			"KEEP_AWAKE=0",
+		);
+	});
+
+	it("takes --uninstall and nothing else, as root only", () => {
+		const dir = mkdtempSync(join(tmpdir(), "dokploy-runner-setup-"));
+		try {
+			for (const platform of ["macos", "linux"] as const) {
+				const file = join(dir, `${platform}.sh`);
+				writeFileSync(
+					file,
+					machineSetupScript({
+						platform,
+						machine: "m6",
+						publicKey: machineKey.publicKey,
+						keepAwake: true,
+					}),
+				);
+				const run = (...args: string[]) => {
+					try {
+						execFileSync("bash", [file, ...args], { stdio: "pipe" });
+						return { status: 0, stderr: "" };
+					} catch (error) {
+						const failed = error as { status: number; stderr: Buffer };
+						return {
+							status: failed.status,
+							stderr: failed.stderr.toString(),
+						};
+					}
+				};
+				expect(run("--purge")).toMatchObject({ status: 2 });
+				// Tests do not run as root: both modes stop before changing anything.
+				expect(run("--uninstall").stderr).toMatch(/run it with sudo/);
+				expect(run().stderr).toMatch(/run it with sudo/);
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("never logs in as the account the jobs run as", () => {
+		const script = machineSetupScript({
+			platform: "linux",
+			machine: "vm-1",
+			publicKey: machineKey.publicKey,
+			keepAwake: false,
+		});
+		// The runtime runs jobs as dokploy-runner: the login account has root.
+		expect(installRuntimeScript()).toContain("RUNNER_USER=dokploy-runner");
+		expect(script).toContain("MANAGER_USER=dokploy-manager");
+		expect(script).not.toMatch(/dokploy-runner( |$)/m);
+	});
+
+	it("reads the code the script prints", () => {
+		const parsed = parseSetupCode(
+			`  ${code(valid).replace(/(.{40})/g, "$1\n")}  `,
+		);
+		expect(parsed).toMatchObject({ machine: "m6", user: "dokploy-manager" });
+		expect(readSetupCode(code(valid))).toEqual({
+			hosts: ["100.115.98.81", "m6.local"],
+			port: 22,
+		});
+	});
+
+	it("refuses a code that is cut, foreign or changed", () => {
+		expect(() => parseSetupCode(valid.key)).toThrow(/starting with/);
+		expect(() => parseSetupCode(`${SETUP_CODE_PREFIX}eyJ2Ijox`)).toThrow(
+			/incomplete/,
+		);
+		for (const change of [
+			{ user: "root" },
+			{ hostKeys: [] },
+			{ hosts: ["m6.local; rm -rf /"] },
+			{ v: 2 },
+		]) {
+			expect(() => parseSetupCode(code({ ...valid, ...change }))).toThrow(
+				/does not come from a Dokploy setup script/,
+			);
+		}
+		expect(readSetupCode("garbage")).toBeNull();
+		expect(
+			readSetupCode(
+				code({ ...valid, port: "22; id", hosts: ["ok.local", "<b>x</b>"] }),
+			),
+		).toEqual({ hosts: ["ok.local"], port: 22 });
+	});
+});
+
+describe("managed Lima", () => {
+	const release = (assets: { name: string; digest?: string }[]) =>
+		({
+			ok: true,
+			status: 200,
+			json: async () => ({
+				assets: assets.map((asset) => ({
+					...asset,
+					browser_download_url: `https://example.test/${asset.name}`,
+				})),
+			}),
+		}) as Response;
+	const digest = `sha256:${"b".repeat(64)}`;
+
+	it("pins the archive of the Mac's architecture by its digest", async () => {
+		const fetch = vi.fn(async () =>
+			release([
+				{ name: `lima-${LIMA_VERSION}-Darwin-x86_64.tar.gz`, digest },
+				{ name: `lima-${LIMA_VERSION}-Darwin-arm64.tar.gz`, digest },
+				{ name: `lima-${LIMA_VERSION}-Linux-aarch64.tar.gz`, digest },
+			]),
+		);
+		await expect(
+			resolveLimaRelease(LIMA_VERSION, "arm64", { fetch }),
+		).resolves.toEqual({
+			version: LIMA_VERSION,
+			url: `https://example.test/lima-${LIMA_VERSION}-Darwin-arm64.tar.gz`,
+			sha256: "b".repeat(64),
+		});
+	});
+
+	it("refuses an archive GitHub publishes no digest for", async () => {
+		const fetch = vi.fn(async () =>
+			release([{ name: `lima-${LIMA_VERSION}-Darwin-arm64.tar.gz` }]),
+		);
+		await expect(
+			resolveLimaRelease(LIMA_VERSION, "arm64", { fetch }),
+		).rejects.toThrow(/no verified Darwin-arm64 archive/);
+	});
+
+	it("only installs a checked release", () => {
+		const valid = {
+			version: LIMA_VERSION,
+			url: "https://example.test/lima.tar.gz",
+			sha256: "c".repeat(64),
+		};
+		expect(macInstallLimaScript(valid)).toContain(
+			`echo '${"c".repeat(64)}  '"$tmp/lima.tar.gz" | shasum -a 256 -c --status -`,
+		);
+		for (const change of [
+			{ version: "2.2.1; reboot" },
+			{ url: "http://example.test/lima.tar.gz" },
+			{ url: "https://example.test/$(id).tar.gz" },
+			{ sha256: "c".repeat(63) },
+		]) {
+			expect(() => macInstallLimaScript({ ...valid, ...change })).toThrow(
+				/Invalid Lima release/,
+			);
+		}
+	});
+
+	it("starts the VM at boot only while the machine is enabled", () => {
+		const home = mkdtempSync(join(tmpdir(), "dokploy-runner-home-"));
+		try {
+			execFileSync("bash", ["-c", macWriteBootScript("dokploy-runners")], {
+				env: { ...process.env, HOME: home },
+			});
+			const boot = join(home, ".dokploy/bin/boot.sh");
+			expect(readFileSync(boot, "utf8")).toContain("limactl start");
+			expect(() => execFileSync("bash", ["-n", boot])).not.toThrow();
+			// Disabled: exits before touching Lima, which is not installed here.
+			execFileSync("bash", [boot], { env: { ...process.env, HOME: home } });
+			expect(existsSync(join(home, ".dokploy/enabled"))).toBe(false);
+			expect(macStartVmScript("dokploy-runners")).toContain(
+				'touch "$HOME/.dokploy/enabled"',
+			);
+			expect(macStopVmScript("dokploy-runners")).toContain(
+				'rm -f "$HOME/.dokploy/enabled"',
+			);
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });

@@ -29,10 +29,12 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type RouterOutputs } from "@/utils/api";
 import { BudgetFields } from "./budget-fields";
 import { type BudgetValues, defaultBudget, parseLabels } from "./budget-values";
 import { formatBytes, formatCpus } from "./format";
+import { EnrollMachine } from "./machine-enrollment";
 import { GenerateKeyButton, MachinePrep } from "./machine-setup";
 
 type CheckResult = RouterOutputs["githubRunner"]["checkMachine"];
@@ -443,7 +445,23 @@ export const AddMachine = ({ poolId }: { poolId: string }) => {
 						and installs everything.
 					</DialogDescription>
 				</DialogHeader>
-				<AddMachineForm poolId={poolId} onDone={() => setOpen(false)} />
+				<Tabs defaultValue="script">
+					<TabsList>
+						<TabsTrigger value="script">Setup script (recommended)</TabsTrigger>
+						<TabsTrigger value="ssh">Existing SSH access</TabsTrigger>
+					</TabsList>
+					<TabsContent value="script" className="grid gap-6 pt-4">
+						<p className="text-sm text-muted-foreground">
+							Run one script on the machine as an administrator: it creates a
+							dedicated account without admin rights, which only Dokploy's own
+							key for this machine can log into. No password is shared.
+						</p>
+						<EnrollMachine poolId={poolId} onDone={() => setOpen(false)} />
+					</TabsContent>
+					<TabsContent value="ssh" className="grid gap-4 pt-4">
+						<AddMachineForm poolId={poolId} onDone={() => setOpen(false)} />
+					</TabsContent>
+				</Tabs>
 			</DialogContent>
 		</Dialog>
 	);

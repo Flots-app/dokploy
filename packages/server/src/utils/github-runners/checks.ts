@@ -1,4 +1,5 @@
 import { budgetWarnings, formatBytes, formatCpus, vmSize } from "./budget";
+import { LIMA_VERSION } from "./macos";
 import type { LinuxFacts, MacStatus } from "./probe";
 import { RUNTIME_VERSION } from "./runtime";
 
@@ -223,7 +224,62 @@ export const linuxChecks = (
 	return checks;
 };
 
-const MIN_LIMA_VERSION = "1.0.0";
+/** What the setup script of an enrolled Mac configures, checked as the Mac reports it. */
+const macSetupChecks = (setup: MacStatus["setup"]): NodeCheck[] => {
+	if (!setup) return [];
+	const checks: NodeCheck[] = [];
+	checks.push(
+		setup.admin
+			? check(
+					"account",
+					"Account",
+					"warn",
+					"Dokploy logs in with an administrator account: use the dokploy-manager account the setup script creates, which needs no admin rights",
+				)
+			: check(
+					"account",
+					"Account",
+					"pass",
+					"Standard account, no admin rights",
+				),
+	);
+	if (setup.sleepMinutes !== 0) {
+		checks.push(
+			check(
+				"power",
+				"Power",
+				"warn",
+				`The Mac sleeps after ${setup.sleepMinutes ?? "some"} minute(s) without activity: its runners go offline meanwhile. The setup script keeps it awake.`,
+			),
+		);
+	}
+	if (setup.fileVault) {
+		checks.push(
+			check(
+				"filevault",
+				"FileVault",
+				"warn",
+				"FileVault is on: after a power loss the Mac waits for someone to unlock it. Restart it with sudo fdesetup authrestart.",
+			),
+		);
+	}
+	checks.push(
+		setup.bootDaemon
+			? check(
+					"boot",
+					"Restart",
+					"pass",
+					"The runner VM starts again after a reboot",
+				)
+			: check(
+					"boot",
+					"Restart",
+					"warn",
+					"After a reboot the VM only starts once Dokploy reaches the Mac: the setup script installs a boot daemon that does it right away",
+				),
+	);
+	return checks;
+};
 
 export const macChecks = (
 	status: MacStatus,
@@ -243,27 +299,22 @@ export const macChecks = (
 			`macOS ${status.host.version} (${status.host.arch}), ${formatCpus(status.host.cpus)}, ${formatBytes(status.host.memoryBytes)}`,
 		),
 	);
-	if (!status.limaVersion) {
-		checks.push(
-			check(
-				"lima",
-				"Lima",
-				"fail",
-				"Lima is not installed for this user. On the Mac: brew install lima",
-			),
-		);
-	} else if (!versionAtLeast(status.limaVersion, MIN_LIMA_VERSION)) {
-		checks.push(
-			check(
-				"lima",
-				"Lima",
-				"fail",
-				`Lima ${status.limaVersion} is too old: ${MIN_LIMA_VERSION} or later is required (brew upgrade lima)`,
-			),
-		);
-	} else {
-		checks.push(check("lima", "Lima", "pass", `Lima ${status.limaVersion}`));
-	}
+	checks.push(
+		status.limaManaged && status.limaVersion === LIMA_VERSION
+			? check(
+					"lima",
+					"Lima",
+					"pass",
+					`Lima ${status.limaVersion}, installed by Dokploy`,
+				)
+			: check(
+					"lima",
+					"Lima",
+					"pass",
+					`Dokploy installs Lima ${LIMA_VERSION} for this account (verified download, no Homebrew needed)`,
+				),
+	);
+	checks.push(...macSetupChecks(status.setup));
 	const size = vmSize(status.host, settings);
 	if (status.vm.status === "missing") {
 		checks.push(

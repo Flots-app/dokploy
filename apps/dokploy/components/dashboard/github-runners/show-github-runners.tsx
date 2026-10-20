@@ -62,7 +62,11 @@ const PoolStats = ({ pool }: { pool: RunnerPool }) => {
 			)
 		: null;
 	const items = [
-		["Machines active", `${active.length}/${pool.nodes.length}`],
+		[
+			"Machines active",
+			// Machines still waiting for their setup script are not counted yet.
+			`${active.length}/${pool.nodes.filter((node) => node.phase !== "enrolling").length}`,
+		],
 		["Jobs running", `${busy}/${capacity}`],
 		["CPUs available", `${Math.round(cpus * 10) / 10}`],
 		[

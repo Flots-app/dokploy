@@ -745,3 +745,45 @@ export const resolveRunnerRelease = async (
 	}
 	return { version: resolved, url: asset.browser_download_url, sha256 };
 };
+
+/** The Lima archive for macOS on a CPU architecture, with its published SHA-256. */
+export const resolveLimaRelease = async (
+	version: string,
+	arch: string,
+	options: { fetch?: Fetch; authorization?: string } = {},
+): Promise<RunnerRelease> => {
+	const fetcher = options.fetch ?? fetch;
+	const get = (authorization?: string) =>
+		fetcher(
+			`https://api.github.com/repos/lima-vm/lima/releases/tags/v${version}`,
+			{
+				headers: {
+					Accept: "application/vnd.github+json",
+					"User-Agent": "dokploy-github-runners",
+					...(authorization ? { Authorization: authorization } : {}),
+				},
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+			},
+		);
+	let response = await get(options.authorization);
+	if (options.authorization && response.status === 401) response = await get();
+	if (!response.ok) {
+		throw new Error(
+			`Unable to read the Lima release ${version} (${response.status})`,
+		);
+	}
+	const release = (await response.json()) as {
+		assets: { name: string; browser_download_url: string; digest?: string }[];
+	};
+	const platform = `Darwin-${arch === "arm64" || arch === "aarch64" ? "arm64" : "x86_64"}`;
+	const asset = release.assets.find(
+		(item) => item.name === `lima-${version}-${platform}.tar.gz`,
+	);
+	const sha256 = asset?.digest?.match(/^sha256:([a-f0-9]{64})$/)?.[1];
+	if (!asset || !sha256) {
+		throw new Error(
+			`Lima ${version} publishes no verified ${platform} archive`,
+		);
+	}
+	return { version, url: asset.browser_download_url, sha256 };
+};

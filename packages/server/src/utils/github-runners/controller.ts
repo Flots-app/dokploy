@@ -28,6 +28,7 @@ import {
 	or,
 	sql,
 } from "drizzle-orm";
+import ssh2 from "ssh2";
 import { sequentially } from "../service-migration/concurrency";
 import {
 	effectiveBudget,
@@ -69,14 +70,18 @@ import {
 	type GithubRunnerAuth,
 	type GithubRunnerClient,
 	type RunnerRelease,
+	resolveLimaRelease,
 	resolveRunnerRelease,
 } from "./github-api";
 import {
+	LIMA_VERSION,
 	macCreateVmScript,
 	macDeleteVmScript,
+	macInstallLimaScript,
 	macResizeVmScript,
 	macStartVmScript,
 	macStopVmScript,
+	macWriteBootScript,
 } from "./macos";
 import {
 	type PlacementMachine,
@@ -108,8 +113,14 @@ import {
 	RUNNERCTL,
 	RUNTIME_VERSION,
 	runnerEnvironment,
+	shellQuote,
 } from "./runtime";
-import { type NodeSession, openNodeSession } from "./ssh";
+import {
+	closeSharedSessions,
+	type NodeSession,
+	openNodeSession,
+	sharedNodeSession,
+} from "./ssh";
 
 const GiB = 1024 ** 3;
 export const TICK_MS = 5_000;
@@ -312,6 +323,44 @@ export const desiredRelease = async (
 	return release;
 };
 
+/** The pinned Lima release for a Mac, resolved once per architecture. */
+const limaRelease = async (pool: GithubRunnerPool, arch: string) => {
+	const key = `lima:${LIMA_VERSION}:${arch}`;
+	const cached = releases.get(key);
+	if (cached) return cached.release;
+	const authorization =
+		new URL(pool.apiUrl).hostname === "api.github.com"
+			? await (await poolClient(pool)).authorization().catch(() => undefined)
+			: undefined;
+	const release = await resolveLimaRelease(LIMA_VERSION, arch, {
+		authorization,
+	});
+	releases.set(key, { release, at: Date.now() });
+	return release;
+};
+
+/** Installs Dokploy's own Lima for the account it logs in with, when missing or older. */
+const ensureLima = async (
+	node: NodeWithRelations,
+	driver: NodeDriver,
+	status: {
+		limaVersion: string | null;
+		limaManaged: boolean;
+		host: { arch: string } | null;
+	},
+	log: (line: string) => Promise<void>,
+) => {
+	if (status.limaManaged && status.limaVersion === LIMA_VERSION) return;
+	const release = await limaRelease(node.pool, status.host?.arch ?? "arm64");
+	await log(
+		`Installing Lima ${release.version} for ${node.username} (verified SHA-256)`,
+	);
+	await driver.host(macInstallLimaScript(release), {
+		timeoutMs: 10 * 60_000,
+		label: "Lima installation",
+	});
+};
+
 const archLabel = (arch: string) =>
 	arch === "aarch64" || arch === "arm64" ? "ARM64" : "X64";
 
@@ -344,19 +393,25 @@ export const environmentHash = (pool: GithubRunnerPool) =>
 		.digest("hex")
 		.slice(0, 16);
 
-const connect = (node: NodeWithRelations) => {
-	if (!node.sshKey?.privateKey) {
-		throw new Error(`Runner machine ${node.name} has no SSH key`);
-	}
-	return openNodeSession({
+/** The key of the machine itself (enrolled machines), or the shared SSH key. */
+export const nodePrivateKey = (
+	node: GithubRunnerNode & { sshKey?: { privateKey: string } | null },
+) => {
+	const key = node.sshPrivateKey ?? node.sshKey?.privateKey;
+	if (!key) throw new Error(`Runner machine ${node.name} has no SSH key`);
+	return key;
+};
+
+/** Ticks and tasks share one connection per machine. */
+const connect = (node: NodeWithRelations) =>
+	sharedNodeSession({
 		name: node.name,
 		host: node.host,
 		port: node.port,
 		username: node.username,
-		privateKey: node.sshKey.privateKey,
+		privateKey: nodePrivateKey(node),
 		hostKeyFingerprint: node.hostKeyFingerprint,
 	});
-};
 
 // ------------------------------------------------------- leases and queues
 
@@ -557,6 +612,8 @@ export const checkRunnerMachine = async (input: {
 	username: string;
 	privateKey: string;
 	hostKeyFingerprint: string | null;
+	/** Host keys the setup script reported, when no key is pinned yet. */
+	knownHostKeys?: string[];
 	platform: "linux" | "macos";
 	vmName: string;
 	vmDiskGb: number;
@@ -573,6 +630,7 @@ export const checkRunnerMachine = async (input: {
 		username: input.username,
 		privateKey: input.privateKey,
 		hostKeyFingerprint: input.hostKeyFingerprint,
+		knownHostKeys: input.knownHostKeys,
 	});
 	try {
 		const detected = await detectPlatform(session);
@@ -738,6 +796,8 @@ const prepareMachine = async (
 	let host: { cpus: number; memoryBytes: number };
 
 	if (node.platform === "macos") {
+		const before = await readMacStatus(driver.session, node.vmName);
+		await ensureLima(node, driver, before, log);
 		const status = await readMacStatus(driver.session, node.vmName);
 		if (!status.host) throw new Error("Unable to read the Mac facts");
 		host = status.host;
@@ -755,6 +815,28 @@ const prepareMachine = async (
 				{ timeoutMs: 30 * 60_000, label: "VM creation" },
 			);
 			vmCreated = true;
+			// Recorded now: removing the machine deletes this VM even when the
+			// rest of the provisioning fails.
+			await db
+				.update(githubRunnerNodes)
+				.set({
+					applied: {
+						...(applied ?? {
+							runtimeVersion: 0,
+							runnerVersion: "",
+							cpuPercent: node.cpuPercent,
+							memoryPercent: node.memoryPercent,
+							vmDiskGb: node.vmDiskGb,
+							cpus: size.cpus,
+							memoryBytes: size.memoryBytes,
+							envHash: "",
+						}),
+						vmCreatedByDokploy: true,
+					},
+				})
+				.where(
+					eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId),
+				);
 		} else if (status.vm.status !== "Running") {
 			await log(`Sizing VM ${node.vmName} to the budget`);
 			await driver.host(
@@ -777,6 +859,11 @@ const prepareMachine = async (
 			);
 		}
 		await startVm(driver, node, log);
+		// The boot daemon of the setup script starts the VM after a reboot.
+		await driver.host(macWriteBootScript(node.vmName), {
+			timeoutMs: 30_000,
+			label: "Boot script",
+		});
 		const after = await readMacStatus(driver.session, node.vmName);
 		applied = {
 			runtimeVersion: RUNTIME_VERSION,
@@ -830,6 +917,11 @@ export const provisionRunnerNode = async (
 	userId: string | null,
 ) => {
 	const node = await loadRunnerNode(nodeId);
+	if (node.phase === "enrolling") {
+		throw new Error(
+			`Run the setup script on ${node.name} and paste its code first`,
+		);
+	}
 	const operation = await createOperation(
 		node,
 		"provision",
@@ -1163,7 +1255,13 @@ export const removeRunnerNode = async (
 	userId: string | null,
 ) => {
 	const node = await loadRunnerNode(nodeId);
-	if (options.force || node.phase === "new" || !node.applied) {
+	// A failed provisioning may have installed things: only a machine Dokploy
+	// never worked on (or one still being provisioned) is forgotten right away.
+	const untouched =
+		node.phase === "new" ||
+		node.phase === "enrolling" ||
+		(node.phase === "provisioning" && !node.applied);
+	if (options.force || untouched) {
 		// Nothing to drain, or the machine is gone: unregister and forget it.
 		await forgetRegistrations(node).catch(() => undefined);
 		await db
@@ -1204,7 +1302,10 @@ export const removeRunnerNode = async (
 			? "Stopping the runners now"
 			: "Waiting for the running jobs to finish",
 	);
-	if (node.phase === "stopped") {
+	// A full provisioning records the runner version: without it the machine
+	// was never ready and started no runner.
+	const neverReady = !node.applied?.runnerVersion;
+	if (node.phase === "stopped" || neverReady) {
 		// Nothing runs: finish right away.
 		startDrainCompletion(nodeId);
 	}
@@ -1275,7 +1376,12 @@ const startDrainCompletion = (nodeId: string) =>
 		}
 		// remove
 		await log("Unregistering the runners from GitHub");
-		await forgetRegistrations(node);
+		await forgetRegistrations(node).catch((error) =>
+			// Its runners are ephemeral: GitHub drops them once they stay offline.
+			log(
+				`Could not unregister the runners (${error instanceof Error ? error.message : String(error)}); GitHub removes them once they stay offline`,
+			),
+		);
 		if (drain.uninstall) {
 			if (node.platform === "macos" && node.applied?.vmCreatedByDokploy) {
 				await log(`Deleting VM ${node.vmName}`);
@@ -1284,19 +1390,22 @@ const startDrainCompletion = (nodeId: string) =>
 					label: "VM deletion",
 				});
 			} else {
-				if (node.platform === "macos") {
-					const status = await readMacStatus(driver.session, node.vmName);
-					if (status.vm.status !== "Running") {
-						await startVm(driver, node, log);
-					}
+				const vm =
+					node.platform === "macos"
+						? (await readMacStatus(driver.session, node.vmName)).vm.status
+						: null;
+				if (vm === "missing") {
+					await log(`No VM ${node.vmName}: nothing to uninstall`);
+				} else {
+					if (vm && vm !== "Running") await startVm(driver, node, log);
+					await log("Uninstalling the runner runtime");
+					await driver.guest(`${RUNNERCTL} uninstall`, {
+						timeoutMs: 10 * 60_000,
+						label: "Runtime removal",
+						allowFailure: true,
+					});
 				}
-				await log("Uninstalling the runner runtime");
-				await driver.guest(`${RUNNERCTL} uninstall`, {
-					timeoutMs: 10 * 60_000,
-					label: "Runtime removal",
-					allowFailure: true,
-				});
-				if (node.platform === "macos") {
+				if (node.platform === "macos" && vm !== "missing") {
 					await log(
 						`VM ${node.vmName} was not created by Dokploy: it is kept, stopped`,
 					);
@@ -2728,6 +2837,88 @@ const routePools = async () => {
 	);
 };
 
+/** "dokploy-runner@<machine>", the comment of a machine key. */
+export const machineKeyComment = (name: string) => `dokploy-runner@${name}`;
+
+/** A new ed25519 key for one machine (OpenSSH format, for ssh2 and authorized_keys). */
+export const generateMachineKey = (name: string) => {
+	const keys = ssh2.utils.generateKeyPairSync("ed25519", {
+		comment: machineKeyComment(name),
+	});
+	return { privateKey: keys.private, publicKey: keys.public.trim() };
+};
+
+/**
+ * Replaces the key of an enrolled machine without a gap: the new key is
+ * authorized next to the old one, Dokploy logs in with it, then only the new
+ * one is kept and the old connections are closed.
+ */
+export const rotateRunnerNodeKey = async (nodeId: string) => {
+	const node = await loadRunnerNode(nodeId);
+	if (!node.sshPrivateKey || !node.sshPublicKey) {
+		throw new Error(
+			`${node.name} uses a shared SSH key: only machines set up with the setup script have a key of their own`,
+		);
+	}
+	if (node.phase === "enrolling" || node.phase === "provisioning") {
+		throw new Error(`${node.name} is not set up yet`);
+	}
+	let failure: unknown = null;
+	const started = runTask(
+		nodeId,
+		null,
+		async ({ node, session }) => {
+			const keys = generateMachineKey(node.name);
+			const line = shellQuote(`restrict ${keys.publicKey}`);
+			await session.run(
+				`set -eu\numask 077\nprintf '%s\\n' ${line} >>"$HOME/.ssh/authorized_keys"`,
+				{ label: "Authorizing the new key" },
+			);
+			const check = await openNodeSession({
+				name: node.name,
+				host: node.host,
+				port: node.port,
+				username: node.username,
+				privateKey: keys.privateKey,
+				hostKeyFingerprint: node.hostKeyFingerprint,
+			});
+			try {
+				await check.run("true", { label: "Login with the new key" });
+			} finally {
+				check.close();
+			}
+			await session.run(
+				`set -eu\numask 077\nfile="$HOME/.ssh/authorized_keys"\nprintf '%s\\n' ${line} >"$file.new"\nmv -f "$file.new" "$file"`,
+				{ label: "Removing the old key" },
+			);
+			await db
+				.update(githubRunnerNodes)
+				.set({
+					sshPrivateKey: keys.privateKey,
+					sshPublicKey: keys.publicKey,
+					sshKeyRotatedAt: new Date().toISOString(),
+				})
+				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+			closeSharedSessions(node);
+			pushEvent(nodeId, "SSH key rotated: the previous key no longer logs in");
+		},
+		async (error) => {
+			failure = error;
+			pushEvent(
+				nodeId,
+				`SSH key rotation failed, the previous key still works: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		},
+	);
+	if (!started) {
+		throw new Error(
+			"Another task is running on this machine; try again in a moment",
+		);
+	}
+	await state.tasks.get(nodeId);
+	if (failure) throw failure;
+};
+
 /** Removes the routing variable of a pool being deleted. */
 export const clearPoolRouting = async (pool: GithubRunnerPool) => {
 	const variable = pool.routing?.variable ?? pool.routingVariable;
@@ -2851,7 +3042,13 @@ const tickGithubRunners = async () => {
 		})) as NodeWithRelations[];
 		const byPool = new Map<string, NodeWithRelations[]>();
 		for (const node of nodes) {
-			if (node.phase === "new" || node.phase === "provisioning") continue;
+			if (
+				node.phase === "enrolling" ||
+				node.phase === "new" ||
+				node.phase === "provisioning"
+			) {
+				continue;
+			}
 			const list = byPool.get(node.githubRunnerPoolId) ?? [];
 			list.push(node);
 			byPool.set(node.githubRunnerPoolId, list);

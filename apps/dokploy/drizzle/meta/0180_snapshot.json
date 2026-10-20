@@ -1,5 +1,5 @@
 {
-  "id": "574d2750-35c1-43f4-b2ee-2bc79d7e77ae",
+  "id": "3c92de7a-a6ba-4991-82b0-e78c8eee5089",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -4129,6 +4129,37 @@
         "sshKeyId": {
           "name": "sshKeyId",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sshPrivateKey": {
+          "name": "sshPrivateKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sshPublicKey": {
+          "name": "sshPublicKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sshKeyRotatedAt": {
+          "name": "sshKeyRotatedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "keepAwake": {
+          "name": "keepAwake",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "setup": {
+          "name": "setup",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -9836,6 +9867,7 @@
       "name": "githubRunnerNodePhase",
       "schema": "public",
       "values": [
+        "enrolling",
         "new",
         "provisioning",
         "ready",

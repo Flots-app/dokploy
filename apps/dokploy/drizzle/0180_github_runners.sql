@@ -1,6 +1,6 @@
 CREATE TYPE "public"."githubRunnerAuthType" AS ENUM('token', 'app', 'provider');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerJobOutcome" AS ENUM('running', 'completed', 'interrupted');--> statement-breakpoint
-CREATE TYPE "public"."githubRunnerNodePhase" AS ENUM('new', 'provisioning', 'ready', 'draining', 'stopped', 'error');--> statement-breakpoint
+CREATE TYPE "public"."githubRunnerNodePhase" AS ENUM('enrolling', 'new', 'provisioning', 'ready', 'draining', 'stopped', 'error');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerOperationStatus" AS ENUM('running', 'done', 'error', 'cancelled');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerOperationType" AS ENUM('provision', 'apply', 'disable', 'enable', 'remove', 'upgrade');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerPlacement" AS ENUM('fastest', 'spread');--> statement-breakpoint
@@ -52,6 +52,11 @@ CREATE TABLE "github_runner_node" (
 	"port" integer DEFAULT 22 NOT NULL,
 	"username" text NOT NULL,
 	"sshKeyId" text,
+	"sshPrivateKey" text,
+	"sshPublicKey" text,
+	"sshKeyRotatedAt" text,
+	"keepAwake" boolean DEFAULT true NOT NULL,
+	"setup" jsonb,
 	"hostKeyFingerprint" text,
 	"platform" "githubRunnerPlatform" NOT NULL,
 	"vmName" text DEFAULT 'dokploy-runners' NOT NULL,
