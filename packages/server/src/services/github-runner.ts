@@ -125,6 +125,38 @@ const credentialsOf = (
 
 type PoolAccessInput = z.infer<typeof apiTestGithubRunnerCredentials>;
 
+const GITHUB_API_URL = "https://api.github.com";
+
+/**
+ * Secrets only go to the GitHub they belong to: a Dokploy GitHub provider is a
+ * github.com App, and a stored token or App key is only sent to the API URL
+ * the pool was saved with. Another URL needs the secret pasted again, so
+ * someone who cannot read a secret cannot have it sent to their own server.
+ */
+export const assertSecretsDestination = (
+	input: Pick<
+		PoolAccessInput,
+		"authType" | "apiUrl" | "token" | "appPrivateKey"
+	>,
+	stored: GithubRunnerPool | null,
+) => {
+	if (input.authType === "provider" && input.apiUrl !== GITHUB_API_URL) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `A GitHub provider only works with ${GITHUB_API_URL}`,
+		});
+	}
+	const reused =
+		(input.authType === "token" && !input.token) ||
+		(input.authType === "app" && !input.appPrivateKey);
+	if (reused && stored && input.apiUrl !== stored.apiUrl) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Paste the ${input.authType === "token" ? "token" : "App private key"} again: the stored one is only sent to ${stored.apiUrl}`,
+		});
+	}
+};
+
 /**
  * Reaches GitHub with the pool settings: finds the App installation when it is
  * not given, lists the runner groups of an organization and the runners. A
@@ -138,6 +170,7 @@ export const testGithubRunnerCredentials = async (
 	const stored = input.githubRunnerPoolId
 		? await findGithubRunnerPool(input.githubRunnerPoolId, organizationId)
 		: null;
+	assertSecretsDestination(input, stored);
 	const secrets = credentialsOf(input, stored);
 	let auth: Parameters<typeof createGithubRunnerClient>[1];
 	let installationId: string | null = null;
@@ -261,6 +294,7 @@ export const updateGithubRunnerPool = async (
 		organizationId,
 	);
 	const { githubRunnerPoolId, ...values } = input;
+	assertSecretsDestination(values, stored);
 	await assertRoutingVariableFree(values, organizationId, githubRunnerPoolId);
 	const nodes = await db.query.githubRunnerNodes.findMany({
 		where: eq(githubRunnerNodes.githubRunnerPoolId, githubRunnerPoolId),

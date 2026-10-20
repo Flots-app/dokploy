@@ -1,5 +1,6 @@
 import {
 	applyRunnerNodeConfig,
+	assertGitProviderAccess,
 	checkGithubRunnerMachine,
 	cleanRunnerCaches,
 	completeGithubRunnerEnrollment,
@@ -90,21 +91,34 @@ const fail = (error: unknown): never => {
 	});
 };
 
+/**
+ * A pool signs GitHub requests with the provider's App key: picking a provider
+ * needs the same access as using it anywhere else in Dokploy. The provider a
+ * pool already uses stays usable by whoever may edit the pool.
+ */
 const assertProvider = async (
-	githubId: string | null,
-	organizationId: string,
+	input: { githubId: string | null; githubRunnerPoolId?: string | null },
+	session: { userId: string; activeOrganizationId: string },
 ) => {
-	if (!githubId) return;
+	if (!input.githubId) return;
+	if (input.githubRunnerPoolId) {
+		const pool = await findGithubRunnerPool(
+			input.githubRunnerPoolId,
+			session.activeOrganizationId,
+		);
+		if (pool.githubId === input.githubId) return;
+	}
 	const provider = await db.query.github.findFirst({
-		where: (table, { eq }) => eq(table.githubId, githubId),
+		where: (table, { eq }) => eq(table.githubId, input.githubId ?? ""),
 		with: { gitProvider: true },
 	});
-	if (provider?.gitProvider.organizationId !== organizationId) {
+	if (!provider) {
 		throw new TRPCError({
-			code: "UNAUTHORIZED",
-			message: "You are not authorized to use this GitHub provider",
+			code: "NOT_FOUND",
+			message: "GitHub provider not found",
 		});
 	}
+	await assertGitProviderAccess(session, provider.gitProvider);
 };
 
 export const githubRunnerRouter = createTRPCRouter({
@@ -115,7 +129,7 @@ export const githubRunnerRouter = createTRPCRouter({
 	testCredentials: create
 		.input(apiTestGithubRunnerCredentials)
 		.mutation(async ({ input, ctx }) => {
-			await assertProvider(input.githubId, ctx.session.activeOrganizationId);
+			await assertProvider(input, ctx.session);
 			return testGithubRunnerCredentials(
 				input,
 				ctx.session.activeOrganizationId,
@@ -125,7 +139,7 @@ export const githubRunnerRouter = createTRPCRouter({
 	createPool: create
 		.input(apiCreateGithubRunnerPool)
 		.mutation(async ({ input, ctx }) => {
-			await assertProvider(input.githubId, ctx.session.activeOrganizationId);
+			await assertProvider(input, ctx.session);
 			const pool = await createGithubRunnerPool(
 				input,
 				ctx.session.activeOrganizationId,
@@ -143,7 +157,7 @@ export const githubRunnerRouter = createTRPCRouter({
 	updatePool: update
 		.input(apiUpdateGithubRunnerPool)
 		.mutation(async ({ input, ctx }) => {
-			await assertProvider(input.githubId, ctx.session.activeOrganizationId);
+			await assertProvider(input, ctx.session);
 			const pool = await updateGithubRunnerPool(
 				input,
 				ctx.session.activeOrganizationId,
@@ -247,7 +261,8 @@ export const githubRunnerRouter = createTRPCRouter({
 			return result;
 		}),
 
-	setupScript: update
+	// Adding a machine is one flow: whoever may start it may finish it.
+	setupScript: create
 		.input(apiFindGithubRunnerNode)
 		.query(async ({ input, ctx }) => {
 			const node = await findGithubRunnerNode(
@@ -257,7 +272,7 @@ export const githubRunnerRouter = createTRPCRouter({
 			return githubRunnerSetupScript(node);
 		}),
 
-	completeEnrollment: update
+	completeEnrollment: create
 		.input(apiCompleteGithubRunnerEnrollment)
 		.mutation(async ({ input, ctx }) => {
 			const result = await completeGithubRunnerEnrollment(
@@ -278,7 +293,7 @@ export const githubRunnerRouter = createTRPCRouter({
 			return result;
 		}),
 
-	finishEnrollment: update
+	finishEnrollment: create
 		.input(apiFinishGithubRunnerEnrollment)
 		.mutation(async ({ input, ctx }) => {
 			const node = await finishGithubRunnerEnrollment(

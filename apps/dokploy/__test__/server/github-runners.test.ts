@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GithubRunnerDrain } from "@dokploy/server/db/schema";
+import type {
+	GithubRunnerDrain,
+	GithubRunnerPool,
+} from "@dokploy/server/db/schema";
+import { assertSecretsDestination } from "@dokploy/server/services/github-runner";
 import {
 	autoMaxRunners,
 	budgetWarnings,
@@ -76,6 +80,7 @@ import {
 } from "@dokploy/server/utils/github-runners/probe";
 import {
 	isKillDrain,
+	isRunnerOf,
 	isStale,
 	type PlannerNode,
 	planNode,
@@ -111,6 +116,8 @@ import {
 	closeSharedSessions,
 	fingerprintOf,
 	HostKeyMismatchError,
+	NodeCommandError,
+	NodeNotStartedError,
 	type NodeSession,
 	openNodeSession,
 	sharedNodeSession,
@@ -925,6 +932,25 @@ describe("reconcile planner", () => {
 		expect(slotOfRunner(prefix, "dkp-m4x-1-a1b2c3")).toBeNull();
 		expect(slotOfRunner(prefix, `${prefix}1-A1`)).toBeNull();
 	});
+
+	it("leaves alone the runners of a machine whose name extends this one", () => {
+		// "dkp-m4-" also starts the runners of a machine named "m4-2".
+		const sibling = runnerNamePrefix("m4-2");
+		expect(isRunnerOf(prefix, `${sibling}1-a1b2c3`)).toBe(false);
+		expect(isRunnerOf(sibling, `${prefix}2-a1b2c3`)).toBe(false);
+		expect(isRunnerOf(prefix, `${prefix}2-a1b2c3`)).toBe(true);
+		const plan = planNode({
+			now: NOW,
+			node: plannerNode({ maxRunners: 1 }),
+			slots: [slot(1)],
+			runners: [
+				ghRunner(1),
+				runner({ id: 201, name: `${sibling}1-bbbbbb` }),
+				runner({ id: 202, name: `${sibling}2-cccccc`, status: "offline" }),
+			],
+		});
+		expect(plan.actions).toEqual([]);
+	});
 });
 
 const machineKey = generateMachineKey("m6");
@@ -1469,9 +1495,11 @@ describe("SSH session", () => {
 	let server: Server;
 	let port = 0;
 	let logins = 0;
+	const connected: { end: () => void }[] = [];
 
 	beforeAll(async () => {
 		server = new Server({ hostKeys: [hostKey.private] }, (client) => {
+			connected.push(client);
 			client
 				.on("authentication", (context) =>
 					context.method === "publickey"
@@ -1597,6 +1625,29 @@ describe("SSH session", () => {
 		expect(logins - before).toBe(2);
 		closeSharedSessions(target);
 	});
+
+	it("replaces a connection the machine closed", async () => {
+		const target = { ...connection(expected()), name: "rebooted" };
+		const session = await sharedNodeSession(target);
+		await session.run("true");
+		const before = logins;
+		// The machine reboots: its side of every connection goes away.
+		for (const client of connected.splice(0)) client.end();
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		await expect(session.run("echo back")).resolves.toMatchObject({
+			stdout: "back\n",
+		});
+		expect(logins - before).toBe(1);
+		closeSharedSessions(target);
+	});
+
+	it("reports a closed connection as a command that never started", async () => {
+		const plain = await openNodeSession(connection(expected()));
+		for (const client of connected.splice(0)) client.end();
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		await expect(plain.run("true")).rejects.toBeInstanceOf(NodeNotStartedError);
+		plain.close();
+	});
 });
 
 describe("shared SSH connections", () => {
@@ -1614,7 +1665,7 @@ describe("shared SSH connections", () => {
 		hostKeyFingerprint: null,
 	});
 	const notStarted = () =>
-		new Error("Probe could not start on m6: Not connected");
+		new NodeNotStartedError("Probe could not start on m6: Not connected");
 
 	it("runs a command again on a new connection when it could not start", async () => {
 		const runs = [
@@ -1630,13 +1681,35 @@ describe("shared SSH connections", () => {
 		closeSharedSessions(target("retry"));
 	});
 
-	it("never runs a command twice once it started", async () => {
-		const run = vi.fn().mockRejectedValue(new Error("Connection lost"));
+	it("never runs a command twice once it may have started", async () => {
+		// The channel request went out before the connection dropped.
+		const run = vi
+			.fn()
+			.mockRejectedValueOnce(
+				new Error("Deploy could not start on m6: No response from server"),
+			)
+			.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
 		const open = vi.fn(async () => fakeSession(run));
 		const session = await sharedNodeSession(target("started"), open);
-		await expect(session.run("deploy")).rejects.toThrow("Connection lost");
+		await expect(session.run("deploy")).rejects.toThrow(/No response/);
 		expect(run).toHaveBeenCalledTimes(1);
+		// The connection is replaced for the next command.
+		await session.run("true");
+		expect(open).toHaveBeenCalledTimes(2);
 		closeSharedSessions(target("started"));
+	});
+
+	it("keeps the connection when the command itself fails", async () => {
+		const run = vi
+			.fn()
+			.mockRejectedValueOnce(new NodeCommandError("m6", 1, "", "boom", "Probe"))
+			.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
+		const open = vi.fn(async () => fakeSession(run));
+		const session = await sharedNodeSession(target("failing"), open);
+		await expect(session.run("false")).rejects.toThrow(/boom/);
+		await session.run("true");
+		expect(open).toHaveBeenCalledTimes(1);
+		closeSharedSessions(target("failing"));
 	});
 
 	it("gives up after one retry", async () => {
@@ -2432,6 +2505,61 @@ describe("machine enrollment", () => {
 		expect(installRuntimeScript()).toContain("RUNNER_USER=dokploy-runner");
 		expect(script).toContain("MANAGER_USER=dokploy-manager");
 		expect(script).not.toMatch(/dokploy-runner( |$)/m);
+	});
+
+	it("creates the Mac account password under pipefail", () => {
+		const script = machineSetupScript({
+			platform: "macos",
+			machine: "m6",
+			publicKey: machineKey.publicKey,
+			keepAwake: true,
+		});
+		const line = script
+			.split("\n")
+			.map((text) => text.trim())
+			.find((text) => text.startsWith("password=$("));
+		expect(line).toBeDefined();
+		const length = execFileSync("bash", [
+			"-c",
+			`set -euo pipefail\n${line}\necho "\${#password}"`,
+		])
+			.toString()
+			.trim();
+		expect(Number(length)).toBeGreaterThanOrEqual(32);
+	});
+
+	it("only sends stored secrets to the GitHub they were saved for", () => {
+		const stored = {
+			apiUrl: "https://ghe.example.com/api/v3",
+		} as GithubRunnerPool;
+		const input = {
+			authType: "token" as const,
+			apiUrl: "https://attacker.example",
+			token: null,
+			appPrivateKey: null,
+		};
+		expect(() => assertSecretsDestination(input, stored)).toThrow(
+			/Paste the token again/,
+		);
+		expect(() =>
+			assertSecretsDestination({ ...input, authType: "app" }, stored),
+		).toThrow(/App private key/);
+		// A pasted secret may go anywhere; the stored one to its own API.
+		expect(() =>
+			assertSecretsDestination({ ...input, token: "ghp_new" }, stored),
+		).not.toThrow();
+		expect(() =>
+			assertSecretsDestination({ ...input, apiUrl: stored.apiUrl }, stored),
+		).not.toThrow();
+		expect(() =>
+			assertSecretsDestination({ ...input, authType: "provider" }, null),
+		).toThrow(/only works with https:\/\/api.github.com/);
+		expect(() =>
+			assertSecretsDestination(
+				{ ...input, authType: "provider", apiUrl: "https://api.github.com" },
+				null,
+			),
+		).not.toThrow();
 	});
 
 	it("reads the code the script prints", () => {

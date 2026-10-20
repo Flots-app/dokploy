@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Client } from "ssh2";
+import { Client, type ClientChannel } from "ssh2";
 import { shellQuote } from "./runtime";
 
 export interface NodeConnection {
@@ -31,6 +31,12 @@ export class NodeCommandError extends Error {
 		);
 	}
 }
+
+/**
+ * A command that certainly never reached the machine: its connection was
+ * already closed. Running it again on a new connection is safe.
+ */
+export class NodeNotStartedError extends Error {}
 
 export class HostKeyMismatchError extends Error {
 	constructor(node: string, expected: string, presented: string) {
@@ -128,6 +134,12 @@ export const openNodeSession = async (
 	});
 	// Errors after the handshake surface through the channel of each command.
 	client.on("error", () => {});
+	// Keepalive, a reboot or the network close the connection: later commands
+	// fail without sending anything, so the shared connection can be replaced.
+	let closed = false;
+	client.on("close", () => {
+		closed = true;
+	});
 
 	const run: NodeSession["run"] = (script, runOptions = {}) =>
 		new Promise((resolve, reject) => {
@@ -136,7 +148,17 @@ export const openNodeSession = async (
 				runOptions.input === undefined
 					? "/bin/bash -s"
 					: `/bin/bash -c ${shellQuote(script)}`;
-			client.exec(command, (error, channel) => {
+			const notStarted = (reason: string) =>
+				reject(
+					new NodeNotStartedError(
+						`${label} could not start on ${connection.name}: ${reason}`,
+					),
+				);
+			if (closed) {
+				notStarted("the connection is closed");
+				return;
+			}
+			const onChannel = (error: Error | undefined, channel: ClientChannel) => {
 				if (error) {
 					reject(
 						new Error(
@@ -197,7 +219,13 @@ export const openNodeSession = async (
 					resolve({ stdout, stderr, exitCode });
 				});
 				channel.end(runOptions.input ?? `${script}\n`);
-			});
+			};
+			try {
+				client.exec(command, onChannel);
+			} catch (error) {
+				// ssh2 throws "Not connected" before sending anything.
+				notStarted(error instanceof Error ? error.message : String(error));
+			}
 		});
 
 	return {
@@ -273,9 +301,10 @@ const sweep = () => {
 
 /**
  * A session on the shared connection of a machine. close() only releases it;
- * the connection goes when it dies (keepalive), fails to open a channel, or
- * idles. A command that could not even start is retried once on a fresh
- * connection: nothing ran, so nothing runs twice.
+ * the connection is replaced once a command fails for any reason other than
+ * the command itself, and closed after idling. A command that never left
+ * (NodeNotStartedError: the connection was already closed) is retried once on
+ * a new connection; any other failure is not, since the command may have run.
  */
 export const sharedNodeSession = async (
 	connection: NodeConnection,
@@ -300,23 +329,22 @@ export const sharedNodeSession = async (
 		}
 		return entry;
 	};
-	const first = acquire();
-	const session = await first.session;
+	const session = await acquire().session;
 	const run: NodeSession["run"] = async (script, options) => {
 		for (let attempt = 0; ; attempt++) {
-			const entry = attempt === 0 ? first : acquire();
+			// The entry may have been replaced since this session was handed out.
+			const entry = acquire();
 			entry.busy++;
 			entry.lastUsed = Date.now();
 			try {
 				return await (await entry.session).run(script, options);
 			} catch (error) {
-				const notStarted =
-					error instanceof Error &&
-					!(error instanceof NodeCommandError) &&
-					/could not start/.test(error.message);
-				if (!notStarted) throw error;
+				// The command ran and failed (or timed out): the connection is fine.
+				if (error instanceof NodeCommandError) throw error;
 				evict(key, entry);
-				if (attempt > 0) throw error;
+				if (!(error instanceof NodeNotStartedError) || attempt > 0) {
+					throw error;
+				}
 			} finally {
 				entry.busy--;
 				entry.lastUsed = Date.now();

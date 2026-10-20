@@ -63,6 +63,13 @@ export const slotOfRunner = (prefix: string, name: string) => {
 	return match ? Number(match[1]) : null;
 };
 
+/**
+ * Whether a runner belongs to the machine with this prefix. A prefix alone is
+ * not enough: "dkp-mac-" also starts the runners of a machine named "mac-2".
+ */
+export const isRunnerOf = (prefix: string, name: string) =>
+	slotOfRunner(prefix, name) !== null;
+
 const lower = (values: string[]) =>
 	new Set(values.map((value) => value.toLowerCase()));
 
@@ -106,7 +113,7 @@ export const planNode = (input: {
 	const actions: PlannedAction[] = [];
 	const observations: GithubRunnerSlotObservation[] = [];
 	const runners = input.runners.filter((runner) =>
-		runner.name.startsWith(node.namePrefix),
+		isRunnerOf(node.namePrefix, runner.name),
 	);
 	const byName = new Map(runners.map((runner) => [runner.name, runner]));
 	const kill = isKillDrain(node.drain, now);

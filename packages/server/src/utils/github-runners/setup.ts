@@ -151,7 +151,8 @@ fi
 step "Account $MANAGER_USER: standard, hidden, no password login"
 if ! id "$MANAGER_USER" >/dev/null 2>&1; then
 	# A random password nobody keeps: the account only logs in with its key.
-	password=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)
+	# No pipe: under pipefail, tr would die of SIGPIPE once head has enough.
+	password=$(openssl rand -hex 20)
 	sysadminctl -addUser "$MANAGER_USER" -fullName "Dokploy GitHub runners" \
 		-shell /bin/bash -home "$MANAGER_HOME" -password "$password" >/dev/null 2>&1 ||
 		fail "sysadminctl could not create $MANAGER_USER"

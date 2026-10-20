@@ -308,11 +308,13 @@ const MachineAlerts = ({
 
 const MachineActions = ({
 	machine,
+	canCreate,
 	canUpdate,
 	canDelete,
 	onOpen,
 }: {
 	machine: RunnerMachine;
+	canCreate: boolean;
 	canUpdate: boolean;
 	canDelete: boolean;
 	onOpen: (dialog: DialogName) => void;
@@ -338,7 +340,7 @@ const MachineActions = ({
 
 	return (
 		<div className="flex shrink-0 items-center gap-1">
-			{canUpdate && enrolling && (
+			{canCreate && enrolling && (
 				<Button size="sm" onClick={() => onOpen("enroll")}>
 					<Play className="size-4" />
 					Continue setup
@@ -500,6 +502,7 @@ const MachineFooter = ({
 
 export const MachineCard = ({
 	machine,
+	canCreate,
 	canUpdate,
 	canDelete,
 	rerunInterruptedJobs,
@@ -507,6 +510,8 @@ export const MachineCard = ({
 	isNext,
 }: {
 	machine: RunnerMachine;
+	/** Finishing the setup of a machine is part of adding it. */
+	canCreate: boolean;
 	canUpdate: boolean;
 	canDelete: boolean;
 	rerunInterruptedJobs: boolean;
@@ -533,6 +538,7 @@ export const MachineCard = ({
 				<MachineTitle machine={machine} />
 				<MachineActions
 					machine={machine}
+					canCreate={canCreate}
 					canUpdate={canUpdate}
 					canDelete={canDelete}
 					onOpen={setDialog}

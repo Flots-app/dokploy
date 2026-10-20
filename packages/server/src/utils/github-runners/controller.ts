@@ -96,6 +96,7 @@ import {
 } from "./probe";
 import {
 	isKillDrain,
+	isRunnerOf,
 	type PlannedAction,
 	planNode,
 	runnerNamePrefix,
@@ -1319,7 +1320,7 @@ const forgetRegistrations = async (node: NodeWithRelations) => {
 	const runners = await client.listRunners();
 	await Promise.all(
 		runners
-			.filter((runner) => runner.name.startsWith(prefix))
+			.filter((runner) => isRunnerOf(prefix, runner.name))
 			.map((runner) => client.deleteRunner(runner.id)),
 	);
 };
@@ -2591,7 +2592,7 @@ const runnerOn = (node: GithubRunnerNode, runners: GithubRunner[]): boolean =>
 	runners.some(
 		(runner) =>
 			runner.status === "online" &&
-			runner.name.startsWith(runnerNamePrefix(node.name)),
+			isRunnerOf(runnerNamePrefix(node.name), runner.name),
 	);
 
 const routingChanged = (
@@ -3160,13 +3161,13 @@ export const stopGithubRunnerController = () => {
 /** The host key a machine presents now, for the operator to approve after a reinstall. */
 export const readPresentedHostKey = async (nodeId: string) => {
 	const node = await loadRunnerNode(nodeId);
-	if (!node.sshKey?.privateKey) throw new Error("No SSH key");
+	// The machine's own key (setup script) or the shared SSH key.
 	const session = await openNodeSession({
 		name: node.name,
 		host: node.host,
 		port: node.port,
 		username: node.username,
-		privateKey: node.sshKey.privateKey,
+		privateKey: nodePrivateKey(node),
 		hostKeyFingerprint: null,
 	});
 	session.close();

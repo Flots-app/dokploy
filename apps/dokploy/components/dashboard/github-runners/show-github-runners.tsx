@@ -186,6 +186,7 @@ const PoolSection = ({
 						<MachineCard
 							key={node.githubRunnerNodeId}
 							machine={node}
+							canCreate={permissions.create}
 							canUpdate={permissions.update}
 							canDelete={permissions.delete}
 							rerunInterruptedJobs={pool.rerunInterruptedJobs}
