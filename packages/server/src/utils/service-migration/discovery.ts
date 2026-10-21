@@ -60,12 +60,24 @@ export interface ComposeContainerSnapshot {
 	id: string;
 	name: string;
 	state: string;
+	/** Compose service, or Swarm service for stack tasks. */
+	service: string | null;
 }
 
 export interface ComposeSnapshot {
 	containers: ComposeContainerSnapshot[];
 	runningContainers: number;
 	stackServices: { name: string; replicas: number | null }[];
+}
+
+/** Where a container mounts a volume Docker created without a name. */
+export interface AnonymousVolumeMount {
+	/** Mount path in the container, e.g. /data for a Dockerfile `VOLUME /data`. */
+	destination: string;
+	container: string;
+	/** Compose service and replica number, to find the redeployed container. */
+	service: string | null;
+	containerNumber: string | null;
 }
 
 export interface VolumeSnapshot {
@@ -76,6 +88,13 @@ export interface VolumeSnapshot {
 	sizeBytes: number | null;
 	/** Data lives outside the server (NFS, plugin driver…): only the definition is recreated. */
 	externalStorage: boolean;
+	/**
+	 * Set for anonymous volumes: the redeployed container gets a new one, so the
+	 * data is copied into it after the deploy instead of into a same-named volume.
+	 */
+	anonymous: AnonymousVolumeMount | null;
+	/** Set when the data is not carried over. */
+	skipReason: string | null;
 }
 
 export interface BindSnapshot {
@@ -209,6 +228,40 @@ export const inspectSwarmService = async (
 	};
 };
 
+const ANONYMOUS_VOLUME_NAME = /^[0-9a-f]{64}$/;
+
+/** Docker names anonymous volumes with a random id (and labels them since Docker 23). */
+export const isAnonymousVolume = (
+	name: string,
+	labels: Record<string, string> = {},
+) =>
+	ANONYMOUS_VOLUME_NAME.test(name) || "com.docker.volume.anonymous" in labels;
+
+/** Why the data of an anonymous volume cannot follow the service, or null when it is copied. */
+export const anonymousVolumeSkipReason = (
+	service: Pick<MigrationService, "composeType" | "supportsZeroDowntime">,
+	mount: AnonymousVolumeMount,
+) => {
+	if (service.composeType === "stack") {
+		return "Swarm deletes it with its task, so it is lost when the stack is removed from the source, as on any redeploy";
+	}
+	if (service.supportsZeroDowntime) {
+		return "every zero-downtime release starts with an empty anonymous volume, so this data does not survive a redeploy on the source either";
+	}
+	if (!mount.service || !mount.containerNumber) {
+		return "the container was not created by Docker Compose, so there is no matching container to copy it into";
+	}
+	return null;
+};
+
+/** Swarm deletes anonymous volumes with their task; Compose keeps them after `docker rm`. */
+export const keepsAnonymousVolumes = (
+	service: Pick<MigrationService, "composeType">,
+) => service.composeType !== "stack";
+
+export const describeAnonymousVolume = (mount: AnonymousVolumeMount) =>
+	`${mount.destination} of ${mount.service ?? mount.container}`;
+
 export const composeContainerFilters = (
 	service: Pick<MigrationService, "id" | "appName">,
 ) => [
@@ -234,6 +287,7 @@ const inspectCompose = async (
 	);
 	const containers: ComposeContainerSnapshot[] = [];
 	const volumeNames = new Set<string>();
+	const volumeMounts = new Map<string, AnonymousVolumeMount>();
 	const bindPaths = new Set<string>();
 	if (ids.length > 0) {
 		const inspect = await executor.run(
@@ -244,16 +298,41 @@ const inspectCompose = async (
 				Id: string;
 				Name: string;
 				State?: { Status?: string };
-				Mounts?: Array<{ Type?: string; Name?: string; Source?: string }>;
+				Config?: { Labels?: Record<string, string> | null };
+				Mounts?: Array<{
+					Type?: string;
+					Name?: string;
+					Source?: string;
+					Destination?: string;
+				}>;
 			}>(line);
 			if (!container) continue;
+			const name = container.Name.replace(/^\//, "");
+			const labels = container.Config?.Labels ?? {};
+			// Stack tasks only carry their Swarm service name.
+			const composeService =
+				labels["com.docker.compose.service"] ||
+				labels["com.docker.swarm.service.name"] ||
+				null;
 			containers.push({
 				id: container.Id,
-				name: container.Name.replace(/^\//, ""),
+				name,
 				state: container.State?.Status ?? "unknown",
+				service: composeService,
 			});
 			for (const mount of container.Mounts ?? []) {
-				if (mount.Type === "volume" && mount.Name) volumeNames.add(mount.Name);
+				if (mount.Type === "volume" && mount.Name) {
+					volumeNames.add(mount.Name);
+					if (!volumeMounts.has(mount.Name)) {
+						volumeMounts.set(mount.Name, {
+							destination: mount.Destination ?? "",
+							container: name,
+							service: composeService,
+							containerNumber:
+								labels["com.docker.compose.container-number"] || null,
+						});
+					}
+				}
 				if (mount.Type === "bind" && mount.Source) bindPaths.add(mount.Source);
 			}
 		}
@@ -293,6 +372,7 @@ const inspectCompose = async (
 			stackServices,
 		} satisfies ComposeSnapshot,
 		volumeNames: [...volumeNames],
+		volumeMounts,
 		bindPaths: [...bindPaths],
 	};
 };
@@ -304,7 +384,12 @@ export const inspectVolumes = async (
 	const definitions = await mapWithConcurrency(
 		names,
 		SSH_PROBE_CONCURRENCY,
-		async (name): Promise<Omit<VolumeSnapshot, "sizeBytes"> | null> => {
+		async (
+			name,
+		): Promise<Omit<
+			VolumeSnapshot,
+			"sizeBytes" | "anonymous" | "skipReason"
+		> | null> => {
 			const result = await executor.run(
 				`docker volume inspect ${quote([name])} --format '{{json .}}'`,
 				{ allowFailure: true },
@@ -501,10 +586,12 @@ export const discoverSource = async (
 
 	let swarmService: SwarmServiceSnapshot | null = null;
 	let compose: ComposeSnapshot | null = null;
+	let volumeMounts = new Map<string, AnonymousVolumeMount>();
 	const previews: PreviewSnapshot[] = [];
 	if (service.type === "compose") {
 		const result = await inspectCompose(source, service);
 		compose = result.snapshot;
+		volumeMounts = result.volumeMounts;
 		for (const name of result.volumeNames) volumeNames.add(name);
 		for (const bind of result.bindPaths) bindPaths.add(bind);
 	} else {
@@ -529,7 +616,12 @@ export const discoverSource = async (
 
 	const volumeDefinitions = await inspectVolumes(source, [...volumeNames]);
 	const existingVolumes = [...volumeDefinitions.values()].filter(
-		(volume): volume is Omit<VolumeSnapshot, "sizeBytes"> => volume !== null,
+		(
+			volume,
+		): volume is Omit<
+			VolumeSnapshot,
+			"sizeBytes" | "anonymous" | "skipReason"
+		> => volume !== null,
 	);
 	const missingVolumes = [...volumeDefinitions.entries()]
 		.filter(([, volume]) => volume === null)
@@ -545,10 +637,19 @@ export const discoverSource = async (
 					.map((volume) => volume.name),
 			)
 		: new Map<string, number>();
-	const volumes: VolumeSnapshot[] = existingVolumes.map((volume) => ({
-		...volume,
-		sizeBytes: sizes.get(volume.name) ?? null,
-	}));
+	const volumes: VolumeSnapshot[] = existingVolumes.map((volume) => {
+		const anonymous = isAnonymousVolume(volume.name, volume.labels)
+			? (volumeMounts.get(volume.name) ?? null)
+			: null;
+		return {
+			...volume,
+			sizeBytes: sizes.get(volume.name) ?? null,
+			anonymous,
+			skipReason: anonymous
+				? anonymousVolumeSkipReason(service, anonymous)
+				: null,
+		};
+	});
 
 	// File mounts and relative Compose binds travel with the service directory.
 	const bindCandidates = [...bindPaths].filter(
@@ -647,9 +748,15 @@ export const discoverSource = async (
 	};
 };
 
+/** Volumes whose content is streamed to the target. */
+export const copiedVolumes = (snapshot: Pick<SourceSnapshot, "volumes">) =>
+	snapshot.volumes.filter(
+		(volume) => !volume.externalStorage && !volume.skipReason,
+	);
+
 /** Volumes and host paths whose content is streamed to the target. */
 export const hasDataToCopy = (snapshot: SourceSnapshot) =>
-	snapshot.volumes.some((volume) => !volume.externalStorage) ||
+	copiedVolumes(snapshot).length > 0 ||
 	snapshot.binds.some((bind) => !bind.skipReason);
 
 /**

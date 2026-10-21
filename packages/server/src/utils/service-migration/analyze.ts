@@ -18,9 +18,12 @@ import { quote } from "shell-quote";
 import { mapWithConcurrency, SSH_PROBE_CONCURRENCY } from "./concurrency";
 import {
 	composeContainerIdsCommand,
+	copiedVolumes,
+	describeAnonymousVolume,
 	discoverSource,
 	ensureHelperImage,
 	hasDataToCopy,
+	keepsAnonymousVolumes,
 	MIGRATION_HELPER_IMAGE,
 	requiresDowntime,
 	type SourceSnapshot,
@@ -248,8 +251,11 @@ const probeTarget = async (
 						`docker service inspect ${quote([name])} --format '{{.ID}}'`,
 				);
 
+	// Anonymous volumes get a new random name on the target.
 	const existingVolumes = await probe(
-		snapshot.volumes.map((volume) => volume.name),
+		snapshot.volumes
+			.filter((volume) => !volume.anonymous)
+			.map((volume) => volume.name),
 		(name) => `docker volume inspect ${quote([name])} --format '{{.Name}}'`,
 	);
 	// Pre-provisioned empty volumes (external Compose volumes) are simply filled.
@@ -298,7 +304,7 @@ const probeTarget = async (
 	);
 
 	const needsHelper =
-		snapshot.volumes.some((volume) => !volume.externalStorage) ||
+		copiedVolumes(snapshot).length > 0 ||
 		snapshot.binds.some((bind) => !bind.skipReason) ||
 		snapshot.directories.length > 0;
 
@@ -623,12 +629,41 @@ const checkData = (
 			"pass",
 			`Already created and empty on the target, they will be filled: ${emptyVolumes.join(", ")}.`,
 		);
-	} else if (snapshot.volumes.length > 0) {
+	} else if (snapshot.volumes.some((volume) => !volume.anonymous)) {
 		checks.add(
 			"volume-conflicts",
 			"Volumes on target",
 			"pass",
 			"None of the volumes exist on the target yet.",
+		);
+	}
+
+	const anonymous = snapshot.volumes.flatMap((volume) =>
+		volume.anonymous ? [{ volume, mount: volume.anonymous }] : [],
+	);
+	const leftBehind = anonymous.filter(({ volume }) => volume.skipReason);
+	if (leftBehind.length > 0) {
+		checks.add(
+			"anonymous-volumes",
+			"Anonymous volumes",
+			"warn",
+			`Not carried over: ${leftBehind
+				.map(
+					({ volume, mount }) =>
+						`${describeAnonymousVolume(mount)} (${formatBytes(volume.sizeBytes)}): ${volume.skipReason}`,
+				)
+				.join(
+					"; ",
+				)}. Mount a named volume there in the Compose file to migrate the data.`,
+		);
+	} else if (anonymous.length > 0) {
+		checks.add(
+			"anonymous-volumes",
+			"Anonymous volumes",
+			"pass",
+			`Copied into the new anonymous volume of each redeployed container, stopped during the copy: ${anonymous
+				.map(({ mount }) => describeAnonymousVolume(mount))
+				.join(", ")}.`,
 		);
 	}
 
@@ -686,9 +721,10 @@ const checkData = (
 			: "The Dokploy directory and the Docker storage accept writes.",
 	);
 
-	const volumeBytes = snapshot.volumes
-		.filter((volume) => !volume.externalStorage)
-		.reduce((sum, volume) => sum + (volume.sizeBytes ?? 0), 0);
+	const volumeBytes = copiedVolumes(snapshot).reduce(
+		(sum, volume) => sum + (volume.sizeBytes ?? 0),
+		0,
+	);
 	const fileBytes = totalBytes - volumeBytes;
 	const margin = 512 * 1024 * 1024;
 	const shortages: string[] = [];
@@ -869,7 +905,7 @@ const checkZeroDowntime = (
 	);
 };
 
-const buildPlan = (
+export const buildPlan = (
 	service: MigrationService,
 	snapshot: SourceSnapshot,
 	source: MigrationHost,
@@ -947,6 +983,23 @@ const buildPlan = (
 	const targetExistingVolumes = new Set(targetSnapshot?.existingVolumes);
 	const targetNonEmptyVolumes = new Set(targetSnapshot?.nonEmptyVolumes);
 	for (const volume of snapshot.volumes) {
+		if (volume.anonymous) {
+			const shortName = volume.name.slice(0, 12);
+			add({
+				category: "data",
+				action: volume.skipReason ? "skip" : "copy",
+				label: `Anonymous volume ${describeAnonymousVolume(volume.anonymous)}`,
+				detail: volume.skipReason
+					? `Not carried over: ${volume.skipReason}.${
+							keepsAnonymousVolumes(service)
+								? ` It stays on ${source.name} as ${shortName}…`
+								: ""
+						}`
+					: `Volume ${shortName}… has no name: its data is copied into the anonymous volume of the redeployed container ${volume.anonymous.container}, stopped during the copy.`,
+				sizeBytes: volume.sizeBytes ?? 0,
+			});
+			continue;
+		}
 		add({
 			category: "data",
 			action: volume.externalStorage ? "recreate" : "copy",
@@ -1128,9 +1181,10 @@ const buildPlan = (
 };
 
 const sumBytes = (snapshot: SourceSnapshot) =>
-	snapshot.volumes
-		.filter((volume) => !volume.externalStorage)
-		.reduce((sum, volume) => sum + (volume.sizeBytes ?? 0), 0) +
+	copiedVolumes(snapshot).reduce(
+		(sum, volume) => sum + (volume.sizeBytes ?? 0),
+		0,
+	) +
 	snapshot.binds
 		.filter((bind) => !bind.skipReason)
 		.reduce((sum, bind) => sum + (bind.sizeBytes ?? 0), 0) +

@@ -39,9 +39,13 @@ import {
 	sequentially,
 } from "./concurrency";
 import {
+	type AnonymousVolumeMount,
 	type BindSnapshot,
 	composeContainerIdsCommand,
 	type DirectorySnapshot,
+	describeAnonymousVolume,
+	isAnonymousVolume,
+	keepsAnonymousVolumes,
 	MIGRATION_HELPER_IMAGE,
 	readMiddlewares,
 	requiresDowntime,
@@ -50,6 +54,12 @@ import {
 	type VolumeSnapshot,
 } from "./discovery";
 import { type HostExecutor, pipeBetweenHosts } from "./host";
+import {
+	type ContainerProbe,
+	composeProbeCommand,
+	parseContainerProbes,
+	waitForComposeContainers,
+} from "./readiness";
 import {
 	type MigrationService,
 	setServiceServerId,
@@ -156,6 +166,41 @@ const provideImage = async (context: MigrationContext, image: string) => {
 
 /* ---------------------------------- data ---------------------------------- */
 
+const emptyVolume = async (executor: HostExecutor, name: string) => {
+	await executor.run(
+		helper(
+			[`--mount ${quote([`type=volume,source=${name},target=/migration`])}`],
+			["find", "/migration", "-mindepth", "1", "-delete"],
+		),
+	);
+};
+
+/** Streams the content of a source volume into a target volume. */
+const streamVolume = async (
+	context: MigrationContext,
+	label: string,
+	sourceVolume: string,
+	targetVolume: string,
+) => {
+	await transfer(
+		context,
+		label,
+		helper(
+			[
+				`--mount ${quote([`type=volume,source=${sourceVolume},target=/migration,readonly`])}`,
+			],
+			["tar", "--numeric-owner", "-C", "/migration", "-cf", "-", "."],
+		),
+		helper(
+			[
+				"-i",
+				`--mount ${quote([`type=volume,source=${targetVolume},target=/migration`])}`,
+			],
+			["tar", "--numeric-owner", "-C", "/migration", "-xpf", "-"],
+		),
+	);
+};
+
 const copyVolume = async (
 	context: MigrationContext,
 	volume: VolumeSnapshot,
@@ -168,14 +213,7 @@ const copyVolume = async (
 		await context.log(
 			`Volume ${volume.name}: emptying the existing target volume`,
 		);
-		await target.run(
-			helper(
-				[
-					`--mount ${quote([`type=volume,source=${volume.name},target=/migration`])}`,
-				],
-				["find", "/migration", "-mindepth", "1", "-delete"],
-			),
-		);
+		await emptyVolume(target, volume.name);
 	} else {
 		const flags = [
 			`--driver ${quote([volume.driver])}`,
@@ -205,23 +243,119 @@ const copyVolume = async (
 	await context.log(
 		`Volume ${volume.name}: copying ${formatBytes(volume.sizeBytes)}`,
 	);
-	await transfer(
-		context,
-		volume.name,
-		helper(
-			[
-				`--mount ${quote([`type=volume,source=${volume.name},target=/migration,readonly`])}`,
-			],
-			["tar", "--numeric-owner", "-C", "/migration", "-cf", "-", "."],
-		),
-		helper(
-			[
-				"-i",
-				`--mount ${quote([`type=volume,source=${volume.name},target=/migration`])}`,
-			],
-			["tar", "--numeric-owner", "-C", "/migration", "-xpf", "-"],
-		),
+	await streamVolume(context, volume.name, volume.name, volume.name);
+};
+
+export interface AnonymousVolumeCopy {
+	volume: VolumeSnapshot;
+	mount: AnonymousVolumeMount;
+	container: ContainerProbe;
+	/** The volume Docker created for the same mount of the redeployed container. */
+	targetVolume: string;
+}
+
+/**
+ * Pairs each anonymous source volume with the anonymous volume of the target
+ * container running the same Compose service replica at the same path.
+ */
+export const matchAnonymousVolumes = (
+	volumes: VolumeSnapshot[],
+	containers: ContainerProbe[],
+) => {
+	const copies: AnonymousVolumeCopy[] = [];
+	const problems: string[] = [];
+	for (const volume of volumes) {
+		const mount = volume.anonymous;
+		if (!mount || volume.skipReason) continue;
+		const label = describeAnonymousVolume(mount);
+		const container = containers.find(
+			(item) =>
+				item.service === mount.service &&
+				item.containerNumber === mount.containerNumber,
+		);
+		if (!container) {
+			problems.push(
+				`${label}: no container of ${mount.service} #${mount.containerNumber} on the target`,
+			);
+			continue;
+		}
+		const targetVolume = container.mounts.find(
+			(item) =>
+				item.type === "volume" && item.destination === mount.destination,
+		)?.name;
+		if (!targetVolume) {
+			problems.push(
+				`${label}: ${container.name} mounts no volume at ${mount.destination}`,
+			);
+			continue;
+		}
+		if (!isAnonymousVolume(targetVolume)) {
+			problems.push(
+				`${label}: ${container.name} mounts the named volume ${targetVolume} there, which is never overwritten`,
+			);
+			continue;
+		}
+		copies.push({ volume, mount, container, targetVolume });
+	}
+	return { copies, problems };
+};
+
+/**
+ * Anonymous volumes only exist once the redeployed containers do: each one is
+ * stopped, its new volume replaced by the source data, then started again.
+ */
+const copyAnonymousVolumes = async (context: MigrationContext) => {
+	const { target, service } = context;
+	const volumes =
+		context.analysis.snapshot?.volumes.filter(
+			(volume) => volume.anonymous && !volume.skipReason,
+		) ?? [];
+	if (volumes.length === 0) return;
+	const probe = await target.run(composeProbeCommand(service), {
+		allowFailure: true,
+	});
+	const { copies, problems } = matchAnonymousVolumes(
+		volumes,
+		parseContainerProbes(probe.stdout),
 	);
+	if (problems.length > 0) {
+		throw new Error(
+			`Anonymous volumes cannot be carried over: ${problems.join("; ")}`,
+		);
+	}
+	const byContainer = new Map<string, AnonymousVolumeCopy[]>();
+	for (const copy of copies) {
+		byContainer.set(copy.container.id, [
+			...(byContainer.get(copy.container.id) ?? []),
+			copy,
+		]);
+	}
+	await sequentially([...byContainer.values()], async (group) => {
+		const { container } = group[0] as AnonymousVolumeCopy;
+		const started =
+			container.status === "running" || container.status === "restarting";
+		if (started) {
+			await context.log(
+				`Stopping ${container.name} to copy its anonymous volume(s)`,
+			);
+			await target.run(
+				`docker stop --time 30 ${quote([container.id])} >/dev/null`,
+			);
+		}
+		await sequentially(group, async (copy) => {
+			const label = `Anonymous volume ${describeAnonymousVolume(copy.mount)}`;
+			await context.log(
+				`${label}: copying ${formatBytes(copy.volume.sizeBytes)} into ${copy.targetVolume.slice(0, 12)}…`,
+			);
+			// The new volume holds the image content, replaced by the source data.
+			await emptyVolume(target, copy.targetVolume);
+			await streamVolume(context, label, copy.volume.name, copy.targetVolume);
+		});
+		if (started) {
+			await target.run(`docker start ${quote([container.id])} >/dev/null`);
+			await context.log(`${container.name} started again`);
+		}
+	});
 };
 
 const copyBind = async (context: MigrationContext, bind: BindSnapshot) => {
@@ -351,8 +485,23 @@ const copyDirectory = async (
 const copyData = async (context: MigrationContext) => {
 	const snapshot = context.analysis.snapshot;
 	if (!snapshot) return;
+	await sequentially(
+		snapshot.volumes.filter((volume) => volume.skipReason),
+		(volume) =>
+			context.log(
+				`⚠️ Anonymous volume ${volume.anonymous ? describeAnonymousVolume(volume.anonymous) : volume.name} (${formatBytes(volume.sizeBytes)}) is not carried over: ${volume.skipReason}.${
+					keepsAnonymousVolumes(context.service)
+						? ` It stays on ${context.source.host.name} as ${volume.name}`
+						: ""
+				}`,
+			),
+	);
 	// One transfer at a time: they share the bandwidth and the undo order.
-	await sequentially(snapshot.volumes, (volume) => copyVolume(context, volume));
+	// Anonymous volumes are copied once the redeployed containers exist.
+	await sequentially(
+		snapshot.volumes.filter((volume) => !volume.anonymous),
+		(volume) => copyVolume(context, volume),
+	);
 	await sequentially(
 		snapshot.binds.filter((bind) => !bind.skipReason),
 		(bind) => copyBind(context, bind),
@@ -412,7 +561,11 @@ const scaleService = async (
 	if (replicas === 0) await waitForNoTasks(executor, name);
 };
 
-/** Waits until every replica (or one task per node for global services) runs. */
+/**
+ * Waits until every replica (or one task per node for global services) runs and
+ * no task gets replaced during a short stabilization: a crash-looping service is
+ * sampled as running between two restarts.
+ */
 const waitForSwarmService = async (executor: HostExecutor, name: string) => {
 	const service = quote([name]);
 	await executor.run(`set -e
@@ -429,17 +582,48 @@ healthy() {
   fi
   [ "$running" -ge "$desired" ]
 }
+tasks() { docker service ps -q --no-trunc --filter desired-state=running ${service} | sort; }
 while true; do
-  if healthy; then break; else status=$?; fi
+  status=0
+  if healthy; then
+    before="$(tasks)"
+    sleep 10
+    if healthy; then
+      [ "$(tasks)" = "$before" ] && exit 0
+      reason="${name} restarted during stabilization"
+    else
+      status=$?
+      reason="${name} stopped during stabilization"
+    fi
+  else
+    status=$?
+    reason="${name} did not become healthy on the target"
+  fi
   if [ "$status" -eq 2 ] || [ "$(date +%s)" -ge "$deadline" ]; then
     docker service ps ${service} --no-trunc >&2 || true
-    echo "${name} did not become healthy on the target" >&2
+    echo "$reason" >&2
     exit 1
   fi
   sleep 2
-done
-sleep 10
-healthy || { docker service ps ${service} --no-trunc >&2 || true; echo "${name} stopped during stabilization" >&2; exit 1; }`);
+done`);
+};
+
+/** Waits for every service of a stack like for a Swarm service. */
+const waitForStack = async (executor: HostExecutor, appName: string) => {
+	const services = (
+		await executor.run(
+			`docker stack services --format '{{.Name}}' ${quote([appName])}`,
+		)
+	).stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+	if (services.length === 0) {
+		throw new Error(`Stack ${appName} has no service on ${executor.host.name}`);
+	}
+	await mapWithConcurrency(services, SSH_PROBE_CONCURRENCY, (name) =>
+		waitForSwarmService(executor, name),
+	);
 };
 
 const stopSwarmSource = async (
@@ -831,13 +1015,15 @@ const stopComposeSource = async (context: MigrationContext) => {
 const removeComposeRuntime = async (
 	executor: HostExecutor,
 	service: Pick<MigrationService, "id" | "appName" | "composeType">,
+	/** Only for runtimes this migration created: on the source they hold data. */
+	removeAnonymousVolumes = false,
 ) => {
 	const script = `set -e
 ids="$(${composeContainerIdsCommand(service)})"
 projects=""
 if [ -n "$ids" ]; then
   projects="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' $ids | sort -u)"
-  docker rm -f $ids >/dev/null
+  docker rm -f ${removeAnonymousVolumes ? "-v " : ""}$ids >/dev/null
 fi
 for project in $projects; do
   networks="$(docker network ls -q --filter label=com.docker.compose.project="$project")"
@@ -901,7 +1087,7 @@ const migrateCompose = async (context: MigrationContext) => {
 	context.compensations.push({
 		label: `Remove ${service.appName} containers from the target`,
 		run: async () => {
-			await removeComposeRuntime(target, service);
+			await removeComposeRuntime(target, service, true);
 		},
 	});
 	const started = new Date().toISOString();
@@ -928,26 +1114,26 @@ const migrateCompose = async (context: MigrationContext) => {
 				`ids="$(${composeContainerIdsCommand(service)})"; [ -z "$ids" ] || docker stop $ids >/dev/null`,
 			);
 		}
+		await copyAnonymousVolumes(context);
 		return "idle" as const;
 	}
+	await copyAnonymousVolumes(context);
 
 	await context.log("Checking the containers on the target");
-	await target.run(`deadline=$(( $(date +%s) + 120 ))
-while true; do
-  ids="$(${composeContainerIdsCommand(service)})"
-  running=0
-  if [ -n "$ids" ]; then
-    running="$(docker inspect --format '{{.State.Status}}' $ids | grep -c '^running' || true)"
-    restarting="$(docker inspect --format '{{.State.Status}}' $ids | grep -c '^restarting' || true)"
-    [ "$running" -gt 0 ] && [ "$restarting" -eq 0 ] && break
-  fi
-  if [ "$(date +%s)" -ge "$deadline" ]; then
-    [ -z "$ids" ] || docker ps -a --no-trunc --filter id="$(echo $ids | cut -d' ' -f1)" >&2
-    echo "The Compose project is not running on the target" >&2
-    exit 1
-  fi
-  sleep 2
-done`);
+	if (service.composeType === "stack") {
+		await waitForStack(target, service.appName);
+	} else {
+		await waitForComposeContainers(target, service, {
+			expectedServices: new Set(
+				compose?.containers
+					.filter((container) => container.state === "running")
+					.flatMap((container) =>
+						container.service ? [container.service] : [],
+					),
+			),
+			log: context.log,
+		});
+	}
 	return "done" as const;
 };
 
@@ -999,7 +1185,11 @@ export const buildSourceCleanup = (
 				name.includes(traefik.appName),
 			),
 		})),
-		volumes: snapshot?.volumes.map((volume) => volume.name) ?? [],
+		// Anonymous volumes left behind stay the only copy of their data.
+		volumes:
+			snapshot?.volumes
+				.filter((volume) => !volume.skipReason)
+				.map((volume) => volume.name) ?? [],
 		directories:
 			snapshot?.directories.map((directory) => directory.sourcePath) ?? [],
 		removeSourceData: options.removeSourceData,
