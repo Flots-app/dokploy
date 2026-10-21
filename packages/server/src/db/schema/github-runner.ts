@@ -490,6 +490,11 @@ export const githubRunnerJobs = pgTable(
 			table.githubRunnerNodeId,
 			table.startedAt,
 		),
+		// Recovery, the jobs list and the pool stats select a pool's latest jobs.
+		index("github_runner_job_pool_started_idx").on(
+			table.githubRunnerPoolId,
+			table.startedAt,
+		),
 	],
 );
 

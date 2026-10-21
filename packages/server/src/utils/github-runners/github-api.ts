@@ -48,6 +48,20 @@ export class GithubRunnerApiError extends Error {
 	}
 }
 
+/**
+ * Whether a GitHub failure will not heal by itself: bad credentials, a missing
+ * run, a request GitHub refuses. Network errors, timeouts, 5xx, 429 and
+ * rate-limited 403s ("API rate limit exceeded", "secondary rate limit") are
+ * worth trying again later.
+ */
+export const isPermanentGithubError = (error: unknown) => {
+	if (!(error instanceof GithubRunnerApiError) || error.status === null) {
+		return false;
+	}
+	if (error.status === 403) return !/rate limit/i.test(error.message);
+	return [401, 404, 410, 422].includes(error.status);
+};
+
 type Fetch = typeof fetch;
 
 export interface WorkflowRun {

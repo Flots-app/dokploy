@@ -155,6 +155,7 @@ ALTER TABLE "github_runner_pool" ADD CONSTRAINT "github_runner_pool_githubId_git
 ALTER TABLE "github_runner_reroute" ADD CONSTRAINT "github_runner_reroute_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk" FOREIGN KEY ("githubRunnerPoolId") REFERENCES "public"."github_runner_pool"("githubRunnerPoolId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "github_runner_job_runner_unique" ON "github_runner_job" USING btree ("runnerName");--> statement-breakpoint
 CREATE INDEX "github_runner_job_node_started_idx" ON "github_runner_job" USING btree ("githubRunnerNodeId","startedAt");--> statement-breakpoint
+CREATE INDEX "github_runner_job_pool_started_idx" ON "github_runner_job" USING btree ("githubRunnerPoolId","startedAt");--> statement-breakpoint
 CREATE INDEX "github_runner_metric_node_at_idx" ON "github_runner_metric" USING btree ("githubRunnerNodeId","at");--> statement-breakpoint
 CREATE UNIQUE INDEX "github_runner_node_org_name_unique" ON "github_runner_node" USING btree ("organizationId","name");--> statement-breakpoint
 CREATE INDEX "github_runner_operation_node_idx" ON "github_runner_operation" USING btree ("githubRunnerNodeId");--> statement-breakpoint

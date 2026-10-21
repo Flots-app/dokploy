@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import type { BudgetValues } from "./budget-values";
 import { formatBytes } from "./format";
-import { BudgetSlider } from "./shared";
+import { BudgetSlider, NumberInput } from "./shared";
 
 /** Disk reserve, cleanup threshold and, on a Mac, the VM disk. */
 const DiskFields = ({
@@ -28,16 +28,11 @@ const DiskFields = ({
 	<>
 		<div className="space-y-2">
 			<Label htmlFor="runner-disk-reserve">Disk reserve (GiB)</Label>
-			<Input
+			<NumberInput
 				id="runner-disk-reserve"
-				type="number"
 				min={0}
 				value={value.diskReserveGb}
-				onChange={(event) =>
-					set({
-						diskReserveGb: Math.max(0, Number(event.target.value) || 0),
-					})
-				}
+				onValueChange={(diskReserveGb) => set({ diskReserveGb })}
 			/>
 			<p className="text-xs text-muted-foreground">
 				No new job starts below this free space on the{" "}
@@ -46,16 +41,11 @@ const DiskFields = ({
 		</div>
 		<div className="space-y-2">
 			<Label htmlFor="runner-disk-cleanup">Clean caches below (GiB)</Label>
-			<Input
+			<NumberInput
 				id="runner-disk-cleanup"
-				type="number"
 				min={1}
 				value={value.diskCleanupGb}
-				onChange={(event) =>
-					set({
-						diskCleanupGb: Math.max(1, Number(event.target.value) || 1),
-					})
-				}
+				onValueChange={(diskCleanupGb) => set({ diskCleanupGb })}
 			/>
 			<p className="text-xs text-muted-foreground">
 				Below this free space{platform === "macos" ? " on the Mac" : ""}, or
@@ -68,16 +58,11 @@ const DiskFields = ({
 		{platform === "macos" && (
 			<div className="space-y-2">
 				<Label htmlFor="runner-vm-disk">VM disk (GiB)</Label>
-				<Input
+				<NumberInput
 					id="runner-vm-disk"
-					type="number"
 					min={20}
 					value={value.vmDiskGb}
-					onChange={(event) =>
-						set({
-							vmDiskGb: Math.max(20, Number(event.target.value) || 20),
-						})
-					}
+					onValueChange={(vmDiskGb) => set({ vmDiskGb })}
 				/>
 				<p className="text-xs text-muted-foreground">
 					Sparse: it only uses what the caches hold. It can grow, never shrink.
@@ -157,21 +142,13 @@ export const BudgetFields = ({
 							/>
 						</div>
 					</div>
-					<Input
+					<NumberInput
 						id="runner-concurrency"
-						type="number"
 						min={1}
 						max={32}
 						disabled={value.maxRunners === 0}
-						value={value.maxRunners === 0 ? (auto ?? "") : value.maxRunners}
-						onChange={(event) =>
-							set({
-								maxRunners: Math.min(
-									32,
-									Math.max(1, Number(event.target.value) || 1),
-								),
-							})
-						}
+						value={value.maxRunners === 0 ? (auto ?? null) : value.maxRunners}
+						onValueChange={(maxRunners) => set({ maxRunners })}
 					/>
 					<p className="text-xs text-muted-foreground">
 						Auto fits as many jobs as the budget holds at 2 CPUs and 3 GiB each

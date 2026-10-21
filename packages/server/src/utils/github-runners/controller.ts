@@ -25,6 +25,8 @@ import {
 	isNotNull,
 	isNull,
 	lt,
+	ne,
+	notInArray,
 	or,
 	sql,
 } from "drizzle-orm";
@@ -66,9 +68,9 @@ import {
 	createGithubRunnerClient,
 	decodeJitConfig,
 	type GithubRunner,
-	GithubRunnerApiError,
 	type GithubRunnerAuth,
 	type GithubRunnerClient,
+	isPermanentGithubError,
 	type RunnerRelease,
 	resolveLimaRelease,
 	resolveRunnerRelease,
@@ -136,6 +138,8 @@ const MAX_CLEANUPS = 20;
 const HEAL_EVERY_MS = 5 * 60_000;
 const RELEASE_TTL_MS = 6 * 60 * 60_000;
 const METRIC_RETENTION_MS = 7 * 24 * 60 * 60_000;
+/** Jobs and operations older than this go, except work still in progress. */
+const HISTORY_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const MAX_ARMS_PER_TICK = 4;
 const MAX_EVENTS = 30;
 
@@ -164,6 +168,8 @@ interface ControllerState {
 	lastCachesAt: Map<string, number>;
 	lastHealAt: Map<string, number>;
 	lastRecoveryAt: Map<string, number>;
+	/** A drain whose completion failed waits until then before trying again. */
+	drainRetryAt: Map<string, number>;
 	/** Runners of each pool as GitHub listed them at the last tick. */
 	poolRunners: Map<string, { at: number; runners: GithubRunner[] }>;
 	/** Repositories a pool routes jobs for, refreshed hourly. */
@@ -194,6 +200,7 @@ shared.__dokployGithubRunners ??= {
 	lastCachesAt: new Map(),
 	lastHealAt: new Map(),
 	lastRecoveryAt: new Map(),
+	drainRetryAt: new Map(),
 	poolRunners: new Map(),
 	repositories: new Map(),
 	lastRerouteScan: new Map(),
@@ -208,6 +215,8 @@ shared.__dokployGithubRunners ??= {
 	pendingTick: null,
 };
 const state: ControllerState = shared.__dokployGithubRunners;
+// State kept across a hot reload predates fields added since.
+state.drainRetryAt ??= new Map();
 const OWNER = state.owner;
 
 type NodeWithRelations = GithubRunnerNode & {
@@ -516,6 +525,9 @@ const runTask = (
 
 const timestamp = () => new Date().toISOString().slice(11, 19);
 
+/** Characters of log kept per operation. */
+const MAX_OPERATION_LOG = 200_000;
+
 export const appendOperationLog = async (
 	operationId: string | null,
 	line: string,
@@ -529,7 +541,10 @@ export const appendOperationLog = async (
 	if (!text) return;
 	await db
 		.update(githubRunnerOperations)
-		.set({ logs: sql`${githubRunnerOperations.logs} || ${text}` })
+		// Only the end is kept: a long install log cannot grow without bound.
+		.set({
+			logs: sql`right(${githubRunnerOperations.logs} || ${text}, ${MAX_OPERATION_LOG})`,
+		})
 		.where(eq(githubRunnerOperations.githubRunnerOperationId, operationId));
 };
 
@@ -1009,6 +1024,8 @@ export const disableRunnerNode = async (
 		{ supersede: true },
 	);
 	const now = new Date();
+	// A new drain does not wait for the retry delay of a previous one.
+	state.drainRetryAt.delete(nodeId);
 	await db
 		.update(githubRunnerNodes)
 		.set({
@@ -1151,6 +1168,8 @@ export const applyRunnerNodeConfig = async (
 			userId,
 			{ supersede: true },
 		);
+		// A new drain does not wait for the retry delay of a previous one.
+		state.drainRetryAt.delete(nodeId);
 		await db
 			.update(githubRunnerNodes)
 			.set({
@@ -1277,6 +1296,8 @@ export const removeRunnerNode = async (
 		userId,
 		{ supersede: true },
 	);
+	// A new drain does not wait for the retry delay of a previous one.
+	state.drainRetryAt.delete(nodeId);
 	await db
 		.update(githubRunnerNodes)
 		.set({
@@ -1325,109 +1346,141 @@ const forgetRegistrations = async (node: NodeWithRelations) => {
 	);
 };
 
-/** Finishes a drain: the machine is empty, do what the drain was for. */
-const startDrainCompletion = (nodeId: string) =>
-	runTask(nodeId, null, async ({ node, driver, log: _log }) => {
-		const drain = node.drain;
-		if (!drain) return;
-		const operationId = drain.operationId;
-		const log = (line: string) => appendOperationLog(operationId, line);
-		if (drain.reason === "disable") {
-			if (node.platform === "macos") {
-				await log(`All runners stopped; shutting VM ${node.vmName} down`);
-				await driver.host(macStopVmScript(node.vmName), {
-					timeoutMs: 5 * 60_000,
-					label: "VM stop",
-				});
-			}
-			await log("Machine disabled: it takes no job until it is enabled again");
+type TaskContext = Parameters<Parameters<typeof runTask>[2]>[0];
+
+/** A failed drain completion is tried again after this long, not every tick. */
+const DRAIN_RETRY_MS = 60_000;
+
+/**
+ * Finishes a drain: the machine is empty, do what the drain was for. A failure
+ * goes to the drain's operation, which stays open while it is retried.
+ */
+const startDrainCompletion = (nodeId: string) => {
+	if (Date.now() < (state.drainRetryAt.get(nodeId) ?? 0)) return false;
+	let operationId: string | null = null;
+	return runTask(
+		nodeId,
+		null,
+		async (context) => {
+			operationId = context.node.drain?.operationId ?? null;
+			await completeDrain(context);
+			state.drainRetryAt.delete(nodeId);
+		},
+		async (error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			state.drainRetryAt.set(nodeId, Date.now() + DRAIN_RETRY_MS);
+			await appendOperationLog(
+				operationId,
+				`Error: ${message}. Trying again in a minute.`,
+			);
 			await db
 				.update(githubRunnerNodes)
-				.set({ phase: "stopped", drain: null })
+				.set({ lastError: message })
 				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-			await finishOperation(operationId, "done");
-			return;
-		}
-		if (drain.reason === "apply") {
-			if (node.platform === "macos") {
-				await log(
-					`No job runs; restarting VM ${node.vmName} with its new size`,
-				);
-				await driver.host(macStopVmScript(node.vmName), {
-					timeoutMs: 5 * 60_000,
-					label: "VM stop",
-				});
-				await resizeStoppedVm(node, driver, log);
-				await startVm(driver, node, log);
-			}
-			const fresh = await loadRunnerNode(nodeId);
-			await db
-				.update(githubRunnerNodes)
-				.set({ phase: fresh.enabled ? "ready" : "stopped", drain: null })
-				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-			if (!fresh.enabled && node.platform === "macos") {
-				await driver.host(macStopVmScript(node.vmName), {
-					timeoutMs: 5 * 60_000,
-					label: "VM stop",
-				});
-			}
-			await log("New budget applied");
-			await finishOperation(operationId, "done");
-			return;
-		}
-		// remove
-		await log("Unregistering the runners from GitHub");
-		await forgetRegistrations(node).catch((error) =>
-			// Its runners are ephemeral: GitHub drops them once they stay offline.
-			log(
-				`Could not unregister the runners (${error instanceof Error ? error.message : String(error)}); GitHub removes them once they stay offline`,
-			),
-		);
-		if (drain.uninstall) {
-			if (node.platform === "macos" && node.applied?.vmCreatedByDokploy) {
-				await log(`Deleting VM ${node.vmName}`);
-				await driver.host(macDeleteVmScript(node.vmName), {
-					timeoutMs: 10 * 60_000,
-					label: "VM deletion",
-				});
-			} else {
-				const vm =
-					node.platform === "macos"
-						? (await readMacStatus(driver.session, node.vmName)).vm.status
-						: null;
-				if (vm === "missing") {
-					await log(`No VM ${node.vmName}: nothing to uninstall`);
-				} else {
-					if (vm && vm !== "Running") await startVm(driver, node, log);
-					await log("Uninstalling the runner runtime");
-					await driver.guest(`${RUNNERCTL} uninstall`, {
-						timeoutMs: 10 * 60_000,
-						label: "Runtime removal",
-						allowFailure: true,
-					});
-				}
-				if (node.platform === "macos" && vm !== "missing") {
-					await log(
-						`VM ${node.vmName} was not created by Dokploy: it is kept, stopped`,
-					);
-					await driver.host(macStopVmScript(node.vmName), {
-						timeoutMs: 5 * 60_000,
-						label: "VM stop",
-					});
-				}
-			}
-		} else if (node.platform === "macos") {
+		},
+	);
+};
+
+const completeDrain = async ({ node, driver }: TaskContext) => {
+	const nodeId = node.githubRunnerNodeId;
+	const drain = node.drain;
+	if (!drain) return;
+	const operationId = drain.operationId;
+	const log = (line: string) => appendOperationLog(operationId, line);
+	if (drain.reason === "disable") {
+		if (node.platform === "macos") {
+			await log(`All runners stopped; shutting VM ${node.vmName} down`);
 			await driver.host(macStopVmScript(node.vmName), {
 				timeoutMs: 5 * 60_000,
 				label: "VM stop",
 			});
 		}
-		await log("Machine removed");
-		await finishOperation(operationId, "done");
+		await log("Machine disabled: it takes no job until it is enabled again");
 		await db
-			.delete(githubRunnerNodes)
+			.update(githubRunnerNodes)
+			.set({ phase: "stopped", drain: null })
 			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-	});
+		await finishOperation(operationId, "done");
+		return;
+	}
+	if (drain.reason === "apply") {
+		if (node.platform === "macos") {
+			await log(`No job runs; restarting VM ${node.vmName} with its new size`);
+			await driver.host(macStopVmScript(node.vmName), {
+				timeoutMs: 5 * 60_000,
+				label: "VM stop",
+			});
+			await resizeStoppedVm(node, driver, log);
+			await startVm(driver, node, log);
+		}
+		const fresh = await loadRunnerNode(nodeId);
+		await db
+			.update(githubRunnerNodes)
+			.set({ phase: fresh.enabled ? "ready" : "stopped", drain: null })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		if (!fresh.enabled && node.platform === "macos") {
+			await driver.host(macStopVmScript(node.vmName), {
+				timeoutMs: 5 * 60_000,
+				label: "VM stop",
+			});
+		}
+		await log("New budget applied");
+		await finishOperation(operationId, "done");
+		return;
+	}
+	// remove
+	await log("Unregistering the runners from GitHub");
+	await forgetRegistrations(node).catch((error) =>
+		// Its runners are ephemeral: GitHub drops them once they stay offline.
+		log(
+			`Could not unregister the runners (${error instanceof Error ? error.message : String(error)}); GitHub removes them once they stay offline`,
+		),
+	);
+	if (drain.uninstall) {
+		if (node.platform === "macos" && node.applied?.vmCreatedByDokploy) {
+			await log(`Deleting VM ${node.vmName}`);
+			await driver.host(macDeleteVmScript(node.vmName), {
+				timeoutMs: 10 * 60_000,
+				label: "VM deletion",
+			});
+		} else {
+			const vm =
+				node.platform === "macos"
+					? (await readMacStatus(driver.session, node.vmName)).vm.status
+					: null;
+			if (vm === "missing") {
+				await log(`No VM ${node.vmName}: nothing to uninstall`);
+			} else {
+				if (vm && vm !== "Running") await startVm(driver, node, log);
+				await log("Uninstalling the runner runtime");
+				await driver.guest(`${RUNNERCTL} uninstall`, {
+					timeoutMs: 10 * 60_000,
+					label: "Runtime removal",
+					allowFailure: true,
+				});
+			}
+			if (node.platform === "macos" && vm !== "missing") {
+				await log(
+					`VM ${node.vmName} was not created by Dokploy: it is kept, stopped`,
+				);
+				await driver.host(macStopVmScript(node.vmName), {
+					timeoutMs: 5 * 60_000,
+					label: "VM stop",
+				});
+			}
+		}
+	} else if (node.platform === "macos") {
+		await driver.host(macStopVmScript(node.vmName), {
+			timeoutMs: 5 * 60_000,
+			label: "VM stop",
+		});
+	}
+	await log("Machine removed");
+	await finishOperation(operationId, "done");
+	await db
+		.delete(githubRunnerNodes)
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+};
 
 // ------------------------------------------------------------- the tick
 
@@ -2555,20 +2608,17 @@ const recoverInterruptedJobs = async (pool: GithubRunnerPool) => {
 				await mark("skipped", decision.note);
 			}
 		} catch (error) {
-			const status =
-				error instanceof GithubRunnerApiError ? error.status : null;
-			// Permission and validation errors do not heal by themselves.
-			if (
-				status === null ||
-				status === 403 ||
-				status === 404 ||
-				status === 422
-			) {
-				await mark(
-					"failed",
-					error instanceof Error ? error.message : String(error),
-				);
+			const message = error instanceof Error ? error.message : String(error);
+			if (isPermanentGithubError(error)) {
+				await mark("failed", message);
+				return;
 			}
+			// GitHub down, slow or rate limited: the next recovery tries again,
+			// until the 6-hour limit above.
+			await db
+				.update(githubRunnerJobs)
+				.set({ rerunNote: `Retrying: ${message}` })
+				.where(inArray(githubRunnerJobs.githubRunnerJobId, ids));
 		}
 	});
 };
@@ -2814,10 +2864,24 @@ const advanceReroutes = async (
 			await client.rerunFailedJobs(row.repository, row.runId);
 			await mark("requested", "Cancelled, then its jobs re-run");
 		} catch (error) {
-			await mark(
-				"failed",
-				error instanceof Error ? error.message : String(error),
-			);
+			const message = error instanceof Error ? error.message : String(error);
+			// The run is already cancelled: only give up when GitHub will not
+			// accept the request, or after the recovery limit.
+			const expired =
+				Date.now() - Date.parse(row.createdAt) > RECOVERY_GIVE_UP_MS;
+			if (isPermanentGithubError(error) || expired) {
+				await mark("failed", message);
+				return;
+			}
+			await db
+				.update(githubRunnerReroutes)
+				.set({ note: `Retrying: ${message}` })
+				.where(
+					eq(
+						githubRunnerReroutes.githubRunnerRerouteId,
+						row.githubRunnerRerouteId,
+					),
+				);
 		}
 	});
 };
@@ -2851,8 +2915,9 @@ export const generateMachineKey = (name: string) => {
 
 /**
  * Replaces the key of an enrolled machine without a gap: the new key is
- * authorized next to the old one, Dokploy logs in with it, then only the new
- * one is kept and the old connections are closed.
+ * authorized next to the old one, Dokploy logs in with it and saves it, then
+ * only the new one is kept and the old connections are closed. At every step
+ * the key Dokploy holds is one the machine accepts.
  */
 export const rotateRunnerNodeKey = async (nodeId: string) => {
 	const node = await loadRunnerNode(nodeId);
@@ -2865,6 +2930,7 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
 		throw new Error(`${node.name} is not set up yet`);
 	}
 	let failure: unknown = null;
+	let saved = false;
 	const started = runTask(
 		nodeId,
 		null,
@@ -2888,10 +2954,7 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
 			} finally {
 				check.close();
 			}
-			await session.run(
-				`set -eu\numask 077\nfile="$HOME/.ssh/authorized_keys"\nprintf '%s\\n' ${line} >"$file.new"\nmv -f "$file.new" "$file"`,
-				{ label: "Removing the old key" },
-			);
+			// Saved while both keys log in: the old one only goes afterwards.
 			await db
 				.update(githubRunnerNodes)
 				.set({
@@ -2900,14 +2963,29 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
 					sshKeyRotatedAt: new Date().toISOString(),
 				})
 				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-			closeSharedSessions(node);
+			saved = true;
+			try {
+				await session.run(
+					`set -eu\numask 077\nfile="$HOME/.ssh/authorized_keys"\nprintf '%s\\n' ${line} >"$file.new"\nmv -f "$file.new" "$file"`,
+					{ label: "Removing the old key" },
+				);
+			} finally {
+				closeSharedSessions(node);
+			}
 			pushEvent(nodeId, "SSH key rotated: the previous key no longer logs in");
 		},
 		async (error) => {
-			failure = error;
+			const message = error instanceof Error ? error.message : String(error);
+			failure = saved
+				? new Error(
+						`The new SSH key is in use, but the previous one is still authorized (${message}): rotate again to remove it`,
+					)
+				: error;
 			pushEvent(
 				nodeId,
-				`SSH key rotation failed, the previous key still works: ${error instanceof Error ? error.message : String(error)}`,
+				saved
+					? `SSH key rotated, but the previous key is still authorized: ${message}`
+					: `SSH key rotation failed, the previous key still works: ${message}`,
 			);
 		},
 	);
@@ -3077,6 +3155,31 @@ const tickGithubRunners = async () => {
 					lt(
 						githubRunnerMetrics.at,
 						new Date(Date.now() - METRIC_RETENTION_MS).toISOString(),
+					),
+				);
+			const historyCutoff = new Date(
+				Date.now() - HISTORY_RETENTION_MS,
+			).toISOString();
+			await db
+				.delete(githubRunnerJobs)
+				.where(
+					and(
+						lt(githubRunnerJobs.startedAt, historyCutoff),
+						or(
+							isNull(githubRunnerJobs.rerunStatus),
+							notInArray(githubRunnerJobs.rerunStatus, [
+								"pending",
+								"cancelling",
+							]),
+						),
+					),
+				);
+			await db
+				.delete(githubRunnerOperations)
+				.where(
+					and(
+						lt(githubRunnerOperations.createdAt, historyCutoff),
+						ne(githubRunnerOperations.status, "running"),
 					),
 				);
 		}

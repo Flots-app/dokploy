@@ -47,7 +47,7 @@ import {
 	type SetupCode,
 } from "@dokploy/server/utils/github-runners/setup";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, ne } from "drizzle-orm";
 import type { z } from "zod";
 
 const notFound = (what: string) =>
@@ -136,7 +136,13 @@ const GITHUB_API_URL = "https://api.github.com";
 export const assertSecretsDestination = (
 	input: Pick<
 		PoolAccessInput,
-		"authType" | "apiUrl" | "token" | "appPrivateKey"
+		| "authType"
+		| "apiUrl"
+		| "token"
+		| "appPrivateKey"
+		| "scope"
+		| "owner"
+		| "repository"
 	>,
 	stored: GithubRunnerPool | null,
 ) => {
@@ -149,10 +155,43 @@ export const assertSecretsDestination = (
 	const reused =
 		(input.authType === "token" && !input.token) ||
 		(input.authType === "app" && !input.appPrivateKey);
-	if (reused && stored && input.apiUrl !== stored.apiUrl) {
+	const sameTarget =
+		stored !== null &&
+		input.apiUrl === stored.apiUrl &&
+		input.scope === stored.scope &&
+		input.owner === stored.owner &&
+		(input.scope === "organization" ||
+			(input.repository ?? null) === stored.repository);
+	if (reused && stored && !sameTarget) {
+		const target =
+			stored.scope === "organization"
+				? stored.owner
+				: `${stored.owner}/${stored.repository}`;
 		throw new TRPCError({
 			code: "BAD_REQUEST",
-			message: `Paste the ${input.authType === "token" ? "token" : "App private key"} again: the stored one is only sent to ${stored.apiUrl}`,
+			message: `Paste the ${input.authType === "token" ? "token" : "App private key"} again: the stored one is only used for ${target} on ${stored.apiUrl}`,
+		});
+	}
+};
+
+/** Pool names are unique per organization: say so before the database does. */
+const assertPoolNameFree = async (
+	name: string,
+	organizationId: string,
+	poolId: string | null,
+) => {
+	const sameName = await db.query.githubRunnerPools.findFirst({
+		where: and(
+			eq(githubRunnerPools.organizationId, organizationId),
+			eq(githubRunnerPools.name, name),
+			poolId ? ne(githubRunnerPools.githubRunnerPoolId, poolId) : undefined,
+		),
+		columns: { githubRunnerPoolId: true },
+	});
+	if (sameName) {
+		throw new TRPCError({
+			code: "CONFLICT",
+			message: `A runner pool named ${name} already exists`,
 		});
 	}
 };
@@ -268,6 +307,7 @@ export const createGithubRunnerPool = async (
 	input: z.infer<typeof apiCreateGithubRunnerPool>,
 	organizationId: string,
 ) => {
+	await assertPoolNameFree(input.name, organizationId, null);
 	await assertRoutingVariableFree(input, organizationId, null);
 	const access = await verifyPoolAccess(
 		{ ...input, githubRunnerPoolId: null },
@@ -295,6 +335,7 @@ export const updateGithubRunnerPool = async (
 	);
 	const { githubRunnerPoolId, ...values } = input;
 	assertSecretsDestination(values, stored);
+	await assertPoolNameFree(values.name, organizationId, githubRunnerPoolId);
 	await assertRoutingVariableFree(values, organizationId, githubRunnerPoolId);
 	const nodes = await db.query.githubRunnerNodes.findMany({
 		where: eq(githubRunnerNodes.githubRunnerPoolId, githubRunnerPoolId),
@@ -697,11 +738,13 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 			orderBy: asc(githubRunnerNodes.name),
 			with: { sshKey: { columns: { name: true } } },
 		}),
+		// Polled every few seconds: the logs are read one operation at a time.
 		db.query.githubRunnerOperations.findMany({
 			where: and(
 				eq(githubRunnerOperations.organizationId, organizationId),
 				eq(githubRunnerOperations.status, "running"),
 			),
+			columns: { logs: false },
 		}),
 		poolIds.length
 			? db.query.githubRunnerReroutes.findMany({
@@ -798,6 +841,8 @@ export const listGithubRunnerOperations = async (
 		),
 		orderBy: desc(githubRunnerOperations.createdAt),
 		limit,
+		// The dialog reads the log of the operation it shows with `operation`.
+		columns: { logs: false },
 		with: { user: { columns: { email: true } } },
 	});
 

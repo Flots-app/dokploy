@@ -244,7 +244,9 @@ cmd_install_release() {
 	# Keep the current release and the previous one.
 	find "$ROOT/releases" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -printf '%T@ %p\n' |
 		sort -rn | tail -n +3 | cut -d' ' -f2- | while read -r old; do
-			[ "$old" != "$target" ] && rm -rf "$old"
+			# Not "!= && rm": a false test would end the loop, and the
+			# pipeline, with status 1 under pipefail.
+			[ "$old" = "$target" ] || rm -rf "$old"
 		done
 	echo "release installed=$version"
 }

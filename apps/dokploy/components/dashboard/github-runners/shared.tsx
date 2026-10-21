@@ -1,10 +1,12 @@
 import copy from "copy-to-clipboard";
 import { CopyIcon } from "lucide-react";
+import { type ComponentProps, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import type { RunnerMachine } from "./format";
+import { boundedNumber, type RunnerMachine, settleNumber } from "./format";
 
 const PHASES: Record<
 	string,
@@ -135,3 +137,50 @@ export const CopyCode = ({ code }: { code: string }) => (
 		</Button>
 	</div>
 );
+
+/**
+ * A whole-number field typed freely: the value follows once the text is within
+ * bounds, and the field is clamped when left. Clamping on every keystroke
+ * turned "100" into "2000" in a field whose minimum is 20.
+ */
+export const NumberInput = ({
+	value,
+	onValueChange,
+	min,
+	max,
+	onBlur,
+	...props
+}: Omit<
+	ComponentProps<typeof Input>,
+	"value" | "onChange" | "type" | "min" | "max"
+> & {
+	/** null shows an empty field. */
+	value: number | null;
+	onValueChange: (value: number) => void;
+	min: number;
+	max?: number;
+}) => {
+	const [draft, setDraft] = useState<string | null>(null);
+	return (
+		<Input
+			{...props}
+			type="number"
+			inputMode="numeric"
+			min={min}
+			max={max}
+			value={draft ?? value ?? ""}
+			onChange={(event) => {
+				setDraft(event.target.value);
+				const next = boundedNumber(event.target.value, min, max);
+				if (next !== null) onValueChange(next);
+			}}
+			onBlur={(event) => {
+				if (draft !== null) {
+					onValueChange(settleNumber(draft, min, max, value ?? min));
+					setDraft(null);
+				}
+				onBlur?.(event);
+			}}
+		/>
+	);
+};

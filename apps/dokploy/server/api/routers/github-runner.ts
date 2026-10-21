@@ -32,6 +32,8 @@ import {
 	updateGithubRunnerPool,
 } from "@dokploy/server";
 import { db } from "@dokploy/server/db";
+import { checkPermission } from "@dokploy/server/services/permission";
+import { toClientError } from "@dokploy/server/utils/github-runners/errors";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { createTRPCRouter, withPermission } from "@/server/api/trpc";
@@ -84,11 +86,7 @@ const remove = withPermission("githubRunner", "delete").use(({ next }) => {
 });
 
 const fail = (error: unknown): never => {
-	if (error instanceof TRPCError) throw error;
-	throw new TRPCError({
-		code: "BAD_REQUEST",
-		message: error instanceof Error ? error.message : String(error),
-	});
+	throw toClientError(error);
 };
 
 /**
@@ -129,6 +127,10 @@ export const githubRunnerRouter = createTRPCRouter({
 	testCredentials: create
 		.input(apiTestGithubRunnerCredentials)
 		.mutation(async ({ input, ctx }) => {
+			// Checking an existing pool reuses its stored secrets: as for editing it.
+			if (input.githubRunnerPoolId) {
+				await checkPermission(ctx, { githubRunner: ["update"] });
+			}
 			await assertProvider(input, ctx.session);
 			return testGithubRunnerCredentials(
 				input,

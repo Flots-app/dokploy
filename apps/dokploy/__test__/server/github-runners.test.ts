@@ -41,11 +41,14 @@ import {
 	vmCleanupGoal,
 	vmDiskThresholds,
 } from "@dokploy/server/utils/github-runners/disk";
+import { toClientError } from "@dokploy/server/utils/github-runners/errors";
 import {
 	createGithubRunnerClient,
 	decodeJitConfig,
 	findAppInstallation,
 	type GithubRunner,
+	GithubRunnerApiError,
+	isPermanentGithubError,
 	resolveLimaRelease,
 	resolveRunnerRelease,
 	tokenExpiration,
@@ -123,9 +126,14 @@ import {
 	sharedNodeSession,
 	UnknownHostKeyError,
 } from "@dokploy/server/utils/github-runners/ssh";
+import { DrizzleQueryError } from "drizzle-orm";
 import { Server, utils } from "ssh2";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readSetupCode } from "@/components/dashboard/github-runners/enrollment-code";
+import {
+	boundedNumber,
+	settleNumber,
+} from "@/components/dashboard/github-runners/format";
 import {
 	appRegistrationUrl,
 	githubWebUrl,
@@ -2528,31 +2536,52 @@ describe("machine enrollment", () => {
 		expect(Number(length)).toBeGreaterThanOrEqual(32);
 	});
 
-	it("only sends stored secrets to the GitHub they were saved for", () => {
+	it("only sends stored secrets to the target they were saved for", () => {
 		const stored = {
 			apiUrl: "https://ghe.example.com/api/v3",
+			scope: "repository",
+			owner: "Flots-app",
+			repository: "monorepo",
 		} as GithubRunnerPool;
 		const input = {
 			authType: "token" as const,
-			apiUrl: "https://attacker.example",
+			apiUrl: stored.apiUrl,
+			scope: "repository" as const,
+			owner: "Flots-app",
+			repository: "monorepo",
 			token: null,
 			appPrivateKey: null,
 		};
-		expect(() => assertSecretsDestination(input, stored)).toThrow(
-			/Paste the token again/,
-		);
+		// The pool's own target keeps its stored secret.
+		expect(() => assertSecretsDestination(input, stored)).not.toThrow();
+		for (const change of [
+			{ apiUrl: "https://attacker.example" },
+			{ owner: "another-org" },
+			{ repository: "another-repo" },
+			{ scope: "organization" as const, repository: null },
+		]) {
+			expect(() =>
+				assertSecretsDestination({ ...input, ...change }, stored),
+			).toThrow(/Paste the token again/);
+		}
 		expect(() =>
-			assertSecretsDestination({ ...input, authType: "app" }, stored),
+			assertSecretsDestination(
+				{ ...input, authType: "app", owner: "another-org" },
+				stored,
+			),
 		).toThrow(/App private key/);
-		// A pasted secret may go anywhere; the stored one to its own API.
+		// A pasted secret may go anywhere.
 		expect(() =>
-			assertSecretsDestination({ ...input, token: "ghp_new" }, stored),
+			assertSecretsDestination(
+				{ ...input, owner: "another-org", token: "ghp_new" },
+				stored,
+			),
 		).not.toThrow();
 		expect(() =>
-			assertSecretsDestination({ ...input, apiUrl: stored.apiUrl }, stored),
-		).not.toThrow();
-		expect(() =>
-			assertSecretsDestination({ ...input, authType: "provider" }, null),
+			assertSecretsDestination(
+				{ ...input, authType: "provider", apiUrl: stored.apiUrl },
+				null,
+			),
 		).toThrow(/only works with https:\/\/api.github.com/);
 		expect(() =>
 			assertSecretsDestination(
@@ -2560,6 +2589,53 @@ describe("machine enrollment", () => {
 				null,
 			),
 		).not.toThrow();
+	});
+
+	it("never sends database errors to the browser", () => {
+		const secret = "enc:v1:KytiasAODYHIJSC8Fv";
+		const conflict = toClientError(
+			new DrizzleQueryError(
+				'update "github_runner_pool" set "name" = $1',
+				["pool-1", secret],
+				Object.assign(new Error("duplicate key"), { code: "23505" }),
+			),
+		);
+		expect(conflict.code).toBe("CONFLICT");
+		expect(conflict.message).not.toContain(secret);
+		const other = toClientError(
+			new DrizzleQueryError("insert", [secret], new Error("boom")),
+		);
+		expect(other.code).toBe("INTERNAL_SERVER_ERROR");
+		expect(other.message).not.toMatch(/insert|enc:v1/);
+		// Messages written for the operator go through.
+		expect(toClientError(new Error("Pool Lab has no token")).message).toBe(
+			"Pool Lab has no token",
+		);
+	});
+
+	it("creates the account and prints the code even when a fact is missing", () => {
+		const script = machineSetupScript({
+			platform: "linux",
+			machine: "vm-1",
+			publicKey: machineKey.publicKey,
+			keepAwake: false,
+		});
+		const facts = script
+			.split("\n")
+			.filter((line) => /^(os|candidates)=/.test(line))
+			.join("\n");
+		expect(facts).toContain("candidates=");
+		// No route to 1.1.1.1 (or no iproute2) and no hostname: still a code.
+		const output = execFileSync("bash", [
+			"-c",
+			`set -euo pipefail
+ip() { return 2; }
+hostname() { return 1; }
+tailscale=""
+${facts}
+echo "os=$os"`,
+		]).toString();
+		expect(output.trim()).toMatch(/^os=\S/);
 	});
 
 	it("reads the code the script prints", () => {
@@ -2678,6 +2754,80 @@ describe("managed Lima", () => {
 			);
 		} finally {
 			rmSync(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("review fixes", () => {
+	it("lets a number field be typed digit by digit", () => {
+		// Typing 100 in a field whose minimum is 20.
+		expect(boundedNumber("1", 20)).toBeNull();
+		expect(boundedNumber("10", 20)).toBeNull();
+		expect(boundedNumber("100", 20)).toBe(100);
+		expect(boundedNumber("", 1)).toBeNull();
+		expect(boundedNumber("33", 1, 32)).toBeNull();
+		expect(boundedNumber("1.5", 1)).toBeNull();
+		// Leaving the field clamps it, or keeps the last value when empty.
+		expect(settleNumber("10", 20, undefined, 60)).toBe(20);
+		expect(settleNumber("99999", 1, 65535, 22)).toBe(65535);
+		expect(settleNumber("", 1, undefined, 45)).toBe(45);
+	});
+
+	it("only gives up on GitHub errors that will not heal", () => {
+		const error = (status: number | null, message = "failed") =>
+			new GithubRunnerApiError(message, status);
+		expect(isPermanentGithubError(error(null, "unreachable: timeout"))).toBe(
+			false,
+		);
+		expect(isPermanentGithubError(error(502))).toBe(false);
+		expect(isPermanentGithubError(error(429))).toBe(false);
+		expect(
+			isPermanentGithubError(
+				error(403, "You have exceeded a secondary rate limit"),
+			),
+		).toBe(false);
+		expect(isPermanentGithubError(error(403, "API rate limit exceeded"))).toBe(
+			false,
+		);
+		expect(
+			isPermanentGithubError(error(403, "Resource not accessible by token")),
+		).toBe(true);
+		expect(isPermanentGithubError(error(404))).toBe(true);
+		expect(isPermanentGithubError(error(422))).toBe(true);
+		expect(isPermanentGithubError(new Error("socket hang up"))).toBe(false);
+	});
+
+	it("installs a release older than the ones it keeps", () => {
+		const runnerctl = extractRuntimeFile(
+			installRuntimeScript(),
+			"/opt/dokploy-runners/bin/runnerctl",
+		);
+		const lines = runnerctl.split("\n");
+		const start = lines.findIndex((line) =>
+			line.includes("| while read -r old; do"),
+		);
+		const end = lines.findIndex(
+			(line, index) => index > start && line.trim() === "done",
+		);
+		const body = lines.slice(start + 1, end).join("\n");
+		expect(body).toContain('rm -rf "$old"');
+		const dir = mkdtempSync(join(tmpdir(), "dokploy-releases-"));
+		try {
+			// The target is the oldest of the listed releases: the loop's last item.
+			const output = execFileSync("bash", [
+				"-c",
+				`set -euo pipefail
+cd "${dir}" && mkdir r2 r1
+target=r1
+printf '%s\\n' r2 r1 | while read -r old; do
+${body}
+done
+echo "release installed"
+ls`,
+			]).toString();
+			expect(output).toBe("release installed\nr1\n");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

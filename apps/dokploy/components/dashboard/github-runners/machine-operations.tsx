@@ -11,6 +11,29 @@ import {
 import { api } from "@/utils/api";
 import type { RunnerMachine } from "./format";
 
+/** The log of one operation, refreshed while it runs. */
+const OperationLog = ({
+	operationId,
+	running,
+}: {
+	operationId: string;
+	running: boolean;
+}) => {
+	const { data, isPending, error } = api.githubRunner.operation.useQuery(
+		{ githubRunnerOperationId: operationId },
+		{ refetchInterval: running ? 2000 : false },
+	);
+	return (
+		<pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs">
+			{error
+				? `Unable to load the log: ${error.message}`
+				: isPending
+					? "Loading the log…"
+					: data.logs || "No log yet."}
+		</pre>
+	);
+};
+
 const STATUS = {
 	running: "blue",
 	done: "green",
@@ -84,9 +107,10 @@ export const MachineOperationsDialog = ({
 											{operation.errorMessage}
 										</p>
 									)}
-									<pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs">
-										{operation.logs || "No log yet."}
-									</pre>
+									<OperationLog
+										operationId={operation.githubRunnerOperationId}
+										running={operation.status === "running"}
+									/>
 								</div>
 							)}
 						</li>

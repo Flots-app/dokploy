@@ -36,6 +36,7 @@ import { type BudgetValues, defaultBudget, parseLabels } from "./budget-values";
 import { formatBytes, formatCpus } from "./format";
 import { EnrollMachine } from "./machine-enrollment";
 import { GenerateKeyButton, MachinePrep } from "./machine-setup";
+import { NumberInput } from "./shared";
 
 type CheckResult = RouterOutputs["githubRunner"]["checkMachine"];
 
@@ -146,13 +147,12 @@ const ConnectionFields = ({
 					</div>
 					<div className="space-y-2">
 						<Label htmlFor="machine-port">Port</Label>
-						<Input
+						<NumberInput
 							id="machine-port"
-							type="number"
+							min={1}
+							max={65535}
 							value={value.port}
-							onChange={(event) =>
-								set({ port: Number(event.target.value) || 22 })
-							}
+							onValueChange={(port) => set({ port })}
 						/>
 					</div>
 				</div>

@@ -1,5 +1,5 @@
 {
-  "id": "3c92de7a-a6ba-4991-82b0-e78c8eee5089",
+  "id": "2b2f52b6-e4e1-4b07-ae20-66d36194792e",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -3913,6 +3913,27 @@
           "columns": [
             {
               "expression": "githubRunnerNodeId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "startedAt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "github_runner_job_pool_started_idx": {
+          "name": "github_runner_job_pool_started_idx",
+          "columns": [
+            {
+              "expression": "githubRunnerPoolId",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

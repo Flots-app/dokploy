@@ -39,3 +39,22 @@ export const formatCpus = (cpus: number) =>
 
 export const percentText = (value: number | null | undefined) =>
 	value === null || value === undefined ? "—" : `${Math.round(value)}%`;
+
+/** A typed whole number within bounds, or null while it is not one yet. */
+export const boundedNumber = (text: string, min: number, max?: number) => {
+	if (!/^\d+$/.test(text.trim())) return null;
+	const value = Number(text);
+	return value >= min && (max === undefined || value <= max) ? value : null;
+};
+
+/** What a number field settles on when left: the typed value, clamped. */
+export const settleNumber = (
+	text: string,
+	min: number,
+	max: number | undefined,
+	fallback: number,
+) => {
+	if (!/^\d+$/.test(text.trim())) return fallback;
+	const value = Math.max(min, Number(text));
+	return max === undefined ? value : Math.min(max, value);
+};

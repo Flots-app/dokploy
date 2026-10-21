@@ -11,13 +11,12 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/utils/api";
 import { elapsed, formatDuration, type RunnerMachine, runUrl } from "./format";
-import { CopyCode } from "./shared";
+import { CopyCode, NumberInput } from "./shared";
 import { useNow } from "./use-now";
 
 type Mode = "wait" | "deadline" | "kill";
@@ -99,15 +98,13 @@ const ModeChoice = ({
 			<span className="flex flex-1 flex-col gap-1">
 				<span className="font-medium">Wait at most</span>
 				<span className="flex flex-wrap items-center gap-2">
-					<Input
-						type="number"
+					<NumberInput
 						min={1}
 						className="h-8 w-20"
+						aria-label="Minutes to wait"
 						value={minutes}
 						onFocus={() => setMode("deadline")}
-						onChange={(event) =>
-							setMinutes(Math.max(1, Number(event.target.value) || 1))
-						}
+						onValueChange={setMinutes}
 					/>
 					<span className="text-xs text-muted-foreground">
 						minutes, then interrupt what still runs

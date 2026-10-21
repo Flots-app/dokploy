@@ -270,9 +270,11 @@ systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 filevault=off
 keep_awake=null
 # shellcheck source=/dev/null
-os=$(. /etc/os-release 2>/dev/null && echo "\${PRETTY_NAME:-Linux}")
+# Every fact below is best effort: under set -e a failed lookup would stop
+# the script before it prints the code.
+os=$(. /etc/os-release 2>/dev/null && echo "\${PRETTY_NAME:-Linux}" || echo Linux)
 tailscale=$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n 1 || true)
-candidates="$tailscale $(hostname -f 2>/dev/null || hostname) $(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')"
+candidates="$tailscale $(hostname -f 2>/dev/null || hostname 2>/dev/null || true) $(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}' || true)"
 `}${report}`;
 
 /** The script an administrator runs once on the machine. */
