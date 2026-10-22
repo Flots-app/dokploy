@@ -14,6 +14,7 @@ import {
 	PowerOff,
 	RotateCw,
 	Server,
+	Shield,
 	Trash2,
 } from "lucide-react";
 import { useState } from "react";
@@ -35,6 +36,10 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { api } from "@/utils/api";
+import {
+	FirewallStatusText,
+	FirewallTargetDialog,
+} from "../firewalls/attach-firewall";
 import { EditMachineDialog } from "./edit-machine";
 import {
 	elapsed,
@@ -62,7 +67,8 @@ type DialogName =
 	| "operations"
 	| "remove"
 	| "hostkey"
-	| "enroll";
+	| "enroll"
+	| "firewall";
 
 const GiB = 1024 ** 3;
 
@@ -554,6 +560,9 @@ const MachineActions = ({
 								<RotateCw className="size-4" /> Reinstall runtime
 							</DropdownMenuItem>
 							<UpdateNowItem machine={machine} />
+							<DropdownMenuItem onSelect={() => onOpen("firewall")}>
+								<Shield className="size-4" /> Firewall
+							</DropdownMenuItem>
 							<DropdownMenuItem onSelect={() => onOpen("hostkey")}>
 								<KeyRound className="size-4" /> SSH host key
 							</DropdownMenuItem>
@@ -651,6 +660,9 @@ const MachineFooter = ({
 		<RunnerVersion machine={machine} />
 		{machine.runtimeUpdatePending && <span>runtime update pending</span>}
 		<UpdateSetting machine={machine} />
+		{machine.firewallStatus && (
+			<FirewallStatusText status={machine.firewallStatus} />
+		)}
 		{machine.extraLabels.map((label) => (
 			<Badge key={label} variant="outline">
 				{label}
@@ -673,6 +685,7 @@ export const MachineCard = ({
 	rerunInterruptedJobs,
 	speedRef,
 	isNext,
+	poolFirewall = null,
 }: {
 	machine: RunnerMachine;
 	/** Finishing the setup of a machine is part of adding it. */
@@ -683,6 +696,8 @@ export const MachineCard = ({
 	/** Per-core score of the slowest measured machine of the pool. */
 	speedRef: number | null;
 	isNext: boolean;
+	/** Name of the pool's firewall, which the machine follows unless it has its own. */
+	poolFirewall?: string | null;
 }) => {
 	const [dialog, setDialog] = useState<DialogName | null>(null);
 	const busy = (machine.observed?.slots ?? []).filter(
@@ -735,6 +750,21 @@ export const MachineCard = ({
 			<MachineOperationsDialog {...dialogProps("operations")} />
 			<HostKeyDialog {...dialogProps("hostkey")} />
 			<ContinueEnrollmentDialog {...dialogProps("enroll")} />
+			<FirewallTargetDialog
+				target={{
+					type: "githubRunnerNode",
+					id: machine.githubRunnerNodeId,
+					name: machine.name,
+				}}
+				currentId={
+					machine.firewallStatus && !machine.firewallStatus.inherited
+						? machine.firewallStatus.firewallId
+						: null
+				}
+				poolFirewallName={poolFirewall}
+				open={dialog === "firewall"}
+				onOpenChange={(open) => setDialog(open ? "firewall" : null)}
+			/>
 		</div>
 	);
 };

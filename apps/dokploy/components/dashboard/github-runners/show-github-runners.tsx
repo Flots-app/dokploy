@@ -1,4 +1,5 @@
-import { Github, Loader2, Trash2 } from "lucide-react";
+import { Github, Loader2, Shield, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { DialogAction } from "@/components/shared/dialog-action";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,7 @@ import {
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { api } from "@/utils/api";
+import { FirewallTargetDialog } from "../firewalls/attach-firewall";
 import { AddMachine } from "./add-machine";
 import { errorText, formatDuration, type RunnerPool } from "./format";
 import { HandlePool } from "./handle-pool";
@@ -23,6 +25,29 @@ import { MachineCard } from "./machine-card";
 import { JobsTable } from "./machine-monitoring";
 import { RoutingStatus } from "./pool-routing";
 import { GettingStarted, WorkflowSnippet } from "./pool-usage";
+
+/** The firewall of the pool's jobs, which its machines follow. */
+const PoolFirewall = ({ pool }: { pool: RunnerPool }) => {
+	const [open, setOpen] = useState(false);
+	return (
+		<>
+			<Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+				<Shield className="size-4" />
+				{pool.firewall ? pool.firewall.name : "No firewall"}
+			</Button>
+			<FirewallTargetDialog
+				target={{
+					type: "githubRunnerPool",
+					id: pool.githubRunnerPoolId,
+					name: pool.name,
+				}}
+				currentId={pool.firewall?.firewallId ?? null}
+				open={open}
+				onOpenChange={setOpen}
+			/>
+		</>
+	);
+};
 
 const PoolStats = ({ pool }: { pool: RunnerPool }) => {
 	const { data: stats } = api.githubRunner.jobStats.useQuery(
@@ -142,6 +167,7 @@ const PoolSection = ({
 					{permissions.create && (
 						<AddMachine poolId={pool.githubRunnerPoolId} />
 					)}
+					{permissions.update && <PoolFirewall pool={pool} />}
 					{permissions.update && <HandlePool pool={pool} />}
 					{permissions.delete && pool.nodes.length === 0 && (
 						<DialogAction
@@ -191,6 +217,7 @@ const PoolSection = ({
 							canDelete={permissions.delete}
 							rerunInterruptedJobs={pool.rerunInterruptedJobs}
 							speedRef={speedRef(pool)}
+							poolFirewall={pool.firewall?.name ?? null}
 							isNext={
 								pool.nodes.length > 1 &&
 								pool.nextNodeId === node.githubRunnerNodeId

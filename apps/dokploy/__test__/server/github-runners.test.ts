@@ -20,6 +20,8 @@ import {
 	type GithubRunnerPool,
 } from "@dokploy/server/db/schema";
 import { assertSecretsDestination } from "@dokploy/server/services/github-runner";
+import { nftablesRuleset } from "@dokploy/server/utils/firewall/backends";
+import { compileFirewall } from "@dokploy/server/utils/firewall/model";
 import {
 	autoMaxRunners,
 	budgetWarnings,
@@ -57,6 +59,11 @@ import {
 	parseEnvLines,
 } from "@dokploy/server/utils/github-runners/env";
 import { toClientError } from "@dokploy/server/utils/github-runners/errors";
+import {
+	linuxFirewallApplyScript,
+	linuxFirewallClearScript,
+	macFirewallHelper,
+} from "@dokploy/server/utils/github-runners/firewall";
 import {
 	createGithubRunnerClient,
 	decodeJitConfig,
@@ -1046,6 +1053,32 @@ const scripts = () => ({
 		diskGb: 80,
 	}),
 	remove: macDeleteVmScript("dokploy-runners"),
+	firewallHelper: macFirewallHelper,
+	firewallApply: linuxFirewallApplyScript(
+		nftablesRuleset(
+			compileFirewall(
+				{
+					firewallId: "fw",
+					name: "Internet only",
+					inboundPolicy: "deny",
+					outboundPolicy: "deny",
+					rules: [
+						{
+							id: "r1",
+							direction: "outbound",
+							action: "allow",
+							protocol: "any",
+							ports: null,
+							peer: { type: "object", object: "internet" },
+							description: null,
+						},
+					],
+				},
+				{ dokployAddresses: [] },
+			),
+		),
+	),
+	firewallClear: linuxFirewallClearScript(),
 });
 
 const extractRuntimeFile = (install: string, path: string) => {

@@ -113,6 +113,10 @@ const RESOURCE_META: Record<string, { label: string; description: string }> = {
 		label: "GitHub Runners",
 		description: "Manage self-hosted runner pools and machines",
 	},
+	firewall: {
+		label: "Firewalls",
+		description: "Manage firewalls and what they apply to",
+	},
 	registry: {
 		label: "Registries",
 		description: "Manage Docker image registries",
@@ -333,6 +337,19 @@ const ACTION_META: Record<
 			label: "Delete",
 			description: "Remove machines and pools",
 		},
+	},
+	firewall: {
+		read: {
+			label: "Read",
+			description: "View firewalls, their rules and where they apply",
+		},
+		create: { label: "Create", description: "Create firewalls" },
+		update: {
+			label: "Update",
+			description:
+				"Change rules, and attach firewalls to resources (also needs update on the resource)",
+		},
+		delete: { label: "Delete", description: "Delete firewalls" },
 	},
 	registry: {
 		read: { label: "Read", description: "View configured Docker registries" },

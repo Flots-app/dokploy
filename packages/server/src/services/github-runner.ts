@@ -9,6 +9,7 @@ import {
 	type apiTestGithubRunnerCredentials,
 	type apiUpdateGithubRunnerNode,
 	type apiUpdateGithubRunnerPool,
+	firewallAttachments,
 	type GithubRunnerPool,
 	githubRunnerJobs,
 	githubRunnerMetrics,
@@ -59,11 +60,12 @@ import {
 } from "@dokploy/server/utils/github-runners/updates";
 import {
 	latestRunnerRelease,
-	runnerVersionStatus,
+	machineRunnerStatus,
 } from "@dokploy/server/utils/github-runners/versions";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, ne } from "drizzle-orm";
 import type { z } from "zod";
+import { runnerNodeFirewallState } from "./firewall";
 
 const notFound = (what: string) =>
 	new TRPCError({ code: "NOT_FOUND", message: `${what} not found` });
@@ -765,7 +767,7 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 		orderBy: asc(githubRunnerPools.name),
 	});
 	const poolIds = pools.map((pool) => pool.githubRunnerPoolId);
-	const [nodes, operations, reroutes] = await Promise.all([
+	const [nodes, operations, reroutes, attachments] = await Promise.all([
 		db.query.githubRunnerNodes.findMany({
 			where: eq(githubRunnerNodes.organizationId, organizationId),
 			orderBy: asc(githubRunnerNodes.name),
@@ -791,7 +793,19 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 					orderBy: desc(githubRunnerReroutes.createdAt),
 				})
 			: [],
+		db.query.firewallAttachments.findMany({
+			where: eq(firewallAttachments.organizationId, organizationId),
+			with: {
+				firewall: { columns: { firewallId: true, name: true, revision: true } },
+			},
+		}),
 	]);
+	const poolFirewall = (poolId: string) =>
+		attachments.find((row) => row.githubRunnerPoolId === poolId)?.firewall ??
+		null;
+	const nodeFirewall = (nodeId: string) =>
+		attachments.find((row) => row.githubRunnerNodeId === nodeId)?.firewall ??
+		null;
 	const releases = knownRunnerReleases();
 	const now = Date.now();
 	return pools.map((pool) => {
@@ -802,8 +816,19 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 				const host = node.observed?.host ?? null;
 				const policy = effectiveUpdatePolicy(pool, node);
 				const windowOpen = inUpdateWindow(policy.window, new Date(now));
+				const ownFirewall = nodeFirewall(node.githubRunnerNodeId);
+				const firewall = ownFirewall ?? poolFirewall(pool.githubRunnerPoolId);
 				return {
 					...node,
+					/** The firewall of its jobs (Firewalls service) and where it stands. */
+					firewallStatus: firewall
+						? {
+								firewallId: firewall.firewallId,
+								name: firewall.name,
+								inherited: !ownFirewall,
+								...runnerNodeFirewallState(firewall, node),
+							}
+						: null,
 					sshKeyName: node.sshKey?.name ?? null,
 					runnerNamePrefix: runnerNamePrefix(node.name),
 					resolvedMaxRunners: resolveMaxRunners(
@@ -838,23 +863,7 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 						error: node.updateState?.error ?? null,
 					},
 					/** Whether the actions/runner release it runs is still accepted. */
-					runnerUpdate: runnerVersionStatus({
-						installed: node.observed?.runtime?.runnerVersion ?? null,
-						releases,
-						pinned: pool.runnerVersion,
-						updating:
-							node.enabled &&
-							(node.phase === "ready" || node.phase === "draining"),
-						now,
-						policy: {
-							auto: policy.auto,
-							window: policy.window
-								? describeUpdateWindow(policy.window)
-								: null,
-							open: windowOpen,
-						},
-						updateError: node.updateState?.error ?? null,
-					}),
+					runnerUpdate: machineRunnerStatus(pool, node, releases, now),
 					/** The OS of the machine, and of its VM on a Mac. */
 					os: {
 						checkedAt: node.osReport?.at ?? null,
@@ -881,6 +890,7 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 			});
 		return {
 			...publicPool(pool),
+			firewall: poolFirewall(pool.githubRunnerPoolId),
 			/** Latest actions/runner release, once the controller listed them. */
 			latestRunnerVersion: latestRunnerRelease(releases)?.version ?? null,
 			/** Runs sent to the fallback in the last week, latest first. */

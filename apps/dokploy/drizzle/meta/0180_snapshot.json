@@ -1,5 +1,5 @@
 {
-  "id": "03b84ab0-53d6-46cd-9495-96cdfcfd9f3f",
+  "id": "bf3d1128-7eb6-4134-b4f9-28df30e42f64",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -3404,6 +3404,259 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.firewall_attachment": {
+      "name": "firewall_attachment",
+      "schema": "",
+      "columns": {
+        "firewallAttachmentId": {
+          "name": "firewallAttachmentId",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "firewallId": {
+          "name": "firewallId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organizationId": {
+          "name": "organizationId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "githubRunnerPoolId": {
+          "name": "githubRunnerPoolId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "githubRunnerNodeId": {
+          "name": "githubRunnerNodeId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "firewall_attachment_pool_unique": {
+          "name": "firewall_attachment_pool_unique",
+          "columns": [
+            {
+              "expression": "githubRunnerPoolId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "firewall_attachment_node_unique": {
+          "name": "firewall_attachment_node_unique",
+          "columns": [
+            {
+              "expression": "githubRunnerNodeId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "firewall_attachment_firewallId_firewall_firewallId_fk": {
+          "name": "firewall_attachment_firewallId_firewall_firewallId_fk",
+          "tableFrom": "firewall_attachment",
+          "tableTo": "firewall",
+          "columnsFrom": [
+            "firewallId"
+          ],
+          "columnsTo": [
+            "firewallId"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "firewall_attachment_organizationId_organization_id_fk": {
+          "name": "firewall_attachment_organizationId_organization_id_fk",
+          "tableFrom": "firewall_attachment",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organizationId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "firewall_attachment_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk": {
+          "name": "firewall_attachment_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk",
+          "tableFrom": "firewall_attachment",
+          "tableTo": "github_runner_pool",
+          "columnsFrom": [
+            "githubRunnerPoolId"
+          ],
+          "columnsTo": [
+            "githubRunnerPoolId"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "firewall_attachment_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk": {
+          "name": "firewall_attachment_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk",
+          "tableFrom": "firewall_attachment",
+          "tableTo": "github_runner_node",
+          "columnsFrom": [
+            "githubRunnerNodeId"
+          ],
+          "columnsTo": [
+            "githubRunnerNodeId"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "firewall_attachment_one_target": {
+          "name": "firewall_attachment_one_target",
+          "value": "num_nonnulls(\"firewall_attachment\".\"githubRunnerPoolId\", \"firewall_attachment\".\"githubRunnerNodeId\") = 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.firewall": {
+      "name": "firewall",
+      "schema": "",
+      "columns": {
+        "firewallId": {
+          "name": "firewallId",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "organizationId": {
+          "name": "organizationId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inboundPolicy": {
+          "name": "inboundPolicy",
+          "type": "firewallPolicy",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'allow'"
+        },
+        "outboundPolicy": {
+          "name": "outboundPolicy",
+          "type": "firewallPolicy",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'allow'"
+        },
+        "rules": {
+          "name": "rules",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "firewall_org_name_unique": {
+          "name": "firewall_org_name_unique",
+          "columns": [
+            {
+              "expression": "organizationId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "firewall_organizationId_organization_id_fk": {
+          "name": "firewall_organizationId_organization_id_fk",
+          "tableFrom": "firewall",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organizationId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.forward_auth_settings": {
       "name": "forward_auth_settings",
       "schema": "",
@@ -3765,6 +4018,144 @@
           ],
           "columnsTo": [
             "gitProviderId"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.github_runner_alert": {
+      "name": "github_runner_alert",
+      "schema": "",
+      "columns": {
+        "githubRunnerAlertId": {
+          "name": "githubRunnerAlertId",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "githubRunnerPoolId": {
+          "name": "githubRunnerPoolId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "githubRunnerNodeId": {
+          "name": "githubRunnerNodeId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "severity": {
+          "name": "severity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "openedAt": {
+          "name": "openedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "notifiedAt": {
+          "name": "notifiedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolvedAt": {
+          "name": "resolvedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "github_runner_alert_open_unique": {
+          "name": "github_runner_alert_open_unique",
+          "columns": [
+            {
+              "expression": "subject",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"github_runner_alert\".\"resolvedAt\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "github_runner_alert_pool_idx": {
+          "name": "github_runner_alert_pool_idx",
+          "columns": [
+            {
+              "expression": "githubRunnerPoolId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "github_runner_alert_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk": {
+          "name": "github_runner_alert_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk",
+          "tableFrom": "github_runner_alert",
+          "tableTo": "github_runner_pool",
+          "columnsFrom": [
+            "githubRunnerPoolId"
+          ],
+          "columnsTo": [
+            "githubRunnerPoolId"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "github_runner_alert_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk": {
+          "name": "github_runner_alert_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk",
+          "tableFrom": "github_runner_alert",
+          "tableTo": "github_runner_node",
+          "columnsFrom": [
+            "githubRunnerNodeId"
+          ],
+          "columnsTo": [
+            "githubRunnerNodeId"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
@@ -4198,6 +4589,12 @@
         },
         "osReport": {
           "name": "osReport",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "firewall": {
+          "name": "firewall",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -6543,6 +6940,13 @@
         },
         "serverThreshold": {
           "name": "serverThreshold",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "githubRunners": {
+          "name": "githubRunners",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -9879,6 +10283,14 @@
         "compose",
         "application",
         "preview"
+      ]
+    },
+    "public.firewallPolicy": {
+      "name": "firewallPolicy",
+      "schema": "public",
+      "values": [
+        "allow",
+        "deny"
       ]
     },
     "public.gitProviderType": {

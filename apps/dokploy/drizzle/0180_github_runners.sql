@@ -1,3 +1,4 @@
+CREATE TYPE "public"."firewallPolicy" AS ENUM('allow', 'deny');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerAuthType" AS ENUM('token', 'app', 'provider');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerJobOutcome" AS ENUM('running', 'completed', 'interrupted');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerNodePhase" AS ENUM('enrolling', 'new', 'provisioning', 'ready', 'draining', 'stopped', 'error');--> statement-breakpoint
@@ -8,6 +9,43 @@ CREATE TYPE "public"."githubRunnerPlatform" AS ENUM('linux', 'macos');--> statem
 CREATE TYPE "public"."githubRunnerRerouteStatus" AS ENUM('cancelling', 'requested', 'rerouted', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerRerunStatus" AS ENUM('pending', 'cancelling', 'requested', 'skipped', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerScope" AS ENUM('organization', 'repository');--> statement-breakpoint
+CREATE TABLE "firewall_attachment" (
+	"firewallAttachmentId" text PRIMARY KEY NOT NULL,
+	"firewallId" text NOT NULL,
+	"organizationId" text NOT NULL,
+	"githubRunnerPoolId" text,
+	"githubRunnerNodeId" text,
+	"createdAt" text NOT NULL,
+	CONSTRAINT "firewall_attachment_one_target" CHECK (num_nonnulls("firewall_attachment"."githubRunnerPoolId", "firewall_attachment"."githubRunnerNodeId") = 1)
+);
+--> statement-breakpoint
+CREATE TABLE "firewall" (
+	"firewallId" text PRIMARY KEY NOT NULL,
+	"organizationId" text NOT NULL,
+	"name" text NOT NULL,
+	"description" text,
+	"inboundPolicy" "firewallPolicy" DEFAULT 'allow' NOT NULL,
+	"outboundPolicy" "firewallPolicy" DEFAULT 'allow' NOT NULL,
+	"rules" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
+	"createdAt" text NOT NULL,
+	"updatedAt" text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "github_runner_alert" (
+	"githubRunnerAlertId" text PRIMARY KEY NOT NULL,
+	"githubRunnerPoolId" text NOT NULL,
+	"githubRunnerNodeId" text,
+	"subject" text NOT NULL,
+	"kind" text NOT NULL,
+	"severity" text NOT NULL,
+	"title" text NOT NULL,
+	"message" text NOT NULL,
+	"openedAt" text NOT NULL,
+	"notifiedAt" text,
+	"resolvedAt" text
+);
+--> statement-breakpoint
 CREATE TABLE "github_runner_job" (
 	"githubRunnerJobId" text PRIMARY KEY NOT NULL,
 	"organizationId" text NOT NULL,
@@ -60,6 +98,7 @@ CREATE TABLE "github_runner_node" (
 	"updatePolicy" jsonb,
 	"updateState" jsonb,
 	"osReport" jsonb,
+	"firewall" jsonb,
 	"hostKeyFingerprint" text,
 	"platform" "githubRunnerPlatform" NOT NULL,
 	"vmName" text DEFAULT 'dokploy-runners' NOT NULL,
@@ -146,6 +185,14 @@ CREATE TABLE "github_runner_reroute" (
 	"updatedAt" text NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "notification" ADD COLUMN "githubRunners" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "firewall_attachment" ADD CONSTRAINT "firewall_attachment_firewallId_firewall_firewallId_fk" FOREIGN KEY ("firewallId") REFERENCES "public"."firewall"("firewallId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "firewall_attachment" ADD CONSTRAINT "firewall_attachment_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "firewall_attachment" ADD CONSTRAINT "firewall_attachment_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk" FOREIGN KEY ("githubRunnerPoolId") REFERENCES "public"."github_runner_pool"("githubRunnerPoolId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "firewall_attachment" ADD CONSTRAINT "firewall_attachment_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk" FOREIGN KEY ("githubRunnerNodeId") REFERENCES "public"."github_runner_node"("githubRunnerNodeId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "firewall" ADD CONSTRAINT "firewall_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_runner_alert" ADD CONSTRAINT "github_runner_alert_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk" FOREIGN KEY ("githubRunnerPoolId") REFERENCES "public"."github_runner_pool"("githubRunnerPoolId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "github_runner_alert" ADD CONSTRAINT "github_runner_alert_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk" FOREIGN KEY ("githubRunnerNodeId") REFERENCES "public"."github_runner_node"("githubRunnerNodeId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "github_runner_job" ADD CONSTRAINT "github_runner_job_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "github_runner_job" ADD CONSTRAINT "github_runner_job_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk" FOREIGN KEY ("githubRunnerNodeId") REFERENCES "public"."github_runner_node"("githubRunnerNodeId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "github_runner_metric" ADD CONSTRAINT "github_runner_metric_githubRunnerNodeId_github_runner_node_githubRunnerNodeId_fk" FOREIGN KEY ("githubRunnerNodeId") REFERENCES "public"."github_runner_node"("githubRunnerNodeId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -157,6 +204,11 @@ ALTER TABLE "github_runner_operation" ADD CONSTRAINT "github_runner_operation_cr
 ALTER TABLE "github_runner_pool" ADD CONSTRAINT "github_runner_pool_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "github_runner_pool" ADD CONSTRAINT "github_runner_pool_githubId_github_githubId_fk" FOREIGN KEY ("githubId") REFERENCES "public"."github"("githubId") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "github_runner_reroute" ADD CONSTRAINT "github_runner_reroute_githubRunnerPoolId_github_runner_pool_githubRunnerPoolId_fk" FOREIGN KEY ("githubRunnerPoolId") REFERENCES "public"."github_runner_pool"("githubRunnerPoolId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "firewall_attachment_pool_unique" ON "firewall_attachment" USING btree ("githubRunnerPoolId");--> statement-breakpoint
+CREATE UNIQUE INDEX "firewall_attachment_node_unique" ON "firewall_attachment" USING btree ("githubRunnerNodeId");--> statement-breakpoint
+CREATE UNIQUE INDEX "firewall_org_name_unique" ON "firewall" USING btree ("organizationId","name");--> statement-breakpoint
+CREATE UNIQUE INDEX "github_runner_alert_open_unique" ON "github_runner_alert" USING btree ("subject") WHERE "github_runner_alert"."resolvedAt" IS NULL;--> statement-breakpoint
+CREATE INDEX "github_runner_alert_pool_idx" ON "github_runner_alert" USING btree ("githubRunnerPoolId");--> statement-breakpoint
 CREATE UNIQUE INDEX "github_runner_job_runner_unique" ON "github_runner_job" USING btree ("runnerName");--> statement-breakpoint
 CREATE INDEX "github_runner_job_node_started_idx" ON "github_runner_job" USING btree ("githubRunnerNodeId","startedAt");--> statement-breakpoint
 CREATE INDEX "github_runner_job_pool_started_idx" ON "github_runner_job" USING btree ("githubRunnerPoolId","startedAt");--> statement-breakpoint

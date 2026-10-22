@@ -308,10 +308,11 @@ export const findAppInstallation = async (
 };
 
 /**
- * When a token expires, from the header GitHub adds to the responses it
- * authenticates with one; null for tokens without expiry or on failure.
+ * Whether GitHub accepts a token, and when it expires: GitHub adds the expiry
+ * to the responses it authenticates with an expiring token. Throws when GitHub
+ * cannot be reached.
  */
-export const tokenExpiration = async (
+export const checkToken = async (
 	token: string,
 	apiUrl: string,
 	options: { fetch?: Fetch } = {},
@@ -326,11 +327,27 @@ export const tokenExpiration = async (
 			},
 			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 		},
-	).catch(() => null);
-	return (
-		response?.headers.get("github-authentication-token-expiration") ?? null
 	);
+	if (response.status === 401) return { valid: false, expiresAt: null };
+	if (!response.ok) {
+		throw new Error(`GitHub answered ${response.status} to the token check`);
+	}
+	return {
+		valid: true,
+		expiresAt:
+			response.headers.get("github-authentication-token-expiration") ?? null,
+	};
 };
+
+/** When a token expires; null for tokens without expiry or on failure. */
+export const tokenExpiration = (
+	token: string,
+	apiUrl: string,
+	options: { fetch?: Fetch } = {},
+) =>
+	checkToken(token, apiUrl, options)
+		.then((result) => result.expiresAt)
+		.catch(() => null);
 
 /** Base path of the runner endpoints for the target. */
 export const runnersPath = (target: GithubRunnerTarget) =>

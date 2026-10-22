@@ -20,6 +20,7 @@ export * from "./services/docker";
 export * from "./services/dokploy-updates";
 export * from "./services/domain";
 export * from "./services/environment";
+export * from "./services/firewall";
 export * from "./services/git-provider";
 export * from "./services/gitea";
 export * from "./services/github";

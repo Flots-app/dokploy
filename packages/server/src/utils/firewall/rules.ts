@@ -1,0 +1,194 @@
+/**
+ * Rules of the Firewalls service, as operators write them: shared by the
+ * server and the UI (no Node.js module here).
+ */
+import { z } from "zod";
+
+/** Named address sets, resolved when a firewall is compiled. */
+export const FIREWALL_OBJECTS = [
+	"internet",
+	"private",
+	"tailnet",
+	"dokploy",
+	"any",
+] as const;
+export type FirewallObject = (typeof FIREWALL_OBJECTS)[number];
+
+export const FIREWALL_OBJECT_LABELS: Record<FirewallObject, string> = {
+	internet: "Internet (public addresses)",
+	private: "Private networks (LAN, VPN, tailnet)",
+	tailnet: "Tailnet (Tailscale)",
+	dokploy: "Dokploy server",
+	any: "Anywhere",
+};
+
+const IPV4 =
+	/^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+/** 4 or 6 for an IP address, 0 otherwise (works in Node.js and browsers). */
+export const ipFamily = (value: string): 0 | 4 | 6 => {
+	if (IPV4.test(value)) return 4;
+	if (!value.includes(":") || !/^[0-9a-fA-F:.]+$/.test(value)) return 0;
+	try {
+		new URL(`http://[${value}]`);
+		return 6;
+	} catch {
+		return 0;
+	}
+};
+
+/** "10.0.0.0/8", "192.168.1.10", "fd00::/8": an address or a network. */
+export const isAddress = (value: string) => {
+	const [address = "", prefix, extra] = value.split("/");
+	const family = ipFamily(address);
+	if (!family || extra !== undefined) return false;
+	if (prefix === undefined) return true;
+	if (!/^\d{1,3}$/.test(prefix)) return false;
+	return Number(prefix) <= (family === 4 ? 32 : 128);
+};
+
+/** "443", "80,443", "8000-9000": every port and range between 1 and 65535. */
+export const parsePorts = (value: string): [number, number][] | null => {
+	const ranges: [number, number][] = [];
+	for (const part of value.split(",")) {
+		const match = part.trim().match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
+		if (!match) return null;
+		const from = Number(match[1]);
+		const to = Number(match[2] ?? match[1]);
+		if (from < 1 || to > 65_535 || from > to) return null;
+		ranges.push([from, to]);
+	}
+	return ranges.length ? ranges : null;
+};
+
+export const firewallPeerSchema = z.discriminatedUnion("type", [
+	z.object({ type: z.literal("object"), object: z.enum(FIREWALL_OBJECTS) }),
+	z.object({
+		type: z.literal("addresses"),
+		addresses: z
+			.array(
+				z
+					.string()
+					.trim()
+					.refine(isAddress, "Use an address or a network such as 10.0.0.0/8"),
+			)
+			.min(1, "Add at least one address")
+			.max(64),
+	}),
+]);
+
+export const firewallRuleSchema = z
+	.object({
+		id: z.string().min(1).max(32),
+		direction: z.enum(["inbound", "outbound"]),
+		action: z.enum(["allow", "deny"]),
+		protocol: z.enum(["any", "tcp", "udp", "icmp"]),
+		/** "443", "80,443", "8000-9000"; null for every port. */
+		ports: z.string().trim().max(200).nullable(),
+		/** Where the traffic goes (outbound) or comes from (inbound). */
+		peer: firewallPeerSchema,
+		description: z.string().trim().max(200).nullable(),
+	})
+	.superRefine((rule, ctx) => {
+		if (rule.ports === null || rule.ports === "") return;
+		if (rule.protocol === "icmp") {
+			ctx.addIssue({
+				code: "custom",
+				path: ["ports"],
+				message: "ICMP has no ports",
+			});
+		} else if (!parsePorts(rule.ports)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["ports"],
+				message: "Ports between 1 and 65535, such as 443, 80,443 or 8000-9000",
+			});
+		} else if ((parsePorts(rule.ports)?.length ?? 0) > 15) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["ports"],
+				message: "15 ports or ranges at most: add another rule",
+			});
+		}
+	});
+
+export const firewallPolicySchema = z.enum(["allow", "deny"]);
+
+export const firewallRulesSchema = z.array(firewallRuleSchema).max(100);
+
+export type FirewallPeer = z.infer<typeof firewallPeerSchema>;
+export type FirewallRule = z.infer<typeof firewallRuleSchema>;
+export type FirewallPolicy = z.infer<typeof firewallPolicySchema>;
+
+/** Ready-made firewalls the UI offers. */
+export const FIREWALL_TEMPLATES: {
+	id: string;
+	name: string;
+	description: string;
+	inboundPolicy: FirewallPolicy;
+	outboundPolicy: FirewallPolicy;
+	rules: Omit<FirewallRule, "id">[];
+}[] = [
+	{
+		id: "internet-only",
+		name: "Internet only",
+		description:
+			"Outbound traffic reaches the public Internet and nothing else: no LAN, no tailnet, no Dokploy server behind a private address.",
+		inboundPolicy: "deny",
+		outboundPolicy: "deny",
+		rules: [
+			{
+				direction: "outbound",
+				action: "allow",
+				protocol: "any",
+				ports: null,
+				peer: { type: "object", object: "internet" },
+				description: "The public Internet",
+			},
+		],
+	},
+	{
+		id: "web-only",
+		name: "Web only",
+		description:
+			"Only HTTPS, HTTP and SSH (git) to the public Internet: package registries, GitHub and container registries keep working.",
+		inboundPolicy: "deny",
+		outboundPolicy: "deny",
+		rules: [
+			{
+				direction: "outbound",
+				action: "allow",
+				protocol: "tcp",
+				ports: "22,80,443",
+				peer: { type: "object", object: "internet" },
+				description: "SSH, HTTP and HTTPS",
+			},
+			{
+				direction: "outbound",
+				action: "allow",
+				protocol: "udp",
+				ports: "443",
+				peer: { type: "object", object: "internet" },
+				description: "HTTP/3",
+			},
+		],
+	},
+	{
+		id: "block-private",
+		name: "Block private networks",
+		description:
+			"Everything is allowed except the LAN, the VPNs and the tailnet.",
+		inboundPolicy: "deny",
+		outboundPolicy: "allow",
+		rules: [
+			{
+				direction: "outbound",
+				action: "deny",
+				protocol: "any",
+				ports: null,
+				peer: { type: "object", object: "private" },
+				description: "LAN, VPNs and tailnet",
+			},
+		],
+	},
+];

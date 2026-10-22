@@ -1,3 +1,4 @@
+import { macFirewallStatus } from "./firewall";
 import { shellQuote, statusCommand } from "./runtime";
 import { BOOT_DAEMON } from "./setup-constants";
 
@@ -49,6 +50,7 @@ sleep_minutes=$(pmset -g 2>/dev/null | awk '$1 == "sleep" {print $2; exit}')
 filevault=$(fdesetup isactive >/dev/null 2>&1 && echo on || echo off)
 daemon=$([ -f /Library/LaunchDaemons/${BOOT_DAEMON}.plist ] && echo yes || echo no)
 echo "macsetup admin=$admin sleep=\${sleep_minutes:-unknown} filevault=$filevault daemon=$daemon"
+${macFirewallStatus}
 ${withGuest ? "" : networkCheck}
 if ! command -v limactl >/dev/null 2>&1; then
 	echo "lima version= managed=no"

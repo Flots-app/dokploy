@@ -269,6 +269,23 @@ export interface GithubRunnerOsReport {
 	error?: string;
 }
 
+/**
+ * The firewall of a machine's jobs, as the controller last applied it (rules
+ * come from the Firewalls service: the machine's own firewall, or its pool's).
+ */
+export interface GithubRunnerFirewallState {
+	/** Firewall the machine follows; null for none. */
+	firewallId: string | null;
+	/** Revision of that firewall the rules come from. */
+	revision: number | null;
+	/** Hash of the rules loaded on the machine; null when none are. */
+	hash: string | null;
+	appliedAt: string | null;
+	/** Why the rules could not be applied: the machine takes no jobs then. */
+	error: string | null;
+	errorAt: string | null;
+}
+
 /** CPU benchmark of a machine's runner budget, in work units per second. */
 export interface GithubRunnerBenchmark {
 	at: string;
@@ -418,6 +435,7 @@ export const githubRunnerNodes = pgTable(
 		updateState: jsonb("updateState").$type<GithubRunnerUpdateState | null>(),
 		/** Operating system and its pending updates, refreshed every few hours. */
 		osReport: jsonb("osReport").$type<GithubRunnerOsReport | null>(),
+		firewall: jsonb("firewall").$type<GithubRunnerFirewallState | null>(),
 		/** SHA256 fingerprint pinned on first contact; any other host key is refused. */
 		hostKeyFingerprint: text("hostKeyFingerprint"),
 		platform: githubRunnerPlatform("platform").notNull(),
@@ -638,6 +656,48 @@ export const githubRunnerMetrics = pgTable(
 	],
 );
 
+export type GithubRunnerAlertSeverity = "warning" | "critical";
+
+/**
+ * What the controller notifies about, while it lasts: one open row per
+ * subject (a pool or a machine, and what is wrong with it). The unique index
+ * on open rows lets a single Dokploy instance send each notification.
+ */
+export const githubRunnerAlerts = pgTable(
+	"github_runner_alert",
+	{
+		githubRunnerAlertId: text("githubRunnerAlertId")
+			.notNull()
+			.primaryKey()
+			.$defaultFn(() => nanoid()),
+		githubRunnerPoolId: text("githubRunnerPoolId")
+			.notNull()
+			.references(() => githubRunnerPools.githubRunnerPoolId, {
+				onDelete: "cascade",
+			}),
+		githubRunnerNodeId: text("githubRunnerNodeId").references(
+			() => githubRunnerNodes.githubRunnerNodeId,
+			{ onDelete: "cascade" },
+		),
+		/** "<pool or machine id>:<kind>" */
+		subject: text("subject").notNull(),
+		kind: text("kind").notNull(),
+		severity: text("severity").$type<GithubRunnerAlertSeverity>().notNull(),
+		title: text("title").notNull(),
+		message: text("message").notNull(),
+		openedAt: text("openedAt").notNull(),
+		/** Last notification sent; null while the alert waits for its delay. */
+		notifiedAt: text("notifiedAt"),
+		resolvedAt: text("resolvedAt"),
+	},
+	(table) => [
+		uniqueIndex("github_runner_alert_open_unique")
+			.on(table.subject)
+			.where(sql`${table.resolvedAt} IS NULL`),
+		index("github_runner_alert_pool_idx").on(table.githubRunnerPoolId),
+	],
+);
+
 export const githubRunnerPoolsRelations = relations(
 	githubRunnerPools,
 	({ one, many }) => ({
@@ -686,6 +746,7 @@ export type GithubRunnerNode = typeof githubRunnerNodes.$inferSelect;
 export type GithubRunnerOperation = typeof githubRunnerOperations.$inferSelect;
 export type GithubRunnerJobRecord = typeof githubRunnerJobs.$inferSelect;
 export type GithubRunnerMetric = typeof githubRunnerMetrics.$inferSelect;
+export type GithubRunnerAlert = typeof githubRunnerAlerts.$inferSelect;
 
 // GitHub accepts letters, digits, "-", "_" and "." in labels; the runtime
 // writes them in shell files, so nothing else gets through.

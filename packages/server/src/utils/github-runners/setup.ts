@@ -8,6 +8,7 @@
  * from the machine, so it works behind Cloudflare Access or a VPN.
  */
 import { z } from "zod";
+import { macFirewallInstall, macFirewallUninstall } from "./firewall";
 import { sh, shellQuote } from "./runtime";
 import {
 	BOOT_DAEMON,
@@ -130,7 +131,7 @@ if [ "$UNINSTALL" = 1 ]; then
 	step "Removing $MANAGER_USER, its runner VM and what this script set up"
 	launchctl bootout system/${BOOT_DAEMON} >/dev/null 2>&1 || true
 	rm -f /Library/LaunchDaemons/${BOOT_DAEMON}.plist
-	# Stops the runner VM: its disk goes with the home folder below.
+${macFirewallUninstall}	# Stops the runner VM: its disk goes with the home folder below.
 	pkill -u "$MANAGER_USER" >/dev/null 2>&1 || true
 	rm -f "$DROPIN"
 	if id "$MANAGER_USER" >/dev/null 2>&1; then
@@ -205,7 +206,7 @@ chown root:wheel "$daemon"
 chmod 644 "$daemon"
 launchctl bootout system/${BOOT_DAEMON} >/dev/null 2>&1 || true
 launchctl bootstrap system "$daemon"
-
+${macFirewallInstall}
 keep_awake=false
 if [ "$KEEP_AWAKE" = 1 ]; then
 	step "Always on: no system sleep (the display still sleeps), restart after a power loss"

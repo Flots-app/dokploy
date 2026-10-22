@@ -1,3 +1,8 @@
+import {
+	type FirewallStatus,
+	linuxFirewallStatus,
+	parseFirewallStatus,
+} from "./firewall";
 import { inGuest, macProbeScript } from "./macos";
 import {
 	type LinuxFacts,
@@ -34,6 +39,8 @@ export interface NodeProbe {
 	/** Runtime inside the VM or on the Linux host; null when the VM is not running. */
 	runtime: RuntimeStatus | null;
 	runtimeError: string | null;
+	/** Rules the machine loaded for the firewall of its jobs. */
+	firewall: FirewallStatus | null;
 }
 
 /**
@@ -92,6 +99,7 @@ export const createNodeDriver = (
 					githubReachable: status.githubReachable,
 					runtime: status.guest,
 					runtimeError: status.guestError,
+					firewall: parseFirewallStatus(stdout),
 				};
 			},
 		};
@@ -108,11 +116,14 @@ export const createNodeDriver = (
 			}),
 		host: session.run,
 		probe: async () => {
-			const { stdout } = await session.run(`${sudo}${statusCommand}`, {
-				label: "Probe",
-				timeoutMs: 60_000,
-				input: "",
-			});
+			const { stdout } = await session.run(
+				`${sudo}${statusCommand}; ${sudo}${linuxFirewallStatus}`,
+				{
+					label: "Probe",
+					timeoutMs: 60_000,
+					input: "",
+				},
+			);
 			const runtime = parseRuntimeStatus(parseRecords(stdout));
 			return {
 				platform: "linux",
@@ -141,6 +152,7 @@ export const createNodeDriver = (
 				githubReachable: null,
 				runtime: runtime.runtimeVersion > 0 ? runtime : null,
 				runtimeError: null,
+				firewall: parseFirewallStatus(stdout),
 			};
 		},
 	};

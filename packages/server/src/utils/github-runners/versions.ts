@@ -6,6 +6,15 @@
  * release:
  * https://docs.github.com/en/actions/reference/runners/self-hosted-runners
  */
+import type {
+	GithubRunnerNode,
+	GithubRunnerPool,
+} from "@dokploy/server/db/schema";
+import {
+	describeUpdateWindow,
+	effectiveUpdatePolicy,
+	inUpdateWindow,
+} from "./updates";
 
 /** "If you do not perform a software update within 30 days, the GitHub Actions service will not queue jobs to your runner." */
 export const RUNNER_UPDATE_DEADLINE_MS = 30 * 24 * 60 * 60_000;
@@ -172,4 +181,31 @@ export const runnerVersionStatus = (input: {
 			? `actions/runner ${installed} is behind ${latest}: GitHub stops queuing jobs on it on ${day(deadline)}. ${fix}`
 			: `actions/runner ${latest} is available. ${fix}`,
 	};
+};
+
+/** The status of a machine's runner, under the update policy it follows. */
+export const machineRunnerStatus = (
+	pool: Pick<GithubRunnerPool, "runnerVersion" | "updatePolicy">,
+	node: Pick<
+		GithubRunnerNode,
+		"enabled" | "phase" | "observed" | "updatePolicy" | "updateState"
+	>,
+	releases: RunnerReleaseInfo[],
+	now: number,
+) => {
+	const policy = effectiveUpdatePolicy(pool, node);
+	return runnerVersionStatus({
+		installed: node.observed?.runtime?.runnerVersion ?? null,
+		releases,
+		pinned: pool.runnerVersion,
+		updating:
+			node.enabled && (node.phase === "ready" || node.phase === "draining"),
+		now,
+		policy: {
+			auto: policy.auto,
+			window: policy.window ? describeUpdateWindow(policy.window) : null,
+			open: inUpdateWindow(policy.window, new Date(now)),
+		},
+		updateError: node.updateState?.error ?? null,
+	});
 };

@@ -31,6 +31,7 @@ import {
 	PieChart,
 	Rocket,
 	Server,
+	Shield,
 	ShieldCheck,
 	Star,
 	Tags,
@@ -218,6 +219,15 @@ const MENU: Menu = {
 			// Runner machines are reached over SSH from a self-hosted Dokploy.
 			isEnabled: ({ permissions, isCloud }) =>
 				!isCloud && !!permissions?.githubRunner.read,
+		},
+		{
+			isSingle: true,
+			title: "Firewalls",
+			url: "/dashboard/firewalls",
+			icon: Shield,
+			// They apply to GitHub runner machines for now, on a self-hosted Dokploy.
+			isEnabled: ({ permissions, isCloud }) =>
+				!isCloud && !!permissions?.firewall.read,
 		},
 		{
 			isSingle: true,

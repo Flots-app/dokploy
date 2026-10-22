@@ -5,6 +5,7 @@ import {
 	type GithubRunnerAppliedConfig,
 	type GithubRunnerCleanup,
 	type GithubRunnerDrain,
+	type GithubRunnerFirewallState,
 	type GithubRunnerJobRecord,
 	type GithubRunnerNode,
 	type GithubRunnerNodeObservation,
@@ -12,6 +13,7 @@ import {
 	type GithubRunnerOsReport,
 	type GithubRunnerPool,
 	github,
+	githubRunnerAlerts,
 	githubRunnerJobs,
 	githubRunnerMetrics,
 	githubRunnerNodes,
@@ -34,9 +36,23 @@ import {
 } from "drizzle-orm";
 import ssh2 from "ssh2";
 import {
+	dokployServerAddresses,
+	loadRunnerFirewalls,
+	type RunnerFirewalls,
+	runnerNodeFirewall,
+} from "../../services/firewall";
+import { nftablesRuleset, pfRuleset, type Ruleset } from "../firewall/backends";
+import { compileFirewall, filters } from "../firewall/model";
+import { sendGithubRunnerNotifications } from "../notifications/github-runners";
+import {
 	mapWithConcurrency,
 	sequentially,
 } from "../service-migration/concurrency";
+import {
+	type RunnerNotice,
+	runnerAlertConditions,
+	syncRunnerAlerts,
+} from "./alerts";
 import {
 	effectiveBudget,
 	formatBytes,
@@ -70,6 +86,13 @@ import {
 	readMacStatus,
 } from "./driver";
 import {
+	linuxFirewallApplyScript,
+	linuxFirewallClearScript,
+	MAC_FIREWALL_HELPER,
+	parseFirewallStatus,
+} from "./firewall";
+import {
+	checkToken,
 	createGithubRunnerClient,
 	decodeJitConfig,
 	type GithubRunner,
@@ -223,6 +246,20 @@ interface ControllerState {
 	/** Support dates of each OS product (endoflife.date). */
 	osReleases: Map<string, { at: number; releases: OsRelease[] }>;
 	osReleasesTriedAt: Map<string, number>;
+	/** What GitHub said of each pool's personal access token (by its hash). */
+	tokenChecks: Map<
+		string,
+		{
+			at: number;
+			hash: string;
+			result: { valid: boolean; expiresAt: string | null } | null;
+		}
+	>;
+	lastAlertsAt: number;
+	/** Firewalls attached to pools and machines, read once per tick. */
+	firewalls: { at: number; value: RunnerFirewalls } | null;
+	/** A firewall that failed to load waits until then before trying again. */
+	firewallRetryAt: Map<string, number>;
 }
 
 const shared = globalThis as { __dokployGithubRunners?: ControllerState };
@@ -257,6 +294,10 @@ shared.__dokployGithubRunners ??= {
 	osReportAt: new Map(),
 	osReleases: new Map(),
 	osReleasesTriedAt: new Map(),
+	tokenChecks: new Map(),
+	lastAlertsAt: 0,
+	firewalls: null,
+	firewallRetryAt: new Map(),
 };
 const state: ControllerState = shared.__dokployGithubRunners;
 // State kept across a hot reload predates fields added since.
@@ -266,6 +307,10 @@ state.runnerReleasesTriedAt ??= 0;
 state.osReportAt ??= new Map();
 state.osReleases ??= new Map();
 state.osReleasesTriedAt ??= new Map();
+state.tokenChecks ??= new Map();
+state.lastAlertsAt ??= 0;
+state.firewalls ??= null;
+state.firewallRetryAt ??= new Map();
 state.rerouteScans ??= new Set();
 state.reconnects ??= new Map();
 const OWNER = state.owner;
@@ -273,6 +318,17 @@ const OWNER = state.owner;
 type NodeWithRelations = GithubRunnerNode & {
 	pool: GithubRunnerPool;
 	sshKey: { privateKey: string } | null;
+};
+
+/** Sends a notice in the background: notification channels can be slow. */
+const notify = (pool: GithubRunnerPool, notice: RunnerNotice) => {
+	void sendGithubRunnerNotifications(pool.organizationId, notice).catch(
+		(error) =>
+			console.error(
+				`GitHub runner notification failed for ${pool.name}`,
+				error,
+			),
+	);
 };
 
 // ---------------------------------------------------------------- loading
@@ -1503,6 +1559,18 @@ export const completeDrain = async ({ node, driver }: TaskContext) => {
 		}
 		await log("Machine disabled: it takes no job until it is enabled again");
 		await finishOperation(operationId, "done");
+		notify(node.pool, {
+			event: "info",
+			severity: "info",
+			title: `${node.name} is disabled`,
+			message:
+				drain.mode === "kill"
+					? `Its jobs were stopped: ${node.name} takes no job until it is enabled again.`
+					: `Its last jobs finished: ${node.name} takes no job until it is enabled again.`,
+			pool: node.pool.name,
+			machine: node.name,
+			at: new Date(),
+		});
 		return;
 	}
 	if (drain.reason === "apply") {
@@ -1536,6 +1604,14 @@ export const completeDrain = async ({ node, driver }: TaskContext) => {
 	);
 	// Set once the machine no longer runs what Dokploy installed.
 	let uninstalled = false;
+	if (drain.uninstall && node.firewall?.hash) {
+		await log("Removing the firewall of the jobs");
+		await clearFirewall(driver, node.platform).catch((error) =>
+			log(
+				`Could not remove the firewall (${error instanceof Error ? error.message : String(error)})`,
+			),
+		);
+	}
 	if (drain.uninstall) {
 		if (node.platform === "macos" && node.applied?.vmCreatedByDokploy) {
 			await log(`Deleting VM ${node.vmName}`);
@@ -1594,6 +1670,15 @@ export const completeDrain = async ({ node, driver }: TaskContext) => {
 	}
 	await log("Machine removed");
 	await finishOperation(operationId, "done");
+	notify(node.pool, {
+		event: "info",
+		severity: "info",
+		title: `${node.name} was removed`,
+		message: `${node.name} left ${node.pool.name}${uninstalled ? ": Dokploy uninstalled what it had installed on it" : ""}.`,
+		pool: node.pool.name,
+		machine: node.name,
+		at: new Date(),
+	});
 };
 
 // ------------------------------------------------------------- the tick
@@ -2493,6 +2578,163 @@ export const checkRunnerNodeOs = (nodeId: string) => {
 	requestTick();
 };
 
+// ------------------------------------------------------------- firewall
+
+const FIREWALLS_TTL_MS = 3_000;
+const FIREWALL_RETRY_MS = 60_000;
+
+const currentRunnerFirewalls = async () => {
+	if (state.firewalls && Date.now() - state.firewalls.at < FIREWALLS_TTL_MS) {
+		return state.firewalls.value;
+	}
+	const value = await loadRunnerFirewalls();
+	state.firewalls = { at: Date.now(), value };
+	return value;
+};
+
+/** Loads a ruleset on the machine; returns what the machine reports. */
+const loadFirewall = async (
+	driver: NodeDriver,
+	platform: "linux" | "macos",
+	ruleset: Ruleset,
+) => {
+	const { stdout } =
+		platform === "macos"
+			? await driver.host(`sudo -n ${MAC_FIREWALL_HELPER} apply`, {
+					input: ruleset.text,
+					label: "Firewall",
+					timeoutMs: 60_000,
+				})
+			: await driver.guest("bash -s", {
+					input: linuxFirewallApplyScript(ruleset),
+					label: "Firewall",
+					timeoutMs: 5 * 60_000,
+				});
+	return parseFirewallStatus(stdout);
+};
+
+const clearFirewall = (driver: NodeDriver, platform: "linux" | "macos") =>
+	platform === "macos"
+		? driver.host(`sudo -n ${MAC_FIREWALL_HELPER} clear`, {
+				input: "",
+				label: "Firewall removal",
+				timeoutMs: 60_000,
+			})
+		: driver.guest("bash -s", {
+				input: linuxFirewallClearScript(),
+				label: "Firewall removal",
+				timeoutMs: 60_000,
+			});
+
+/**
+ * Puts the rules of the firewall the machine follows in place, or removes the
+ * ones it no longer follows. Returns why the machine must not take jobs: the
+ * rules are not loaded, or their state is unknown. Never throws: a firewall
+ * that cannot be checked keeps jobs away.
+ */
+export const enforceFirewall = async (
+	node: NodeWithRelations,
+	driver: NodeDriver,
+	probe: NodeProbe,
+	events: { at: string; message: string }[],
+): Promise<string | null> => {
+	const nodeId = node.githubRunnerNodeId;
+	const save = (firewall: GithubRunnerFirewallState | null) =>
+		db
+			.update(githubRunnerNodes)
+			.set({ firewall })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	try {
+		const firewall = runnerNodeFirewall(await currentRunnerFirewalls(), node);
+		const compiled = firewall
+			? compileFirewall(firewall, {
+					dokployAddresses: await dokployServerAddresses(),
+				})
+			: null;
+		const loaded = probe.firewall?.loaded ?? null;
+		if (!firewall || !compiled || !filters(compiled.outbound)) {
+			if (loaded) {
+				await clearFirewall(driver, node.platform);
+				recordEvent(events, "Firewall removed");
+			}
+			if (node.firewall) await save(null);
+			return null;
+		}
+		const ruleset =
+			node.platform === "macos"
+				? pfRuleset(compiled)
+				: nftablesRuleset(compiled);
+		const applied = (appliedAt: string): GithubRunnerFirewallState => ({
+			firewallId: firewall.firewallId,
+			revision: firewall.revision,
+			hash: ruleset.hash,
+			appliedAt,
+			error: null,
+			errorAt: null,
+		});
+		const current = node.firewall;
+		if (loaded === ruleset.hash) {
+			if (
+				current?.hash !== ruleset.hash ||
+				current.error ||
+				current.firewallId !== firewall.firewallId ||
+				current.revision !== firewall.revision
+			) {
+				await save(
+					applied(
+						current?.hash === ruleset.hash && current.appliedAt
+							? current.appliedAt
+							: new Date().toISOString(),
+					),
+				);
+			}
+			return null;
+		}
+		const fail = async (message: string) => {
+			if (current?.error !== message) {
+				await save({
+					firewallId: firewall.firewallId,
+					revision: firewall.revision,
+					hash: null,
+					appliedAt: null,
+					error: message,
+					errorAt: new Date().toISOString(),
+				});
+				recordEvent(
+					events,
+					`Firewall "${firewall.name}" not applied: ${message}`,
+				);
+			}
+			return `Firewall "${firewall.name}" not applied: ${message}`;
+		};
+		if (node.platform === "macos" && probe.firewall?.helper !== "yes") {
+			return fail(
+				probe.firewall?.helper === "denied"
+					? "the account Dokploy logs in with may not run the firewall helper: run the setup script of the machine again"
+					: "the Mac has no firewall helper: run the setup script of the machine again (machine menu › Setup script)",
+			);
+		}
+		if (Date.now() < (state.firewallRetryAt.get(nodeId) ?? 0)) {
+			return `Firewall "${firewall.name}" not applied: ${current?.error ?? "waiting to try again"}`;
+		}
+		try {
+			const status = await loadFirewall(driver, node.platform, ruleset);
+			if (status?.loaded !== ruleset.hash) {
+				throw new Error("the machine does not report the rules as loaded");
+			}
+		} catch (error) {
+			state.firewallRetryAt.set(nodeId, Date.now() + FIREWALL_RETRY_MS);
+			return fail(error instanceof Error ? error.message : String(error));
+		}
+		state.firewallRetryAt.delete(nodeId);
+		await save(applied(new Date().toISOString()));
+		recordEvent(events, `Firewall "${firewall.name}" applied`);
+		return null;
+	} catch (error) {
+		return `Firewall state unknown: ${error instanceof Error ? error.message : String(error)}`;
+	}
+};
+
 const actOnNode = async (
 	observation: Observation,
 	runners: GithubRunner[] | null,
@@ -2718,6 +2960,10 @@ const actOnNode = async (
 				};
 			}
 		}
+
+		// Admission: the firewall of the jobs, when the machine follows one.
+		const blocked = await enforceFirewall(node, driver, probe, events);
+		if (blocked && admission.ok) admission = { ok: false, reason: blocked };
 
 		const effectiveSlots = runtime?.slots ?? [];
 		const labels = runnerLabels(
@@ -3586,6 +3832,87 @@ const refreshRunnerReleases = (pools: GithubRunnerPool[]) => {
 /** The actions/runner releases known to the controller, newest first or not. */
 export const knownRunnerReleases = () => state.runnerReleases?.releases ?? [];
 
+// ------------------------------------------------------------- alerts
+
+const ALERTS_EVERY_MS = 30_000;
+const TOKEN_CHECK_EVERY_MS = 6 * 60 * 60_000;
+const TOKEN_CHECK_RETRY_MS = 15 * 60_000;
+
+/**
+ * Asks GitHub whether each pool's personal access token is still accepted and
+ * when it expires, in the background. A failed check keeps the last answer.
+ */
+const refreshTokenChecks = (pools: GithubRunnerPool[]) => {
+	const now = Date.now();
+	for (const pool of pools) {
+		const poolId = pool.githubRunnerPoolId;
+		if (pool.authType !== "token" || !pool.token) {
+			state.tokenChecks.delete(poolId);
+			continue;
+		}
+		const token = pool.token;
+		const hash = createHash("sha256").update(token).digest("hex");
+		const known = state.tokenChecks.get(poolId);
+		const sameToken = known?.hash === hash;
+		const wait = known?.result ? TOKEN_CHECK_EVERY_MS : TOKEN_CHECK_RETRY_MS;
+		if (sameToken && now - known.at < wait) continue;
+		const entry = {
+			at: now,
+			hash,
+			result: sameToken ? (known?.result ?? null) : null,
+		};
+		state.tokenChecks.set(poolId, entry);
+		void checkToken(token, pool.apiUrl)
+			.then((result) => {
+				entry.result = result;
+			})
+			.catch(() => undefined);
+	}
+};
+
+/**
+ * Opens, updates and resolves the alerts of every pool, and notifies them.
+ * Every Dokploy instance evaluates them; the conditional writes of
+ * syncRunnerAlerts make a single one notify each change.
+ */
+const evaluateAlerts = async () => {
+	const now = Date.now();
+	if (now - state.lastAlertsAt < ALERTS_EVERY_MS) return;
+	state.lastAlertsAt = now;
+	const [pools, nodes] = await Promise.all([
+		db.query.githubRunnerPools.findMany(),
+		db.query.githubRunnerNodes.findMany(),
+	]);
+	refreshTokenChecks(pools);
+	const runnerReleases = knownRunnerReleases();
+	await Promise.all(
+		pools.map(async (pool) => {
+			const poolNodes = nodes.filter(
+				(node) => node.githubRunnerPoolId === pool.githubRunnerPoolId,
+			);
+			try {
+				const conditions = runnerAlertConditions({
+					pool,
+					nodes: poolNodes,
+					now,
+					runnerReleases,
+					osReleases: knownOsReleases,
+					token: state.tokenChecks.get(pool.githubRunnerPoolId)?.result ?? null,
+				});
+				const notices = await syncRunnerAlerts({
+					pool,
+					nodes: poolNodes,
+					conditions,
+					now,
+				});
+				for (const notice of notices) notify(pool, notice);
+			} catch (error) {
+				console.error(`GitHub runner alerts failed for ${pool.name}`, error);
+			}
+		}),
+	);
+};
+
 const tickGithubRunners = async () => {
 	if (state.running) {
 		state.rerun = true;
@@ -3629,6 +3956,7 @@ const tickGithubRunners = async () => {
 				),
 			),
 		);
+		await evaluateAlerts();
 		if (Date.now() - state.lastPurge > 60 * 60_000) {
 			state.lastPurge = Date.now();
 			await db
@@ -3664,6 +3992,9 @@ const tickGithubRunners = async () => {
 						ne(githubRunnerOperations.status, "running"),
 					),
 				);
+			await db
+				.delete(githubRunnerAlerts)
+				.where(lt(githubRunnerAlerts.resolvedAt, historyCutoff));
 		}
 	} catch (error) {
 		console.error("GitHub runner controller tick failed", error);
