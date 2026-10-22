@@ -34,11 +34,43 @@ export const elapsed = (iso: string | null | undefined, now: number) => {
 export const runUrl = (job: { repository: string; runId: string }) =>
 	`https://github.com/${job.repository}/actions/runs/${job.runId}`;
 
-export const formatCpus = (cpus: number) =>
-	`${cpus} CPU${cpus === 1 ? "" : "s"}`;
+export { formatCpus } from "@dokploy/server/utils/github-runners/budget";
 
 export const percentText = (value: number | null | undefined) =>
 	value === null || value === undefined ? "—" : `${Math.round(value)}%`;
+
+interface ValidationErrors {
+	formErrors: string[];
+	fieldErrors: Record<string, string[] | undefined>;
+}
+
+/**
+ * What a failed call says to the operator. tRPC turns an input the server
+ * refuses into the zod issues as JSON: the messages are read from the
+ * flattened errors the server adds instead.
+ */
+export const errorText = (
+	error: unknown,
+	fallback = "Something went wrong",
+) => {
+	const zod = (
+		error as { data?: { zodError?: ValidationErrors | null } } | null
+	)?.data?.zodError;
+	const messages = zod
+		? [
+				...zod.formErrors,
+				...Object.entries(zod.fieldErrors).flatMap(([field, list]) =>
+					(list ?? []).map((message) =>
+						message.toLowerCase().includes(field.toLowerCase())
+							? message
+							: `${field}: ${message}`,
+					),
+				),
+			]
+		: [];
+	if (messages.length) return messages.join(" · ");
+	return error instanceof Error && error.message ? error.message : fallback;
+};
 
 /** A typed whole number within bounds, or null while it is not one yet. */
 export const boundedNumber = (text: string, min: number, max?: number) => {

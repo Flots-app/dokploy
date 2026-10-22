@@ -37,6 +37,7 @@ import { api } from "@/utils/api";
 import { EditMachineDialog } from "./edit-machine";
 import {
 	elapsed,
+	errorText,
 	formatBytes,
 	formatCpus,
 	formatDuration,
@@ -267,6 +268,32 @@ const drainMessage = (machine: RunnerMachine, busy: number) => {
 	return `${action}: no new job, waiting for ${busy} running job${busy > 1 ? "s" : ""}${deadline}.`;
 };
 
+/** Machines left behind are flagged; the latest release shows no badge. */
+const RUNNER_BADGE = {
+	pending: { variant: "blue", label: "update pending" },
+	outdated: { variant: "orange", label: "outdated" },
+	unsupported: { variant: "red", label: "no longer supported" },
+} as const;
+
+const RunnerVersion = ({ machine }: { machine: RunnerMachine }) => {
+	const status = machine.runnerUpdate;
+	if (!status.installed) return null;
+	const badge =
+		status.state === "current" || status.state === "unknown"
+			? null
+			: RUNNER_BADGE[status.state];
+	return (
+		<span className="flex items-center gap-1.5">
+			runner {status.installed}
+			{badge && (
+				<Badge variant={badge.variant} title={status.message}>
+					{badge.label}
+				</Badge>
+			)}
+		</span>
+	);
+};
+
 const MachineAlerts = ({
 	machine,
 	busy,
@@ -280,9 +307,15 @@ const MachineAlerts = ({
 }) => {
 	const drain = drainMessage(machine, busy);
 	const admission = machine.observed?.admission;
+	const runner = machine.runnerUpdate;
 	return (
 		<>
 			{drain && <AlertBlock type="warning">{drain}</AlertBlock>}
+			{(runner.state === "outdated" || runner.state === "unsupported") && (
+				<AlertBlock type={runner.state === "unsupported" ? "error" : "warning"}>
+					{runner.message}
+				</AlertBlock>
+			)}
 			{machine.lastError && !drain && (
 				<AlertBlock type={machine.phase === "error" ? "error" : "warning"}>
 					{machine.lastError}
@@ -333,7 +366,7 @@ const MachineActions = ({
 			await utils.githubRunner.overview.invalidate();
 			toast.success(success);
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Action failed");
+			toast.error(errorText(error, "Action failed"));
 		}
 	};
 	const id = { githubRunnerNodeId: machine.githubRunnerNodeId };
@@ -483,9 +516,8 @@ const MachineFooter = ({
 			{busy}/{machine.resolvedMaxRunners} busy
 			{machine.maxRunners === 0 ? " (auto)" : ""}
 		</span>
-		{machine.observed?.runtime?.runnerVersion && (
-			<span>runner {machine.observed.runtime.runnerVersion}</span>
-		)}
+		<RunnerVersion machine={machine} />
+		{machine.runtimeUpdatePending && <span>runtime update pending</span>}
 		{machine.extraLabels.map((label) => (
 			<Badge key={label} variant="outline">
 				{label}

@@ -131,9 +131,11 @@ set -eu
 limactl edit --tty=false ${vm(vmName)} --cpus=${size.cpus} --memory=${shellQuote(size.memoryGiB)}${size.diskGb ? ` --disk=${size.diskGb}` : ""}
 `;
 
+/** Deletes the VM; the boot daemon no longer starts it. */
 export const macDeleteVmScript = (vmName: string) => `${prelude}
 set -eu
 name=${vm(vmName)}
+rm -f ${enabledFlag}
 if limactl list --format '{{.Status}}' "$name" >/dev/null 2>&1; then
 	limactl stop "$name" >/dev/null 2>&1 || true
 	limactl delete "$name"

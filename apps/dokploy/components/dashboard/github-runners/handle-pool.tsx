@@ -1,4 +1,5 @@
 import { runsOnExpression } from "@dokploy/server/utils/github-runners/routing";
+import { compareVersions } from "@dokploy/server/utils/github-runners/versions";
 import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import { Pencil, PlusIcon } from "lucide-react";
 import { useState } from "react";
@@ -41,7 +42,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/utils/api";
 import { parseLabels } from "./budget-values";
-import type { RunnerPool } from "./format";
+import { errorText, type RunnerPool } from "./format";
 import { labelFromName, parseGithubTarget } from "./github-links";
 import { AccessFields, RunnerGroupField, Step } from "./pool-access";
 import {
@@ -279,6 +280,26 @@ const RerunField = ({ form }: { form: PoolForm }) => (
 	/>
 );
 
+/** A pinned release older than the latest stops getting jobs 30 days later. */
+const PinnedBehind = ({
+	pinned,
+	latest,
+}: {
+	pinned: string;
+	latest: string | null;
+}) => {
+	if (!pinned.trim() || !latest || compareVersions(pinned, latest) >= 0) {
+		return null;
+	}
+	return (
+		<p className="text-xs text-orange-600 dark:text-orange-400">
+			actions/runner {latest} is out. GitHub stops queuing jobs on a runner not
+			updated within 30 days of a newer release: clear the field to follow the
+			latest one.
+		</p>
+	);
+};
+
 const AdvancedFields = ({
 	form,
 	pool,
@@ -335,6 +356,10 @@ const AdvancedFields = ({
 								Empty follows the latest actions/runner release (checked every 6
 								hours, rolled out without interrupting jobs).
 							</FormDescription>
+							<PinnedBehind
+								pinned={field.value ?? ""}
+								latest={pool?.latestRunnerVersion ?? null}
+							/>
 							<FormMessage />
 						</FormItem>
 					)}
@@ -470,9 +495,7 @@ const PoolFormContent = ({
 			);
 			onDone();
 		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Unable to save the pool",
-			);
+			toast.error(errorText(error, "Unable to save the pool"));
 		}
 	};
 
@@ -517,7 +540,7 @@ const PoolFormContent = ({
 					</div>
 				</form>
 			</Form>
-			{error && <AlertBlock type="error">{error.message}</AlertBlock>}
+			{error && <AlertBlock type="error">{errorText(error)}</AlertBlock>}
 			<DialogFooter>
 				<Button
 					type="submit"

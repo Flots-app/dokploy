@@ -11,7 +11,7 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { api } from "@/utils/api";
-import type { RunnerMachine } from "./format";
+import { errorText, type RunnerMachine } from "./format";
 
 /** Mounted only while the dialog is open: the presented key is read afresh. */
 const HostKeyForm = ({
@@ -47,9 +47,11 @@ const HostKeyForm = ({
 					Presented now: <code>{presented}</code>
 				</p>
 			)}
-			{read.error && <AlertBlock type="error">{read.error.message}</AlertBlock>}
+			{read.error && (
+				<AlertBlock type="error">{errorText(read.error)}</AlertBlock>
+			)}
 			{accept.error && (
-				<AlertBlock type="error">{accept.error.message}</AlertBlock>
+				<AlertBlock type="error">{errorText(accept.error)}</AlertBlock>
 			)}
 			<DialogFooter>
 				{!presented ? (

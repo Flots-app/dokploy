@@ -1,3 +1,4 @@
+import { MACHINE_NAME } from "@dokploy/server/utils/github-runners/setup-constants";
 import { Download, Loader2, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -27,7 +28,7 @@ import { CheckList } from "./add-machine";
 import { BudgetFields } from "./budget-fields";
 import { type BudgetValues, defaultBudget, parseLabels } from "./budget-values";
 import { downloadScript, readSetupCode } from "./enrollment-code";
-import type { RunnerMachine } from "./format";
+import { errorText, type RunnerMachine } from "./format";
 import { Step } from "./pool-access";
 import { CopyCode } from "./shared";
 
@@ -38,8 +39,6 @@ interface Enrolling {
 	name: string;
 	platform: "linux" | "macos";
 }
-
-const NAME = /^[a-z0-9][a-z0-9-]{0,23}$/;
 
 /** Step 1: what the machine is; Dokploy then generates its key and script. */
 const DescribeStep = ({
@@ -69,9 +68,7 @@ const DescribeStep = ({
 			await utils.githubRunner.overview.invalidate();
 			onStarted({ id: node.githubRunnerNodeId, name: node.name, platform });
 		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Unable to start the setup",
-			);
+			toast.error(errorText(error, "Unable to start the setup"));
 		}
 	};
 	return (
@@ -85,7 +82,7 @@ const DescribeStep = ({
 						value={name}
 						onChange={(event) => setName(event.target.value.toLowerCase())}
 					/>
-					{name && !NAME.test(name) && (
+					{name && !MACHINE_NAME.test(name) && (
 						<p className="text-xs text-destructive">
 							Lowercase letters, digits and hyphens, 24 characters at most.
 						</p>
@@ -125,7 +122,7 @@ const DescribeStep = ({
 			)}
 			<Button
 				onClick={() => void onStart()}
-				disabled={!NAME.test(name) || start.isPending}
+				disabled={!MACHINE_NAME.test(name) || start.isPending}
 				className="w-fit"
 			>
 				{start.isPending && <Loader2 className="size-4 animate-spin" />}
@@ -151,7 +148,7 @@ const ScriptStep = ({ enrolling }: { enrolling: Enrolling }) => {
 					: "It creates the dokploy-manager account (root through sudo, the machine is dedicated to the runners) and lets it log in over SSH with its own key only."
 			}
 		>
-			{error && <AlertBlock type="error">{error.message}</AlertBlock>}
+			{error && <AlertBlock type="error">{errorText(error)}</AlertBlock>}
 			{!data && !error && (
 				<Loader2 className="size-4 animate-spin text-muted-foreground" />
 			)}
@@ -320,7 +317,7 @@ const CodeStep = ({
 				<AddressFields target={target} defaultPort={target.parsed.port} />
 			)}
 			{complete.error && (
-				<AlertBlock type="error">{complete.error.message}</AlertBlock>
+				<AlertBlock type="error">{errorText(complete.error)}</AlertBlock>
 			)}
 			<Button
 				onClick={() => void onCheck()}
@@ -363,9 +360,7 @@ const FinishStep = ({
 			toast.success(`${enrolling.name} added: provisioning started`);
 			onDone();
 		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Unable to add the machine",
-			);
+			toast.error(errorText(error, "Unable to add the machine"));
 		}
 	};
 	return (

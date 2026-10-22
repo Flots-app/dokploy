@@ -4,6 +4,7 @@ import { db } from "@dokploy/server/db";
 import {
 	type GithubRunnerAppliedConfig,
 	type GithubRunnerCleanup,
+	type GithubRunnerDrain,
 	type GithubRunnerJobRecord,
 	type GithubRunnerNode,
 	type GithubRunnerNodeObservation,
@@ -31,7 +32,10 @@ import {
 	sql,
 } from "drizzle-orm";
 import ssh2 from "ssh2";
-import { sequentially } from "../service-migration/concurrency";
+import {
+	mapWithConcurrency,
+	sequentially,
+} from "../service-migration/concurrency";
 import {
 	effectiveBudget,
 	formatBytes,
@@ -71,6 +75,7 @@ import {
 	type GithubRunnerAuth,
 	type GithubRunnerClient,
 	isPermanentGithubError,
+	listRunnerReleases,
 	type RunnerRelease,
 	resolveLimaRelease,
 	resolveRunnerRelease,
@@ -108,6 +113,7 @@ import {
 	decideRouting,
 	fallbackRunsOn,
 	REROUTE_MIN_QUEUED_MS,
+	ROUTING_RETRY_MS,
 	routingSyncDue,
 	waitsForPool,
 } from "./routing";
@@ -124,6 +130,7 @@ import {
 	openNodeSession,
 	sharedNodeSession,
 } from "./ssh";
+import type { RunnerReleaseInfo } from "./versions";
 
 const GiB = 1024 ** 3;
 export const TICK_MS = 5_000;
@@ -175,6 +182,13 @@ interface ControllerState {
 	/** Repositories a pool routes jobs for, refreshed hourly. */
 	repositories: Map<string, { at: number; names: string[] }>;
 	lastRerouteScan: Map<string, number>;
+	/** Pools whose reroute scan runs, in the background. */
+	rerouteScans: Set<string>;
+	/** Machines that did not answer: tried again in the background, not by the tick. */
+	reconnects: Map<
+		string,
+		{ failures: number; retryAt: number; probing: boolean }
+	>;
 	lastBenchmarkAt: Map<string, number>;
 	/** Free space seen by the last ticks, for the fill rate (VM disk on a Mac). */
 	diskSamples: Map<string, { host: DiskSample[]; vm: DiskSample[] }>;
@@ -186,6 +200,9 @@ interface ControllerState {
 	rerun: boolean;
 	lastPurge: number;
 	pendingTick: NodeJS.Timeout | null;
+	/** actions/runner releases, to tell machines left on an older one. */
+	runnerReleases: { at: number; releases: RunnerReleaseInfo[] } | null;
+	runnerReleasesTriedAt: number;
 }
 
 const shared = globalThis as { __dokployGithubRunners?: ControllerState };
@@ -204,6 +221,8 @@ shared.__dokployGithubRunners ??= {
 	poolRunners: new Map(),
 	repositories: new Map(),
 	lastRerouteScan: new Map(),
+	rerouteScans: new Set(),
+	reconnects: new Map(),
 	lastBenchmarkAt: new Map(),
 	diskSamples: new Map(),
 	lastCleanups: new Map(),
@@ -213,10 +232,16 @@ shared.__dokployGithubRunners ??= {
 	rerun: false,
 	lastPurge: 0,
 	pendingTick: null,
+	runnerReleases: null,
+	runnerReleasesTriedAt: 0,
 };
 const state: ControllerState = shared.__dokployGithubRunners;
 // State kept across a hot reload predates fields added since.
 state.drainRetryAt ??= new Map();
+state.runnerReleases ??= null;
+state.runnerReleasesTriedAt ??= 0;
+state.rerouteScans ??= new Set();
+state.reconnects ??= new Map();
 const OWNER = state.owner;
 
 type NodeWithRelations = GithubRunnerNode & {
@@ -494,6 +519,8 @@ const runTask = (
 				throw new Error("Another Dokploy instance is working on this machine");
 			const node = await loadRunnerNode(nodeId);
 			session = await connect(node);
+			// It answers: the tick observes it again without waiting for a retry.
+			state.reconnects.delete(nodeId);
 			const driver = createNodeDriver(session, node);
 			await task({ node, driver, session, log });
 		} catch (error) {
@@ -938,6 +965,11 @@ export const provisionRunnerNode = async (
 			`Run the setup script on ${node.name} and paste its code first`,
 		);
 	}
+	// Refused before anything is written: the machine keeps its phase and the
+	// running operation is not superseded.
+	if (tasks.has(nodeId)) {
+		throw new Error("Another task is running on this machine");
+	}
 	const operation = await createOperation(
 		node,
 		"provision",
@@ -988,11 +1020,21 @@ export const provisionRunnerNode = async (
 		},
 	);
 	if (!started) {
+		// A task started while the operation was recorded: back to where it was.
 		await finishOperation(
 			operation.githubRunnerOperationId,
 			"error",
 			"Another task is running on this machine",
 		);
+		await db
+			.update(githubRunnerNodes)
+			.set({ phase: node.phase, lastError: node.lastError })
+			.where(
+				and(
+					eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+					eq(githubRunnerNodes.phase, "provisioning"),
+				),
+			);
 		throw new Error("Another task is running on this machine");
 	}
 	return operation;
@@ -1381,25 +1423,59 @@ const startDrainCompletion = (nodeId: string) => {
 	);
 };
 
-const completeDrain = async ({ node, driver }: TaskContext) => {
+/**
+ * The drain a completion was started for, as long as it is the machine's
+ * current one: the operator may enable the machine again, or start another
+ * drain, while the completion stops or deletes the VM.
+ */
+export const currentDrain = (nodeId: string, drain: GithubRunnerDrain) =>
+	and(
+		eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+		eq(githubRunnerNodes.phase, "draining"),
+		sql`${githubRunnerNodes.drain}->>'requestedAt' = ${drain.requestedAt}`,
+		sql`${githubRunnerNodes.drain}->>'operationId' IS NOT DISTINCT FROM ${drain.operationId}`,
+	);
+
+/** Ends the drain unless the operator changed course meanwhile; false then. */
+const endDrain = async (
+	nodeId: string,
+	drain: GithubRunnerDrain,
+	phase: "ready" | "stopped",
+) =>
+	(
+		await db
+			.update(githubRunnerNodes)
+			.set({ phase, drain: null })
+			.where(currentDrain(nodeId, drain))
+			.returning({ id: githubRunnerNodes.githubRunnerNodeId })
+	).length > 0;
+
+export const completeDrain = async ({ node, driver }: TaskContext) => {
 	const nodeId = node.githubRunnerNodeId;
 	const drain = node.drain;
 	if (!drain) return;
 	const operationId = drain.operationId;
 	const log = (line: string) => appendOperationLog(operationId, line);
+	const stopVm = () =>
+		driver.host(macStopVmScript(node.vmName), {
+			timeoutMs: 5 * 60_000,
+			label: "VM stop",
+		});
 	if (drain.reason === "disable") {
 		if (node.platform === "macos") {
 			await log(`All runners stopped; shutting VM ${node.vmName} down`);
-			await driver.host(macStopVmScript(node.vmName), {
-				timeoutMs: 5 * 60_000,
-				label: "VM stop",
-			});
+			await stopVm();
+		}
+		if (!(await endDrain(nodeId, drain, "stopped"))) {
+			const fresh = await loadRunnerNode(nodeId);
+			await log("The machine was enabled again meanwhile: it is not disabled");
+			// The VM was just stopped: started again for the jobs.
+			if (fresh.enabled && node.platform === "macos") {
+				await startVm(driver, node, log);
+			}
+			return;
 		}
 		await log("Machine disabled: it takes no job until it is enabled again");
-		await db
-			.update(githubRunnerNodes)
-			.set({ phase: "stopped", drain: null })
-			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 		await finishOperation(operationId, "done");
 		return;
 	}
@@ -1414,16 +1490,12 @@ const completeDrain = async ({ node, driver }: TaskContext) => {
 			await startVm(driver, node, log);
 		}
 		const fresh = await loadRunnerNode(nodeId);
-		await db
-			.update(githubRunnerNodes)
-			.set({ phase: fresh.enabled ? "ready" : "stopped", drain: null })
-			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-		if (!fresh.enabled && node.platform === "macos") {
-			await driver.host(macStopVmScript(node.vmName), {
-				timeoutMs: 5 * 60_000,
-				label: "VM stop",
-			});
+		if (!(await endDrain(nodeId, drain, fresh.enabled ? "ready" : "stopped"))) {
+			// Another drain took over: it decides what the VM does next.
+			await log("New budget applied; another action took over the machine");
+			return;
 		}
+		if (!fresh.enabled && node.platform === "macos") await stopVm();
 		await log("New budget applied");
 		await finishOperation(operationId, "done");
 		return;
@@ -1436,9 +1508,12 @@ const completeDrain = async ({ node, driver }: TaskContext) => {
 			`Could not unregister the runners (${error instanceof Error ? error.message : String(error)}); GitHub removes them once they stay offline`,
 		),
 	);
+	// Set once the machine no longer runs what Dokploy installed.
+	let uninstalled = false;
 	if (drain.uninstall) {
 		if (node.platform === "macos" && node.applied?.vmCreatedByDokploy) {
 			await log(`Deleting VM ${node.vmName}`);
+			uninstalled = true;
 			await driver.host(macDeleteVmScript(node.vmName), {
 				timeoutMs: 10 * 60_000,
 				label: "VM deletion",
@@ -1453,6 +1528,7 @@ const completeDrain = async ({ node, driver }: TaskContext) => {
 			} else {
 				if (vm && vm !== "Running") await startVm(driver, node, log);
 				await log("Uninstalling the runner runtime");
+				uninstalled = true;
 				await driver.guest(`${RUNNERCTL} uninstall`, {
 					timeoutMs: 10 * 60_000,
 					label: "Runtime removal",
@@ -1463,23 +1539,35 @@ const completeDrain = async ({ node, driver }: TaskContext) => {
 				await log(
 					`VM ${node.vmName} was not created by Dokploy: it is kept, stopped`,
 				);
-				await driver.host(macStopVmScript(node.vmName), {
-					timeoutMs: 5 * 60_000,
-					label: "VM stop",
-				});
+				await stopVm();
 			}
 		}
 	} else if (node.platform === "macos") {
-		await driver.host(macStopVmScript(node.vmName), {
-			timeoutMs: 5 * 60_000,
-			label: "VM stop",
-		});
+		await stopVm();
+	}
+	const removed = await db
+		.delete(githubRunnerNodes)
+		.where(currentDrain(nodeId, drain))
+		.returning({ id: githubRunnerNodes.githubRunnerNodeId });
+	if (!removed.length) {
+		// The removal was cancelled (or replaced) while it ran: the machine stays.
+		await log("The removal was cancelled meanwhile: the machine is kept");
+		if (uninstalled) {
+			// Nothing is left to run jobs: it takes a new provisioning.
+			await db
+				.update(githubRunnerNodes)
+				.set({
+					applied: null,
+					phase: sql`CASE WHEN ${githubRunnerNodes.phase} = 'draining' THEN ${githubRunnerNodes.phase} ELSE 'error'::"githubRunnerNodePhase" END`,
+					lastError:
+						"The removal was cancelled after the runtime was uninstalled: provision the machine again",
+				})
+				.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		}
+		return;
 	}
 	await log("Machine removed");
 	await finishOperation(operationId, "done");
-	await db
-		.delete(githubRunnerNodes)
-		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 };
 
 // ------------------------------------------------------------- the tick
@@ -1519,13 +1607,61 @@ const markUnreachable = async (node: GithubRunnerNode, error: unknown) => {
 
 const unreachable = new Set<string>();
 
+const RECONNECT_MIN_MS = 10_000;
+const RECONNECT_MAX_MS = 60_000;
+
+/** How long a machine that failed this many times in a row waits for the next try. */
+export const reconnectDelay = (failures: number) =>
+	Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** Math.max(0, failures - 1));
+
+/**
+ * Tries a machine that did not answer again, outside the tick: an SSH timeout
+ * (15 seconds) would otherwise hold every tick of every pool. Once it answers,
+ * the next tick observes it as usual.
+ */
+const retryUnreachable = (node: NodeWithRelations) => {
+	const nodeId = node.githubRunnerNodeId;
+	const backoff = state.reconnects.get(nodeId);
+	if (!backoff || backoff.probing || Date.now() < backoff.retryAt) return;
+	backoff.probing = true;
+	void (async () => {
+		let session: NodeSession | null = null;
+		try {
+			session = await connect(node);
+			await createNodeDriver(session, node).probe();
+			state.reconnects.delete(nodeId);
+			requestTick();
+		} catch (error) {
+			backoff.failures++;
+			backoff.retryAt = Date.now() + reconnectDelay(backoff.failures);
+			await markUnreachable(node, error).catch(() => undefined);
+		} finally {
+			session?.close();
+			backoff.probing = false;
+		}
+	})();
+};
+
+/** After the operator fixed a machine (its host key): tried at the next tick. */
+export const retryRunnerNodeNow = (nodeId: string) => {
+	const backoff = state.reconnects.get(nodeId);
+	if (backoff) backoff.retryAt = 0;
+	requestTick();
+};
+
 const observeNode = async (
 	node: NodeWithRelations,
 ): Promise<Observation | null> => {
-	unreachable.delete(node.githubRunnerNodeId);
-	if (tasks.has(node.githubRunnerNodeId)) return null;
-	if (!(await acquireLease(node.githubRunnerNodeId, TICK_LEASE_MS)))
+	const nodeId = node.githubRunnerNodeId;
+	if (state.reconnects.has(nodeId)) {
+		// Still unreachable for detectLostJobs until it answers again.
+		unreachable.add(nodeId);
+		retryUnreachable(node);
 		return null;
+	}
+	unreachable.delete(nodeId);
+	if (tasks.has(nodeId)) return null;
+	if (!(await acquireLease(nodeId, TICK_LEASE_MS))) return null;
 	let session: NodeSession | null = null;
 	try {
 		session = await connect(node);
@@ -1535,8 +1671,13 @@ const observeNode = async (
 	} catch (error) {
 		session?.close();
 		await markUnreachable(node, error);
-		await releaseLease(node.githubRunnerNodeId);
-		unreachable.add(node.githubRunnerNodeId);
+		await releaseLease(nodeId);
+		unreachable.add(nodeId);
+		state.reconnects.set(nodeId, {
+			failures: 1,
+			retryAt: Date.now() + reconnectDelay(1),
+			probing: false,
+		});
 		return null;
 	}
 };
@@ -2315,11 +2456,23 @@ const actOnNode = async (
 				}
 			}
 
+			// Kept out of the planning: a machine whose environment or limits
+			// cannot be written still runs, drains and cleans its disk.
+			const maintain = async (what: string, action: () => Promise<void>) => {
+				try {
+					await action();
+				} catch (error) {
+					lastError = `${what}: ${error instanceof Error ? error.message : String(error)}`;
+				}
+			};
 			const envHash = environmentHash(node.pool);
 			if (node.applied && node.applied.envHash !== envHash) {
-				await writeEnvironment(driver, node.pool);
-				node.applied = { ...node.applied, envHash };
-				recordEvent(events, "Runner environment updated");
+				const applied = node.applied;
+				await maintain("Runner environment not updated", async () => {
+					await writeEnvironment(driver, node.pool);
+					node.applied = { ...applied, envHash };
+					recordEvent(events, "Runner environment updated");
+				});
 			}
 			if (
 				node.platform === "linux" &&
@@ -2327,16 +2480,19 @@ const actOnNode = async (
 				(node.applied.cpuPercent !== node.cpuPercent ||
 					node.applied.memoryPercent !== node.memoryPercent)
 			) {
-				await applySliceLimits(driver, node, host);
-				node.applied = {
-					...node.applied,
-					cpuPercent: node.cpuPercent,
-					memoryPercent: node.memoryPercent,
-				};
-				recordEvent(
-					events,
-					`Budget applied: ${node.cpuPercent}% CPU, ${node.memoryPercent}% memory`,
-				);
+				const applied = node.applied;
+				await maintain("Budget not applied", async () => {
+					await applySliceLimits(driver, node, host);
+					node.applied = {
+						...applied,
+						cpuPercent: node.cpuPercent,
+						memoryPercent: node.memoryPercent,
+					};
+					recordEvent(
+						events,
+						`Budget applied: ${node.cpuPercent}% CPU, ${node.memoryPercent}% memory`,
+					);
+				});
 			}
 
 			// Admission: the host disk reserve (the Mac APFS volume on macOS).
@@ -2629,6 +2785,9 @@ const REPOSITORIES_TTL_MS = 60 * 60_000;
 const REROUTE_SCAN_EVERY_MS = 60_000;
 const REROUTE_FORCE_CANCEL_MS = 3 * 60_000;
 const REROUTE_VERIFY_AFTER_MS = 60_000;
+const REROUTE_SCAN_CONCURRENCY = 4;
+/** Failures GitHub may heal from after which a scan stops until the next one. */
+const REROUTE_SCAN_MAX_FAILURES = 3;
 
 /**
  * A machine whose runners take jobs: enabled, provisioned, reachable, above its
@@ -2654,14 +2813,37 @@ const routingChanged = (
  * Publishes where the jobs of a pool go: its runners while at least one is ON,
  * the fallback otherwise. Runs after every tick, for every pool with routing.
  */
-const routePool = async (pool: GithubRunnerPool) => {
+export const routePool = async (pool: GithubRunnerPool) => {
 	const poolId = pool.githubRunnerPoolId;
 	const client = await poolClient(pool);
 	const variable = pool.routingVariable;
+	const now = Date.now();
 	if (!variable) {
 		// Routing turned off: the variable goes, and workflows use their default.
-		if (pool.routing?.variable) {
-			await client.deleteVariable(pool.routing.variable).catch(() => undefined);
+		// The routing state stays, with the error, until GitHub deleted it.
+		const previous = pool.routing;
+		if (previous?.variable) {
+			const since = now - Date.parse(previous.attemptedAt ?? "1970-01-01");
+			if (previous.error && since < ROUTING_RETRY_MS) return;
+			const error = await client
+				.deleteVariable(previous.variable)
+				.then(() => null)
+				.catch((failure: unknown) =>
+					failure instanceof Error ? failure.message : String(failure),
+				);
+			if (error) {
+				await db
+					.update(githubRunnerPools)
+					.set({
+						routing: {
+							...previous,
+							attemptedAt: new Date(now).toISOString(),
+							error: `Cannot delete ${previous.variable}: ${error}`,
+						},
+					})
+					.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+				return;
+			}
 		}
 		await db
 			.update(githubRunnerPools)
@@ -2669,7 +2851,6 @@ const routePool = async (pool: GithubRunnerPool) => {
 			.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
 		return;
 	}
-	const now = Date.now();
 	const nodes = await db.query.githubRunnerNodes.findMany({
 		where: eq(githubRunnerNodes.githubRunnerPoolId, poolId),
 	});
@@ -2687,13 +2868,20 @@ const routePool = async (pool: GithubRunnerPool) => {
 		fallbackLabels: pool.fallbackLabels,
 		now,
 	});
-	if (pool.routing?.variable && pool.routing.variable !== variable) {
-		await client.deleteVariable(pool.routing.variable).catch(() => undefined);
-	}
 	if (routingSyncDue(routing, variable, now)) {
 		const at = new Date(now).toISOString();
 		try {
 			await client.setVariable(variable, routing.value);
+			// Renamed: the previous variable goes once the new one holds the value.
+			// Until then the sync counts as failed, so it is tried again.
+			const previous = routing.variable;
+			if (previous && previous !== variable) {
+				await client.deleteVariable(previous).catch((error: unknown) => {
+					throw new Error(
+						`${variable} is written, but ${previous} could not be deleted: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				});
+			}
 			routing = {
 				...routing,
 				variable,
@@ -2725,10 +2913,21 @@ const routePool = async (pool: GithubRunnerPool) => {
 	if (
 		routing.target === "fallback" &&
 		routing.syncedValue === routing.value &&
-		now - (state.lastRerouteScan.get(poolId) ?? 0) >= REROUTE_SCAN_EVERY_MS
+		now - (state.lastRerouteScan.get(poolId) ?? 0) >= REROUTE_SCAN_EVERY_MS &&
+		!state.rerouteScans.has(poolId)
 	) {
 		state.lastRerouteScan.set(poolId, now);
-		await rerouteQueuedRuns(pool, client);
+		state.rerouteScans.add(poolId);
+		// Outside the tick: one call per private repository, which a slow or
+		// failing GitHub could stretch to minutes.
+		void rerouteQueuedRuns(pool, client)
+			.catch((error) =>
+				console.error(
+					`[github-runners] ${pool.name}: reroute scan failed`,
+					error,
+				),
+			)
+			.finally(() => state.rerouteScans.delete(poolId));
 	}
 	await advanceReroutes(pool, client);
 };
@@ -2751,7 +2950,7 @@ const poolRepositories = async (
  * ON, once nothing else of the run is still running: their re-run reads the
  * variable again and lands on the fallback runners.
  */
-const rerouteQueuedRuns = async (
+export const rerouteQueuedRuns = async (
 	pool: GithubRunnerPool,
 	client: GithubRunnerClient,
 ) => {
@@ -2767,44 +2966,78 @@ const rerouteQueuedRuns = async (
 			})
 		).map((row) => `${row.repository}#${row.runId}`),
 	);
-	await sequentially(repositories, async (repository) => {
-		const runs = await client.listQueuedRuns(repository).catch(() => []);
-		await sequentially(runs, async (run) => {
-			const runId = String(run.id);
-			if (known.has(`${repository}#${runId}`)) return;
-			const jobs = await client.listRunJobs(repository, runId).catch(() => []);
-			const waiting = jobs.filter(
-				(job) =>
-					job.status === "queued" &&
-					waitsForPool(job.labels, pool.labels) &&
-					Date.now() - Date.parse(job.createdAt ?? run.createdAt) >=
-						REROUTE_MIN_QUEUED_MS,
-			);
-			// Cancelling stops the whole run: wait for the jobs that do run.
-			if (!waiting.length || jobs.some((job) => job.status === "in_progress")) {
-				return;
-			}
-			try {
-				await client.cancelRun(repository, runId);
-				await db.insert(githubRunnerReroutes).values({
-					githubRunnerPoolId: pool.githubRunnerPoolId,
-					repository,
-					runId,
-					runAttempt: run.runAttempt,
-					workflow: run.workflow,
-					note: `${waiting.length} job(s) waited for the pool`,
+	// GitHub down or rate limited: the scan stops after a few failures instead
+	// of waiting out a timeout for every repository.
+	const failures: string[] = [];
+	let transient = 0;
+	const failed = (what: string, error: unknown) => {
+		failures.push(
+			`${what}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		if (!isPermanentGithubError(error)) transient++;
+	};
+	await mapWithConcurrency(
+		repositories,
+		REROUTE_SCAN_CONCURRENCY,
+		async (repository) => {
+			if (transient >= REROUTE_SCAN_MAX_FAILURES) return;
+			const runs = await client
+				.listQueuedRuns(repository)
+				.catch((error: unknown) => {
+					failed(repository, error);
+					return [];
 				});
-				console.log(
-					`[github-runners] ${pool.name}: rerouting ${repository} run ${runId}`,
+			await sequentially(runs, async (run) => {
+				const runId = String(run.id);
+				if (known.has(`${repository}#${runId}`)) return;
+				if (transient >= REROUTE_SCAN_MAX_FAILURES) return;
+				const jobs = await client
+					.listRunJobs(repository, runId)
+					.catch((error: unknown) => {
+						failed(`${repository} run ${runId}`, error);
+						return [];
+					});
+				const waiting = jobs.filter(
+					(job) =>
+						job.status === "queued" &&
+						waitsForPool(job.labels, pool.labels) &&
+						Date.now() - Date.parse(job.createdAt ?? run.createdAt) >=
+							REROUTE_MIN_QUEUED_MS,
 				);
-			} catch (error) {
-				console.error(
-					`[github-runners] ${pool.name}: cannot reroute ${repository} run ${runId}`,
-					error,
-				);
-			}
-		});
-	});
+				// Cancelling stops the whole run: wait for the jobs that do run.
+				if (
+					!waiting.length ||
+					jobs.some((job) => job.status === "in_progress")
+				) {
+					return;
+				}
+				try {
+					await client.cancelRun(repository, runId);
+					await db.insert(githubRunnerReroutes).values({
+						githubRunnerPoolId: pool.githubRunnerPoolId,
+						repository,
+						runId,
+						runAttempt: run.runAttempt,
+						workflow: run.workflow,
+						note: `${waiting.length} job(s) waited for the pool`,
+					});
+					console.log(
+						`[github-runners] ${pool.name}: rerouting ${repository} run ${runId}`,
+					);
+				} catch (error) {
+					console.error(
+						`[github-runners] ${pool.name}: cannot reroute ${repository} run ${runId}`,
+						error,
+					);
+				}
+			});
+		},
+	);
+	if (failures.length) {
+		console.error(
+			`[github-runners] ${pool.name}: the reroute scan could not read ${failures.length} item(s)${transient >= REROUTE_SCAN_MAX_FAILURES ? " and stopped early" : ""}; first: ${failures[0]}`,
+		);
+	}
 };
 
 /** Re-runs the cancelled runs, then checks their jobs left the pool. */
@@ -2998,13 +3231,19 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
 	if (failure) throw failure;
 };
 
-/** Removes the routing variable of a pool being deleted. */
+/**
+ * Removes the routing variable of a pool being deleted. A failure does not
+ * keep the pool (its credentials may be gone): it is returned for the operator.
+ */
 export const clearPoolRouting = async (pool: GithubRunnerPool) => {
 	const variable = pool.routing?.variable ?? pool.routingVariable;
-	if (!variable) return;
-	await (await poolClient(pool))
-		.deleteVariable(variable)
-		.catch(() => undefined);
+	if (!variable) return null;
+	try {
+		await (await poolClient(pool)).deleteVariable(variable);
+		return null;
+	} catch (error) {
+		return `The Actions variable ${variable} could not be deleted (${error instanceof Error ? error.message : String(error)}): delete it on GitHub, or the workflows keep reading it.`;
+	}
 };
 
 const LIVE_SLOT = new Set(["active", "activating", "reloading"]);
@@ -3109,6 +3348,39 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 	}
 };
 
+const RUNNER_RELEASES_TTL_MS = 6 * 60 * 60_000;
+const RUNNER_RELEASES_RETRY_MS = 15 * 60_000;
+
+/** Refreshes the known actions/runner releases in the background, every 6 hours. */
+const refreshRunnerReleases = (pools: GithubRunnerPool[]) => {
+	const known = state.runnerReleases;
+	if (known && Date.now() - known.at < RUNNER_RELEASES_TTL_MS) return;
+	if (Date.now() - state.runnerReleasesTriedAt < RUNNER_RELEASES_RETRY_MS) {
+		return;
+	}
+	state.runnerReleasesTriedAt = Date.now();
+	void (async () => {
+		// Authenticated when a pool allows it: the anonymous quota is shared by
+		// every tool behind the same public IP.
+		const pool = pools.find(
+			(item) => new URL(item.apiUrl).hostname === "api.github.com",
+		);
+		const authorization = pool
+			? await (await poolClient(pool)).authorization().catch(() => undefined)
+			: undefined;
+		const releases = await listRunnerReleases({ authorization });
+		state.runnerReleases = { at: Date.now(), releases };
+	})().catch((error) =>
+		console.error(
+			"GitHub runners: unable to list the actions/runner releases",
+			error instanceof Error ? error.message : error,
+		),
+	);
+};
+
+/** The actions/runner releases known to the controller, newest first or not. */
+export const knownRunnerReleases = () => state.runnerReleases?.releases ?? [];
+
 const tickGithubRunners = async () => {
 	if (state.running) {
 		state.rerun = true;
@@ -3119,6 +3391,10 @@ const tickGithubRunners = async () => {
 		const nodes = (await db.query.githubRunnerNodes.findMany({
 			with: { pool: true, sshKey: { columns: { privateKey: true } } },
 		})) as NodeWithRelations[];
+		const ids = new Set(nodes.map((node) => node.githubRunnerNodeId));
+		for (const nodeId of state.reconnects.keys()) {
+			if (!ids.has(nodeId)) state.reconnects.delete(nodeId);
+		}
 		const byPool = new Map<string, NodeWithRelations[]>();
 		for (const node of nodes) {
 			if (
@@ -3137,6 +3413,7 @@ const tickGithubRunners = async () => {
 		const pools = new Map(
 			nodes.map((node) => [node.githubRunnerPoolId, node.pool]),
 		);
+		refreshRunnerReleases([...pools.values()]);
 		await Promise.all(
 			[...pools.values()].map((pool) =>
 				recoverInterruptedJobs(pool).catch((error) =>

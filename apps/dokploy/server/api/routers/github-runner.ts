@@ -177,22 +177,19 @@ export const githubRunnerRouter = createTRPCRouter({
 	removePool: remove
 		.input(apiFindGithubRunnerPool)
 		.mutation(async ({ input, ctx }) => {
-			const pool = await findGithubRunnerPool(
-				input.githubRunnerPoolId,
-				ctx.session.activeOrganizationId,
-			);
-			await removeGithubRunnerPool(
+			// Checks the pool belongs to the organization before anything goes.
+			const { name, warning } = await removeGithubRunnerPool(
 				input.githubRunnerPoolId,
 				ctx.session.activeOrganizationId,
 			).catch(fail);
 			await audit(ctx, {
 				action: "delete",
 				resourceType: "githubRunner",
-				resourceId: pool.githubRunnerPoolId,
-				resourceName: pool.name,
+				resourceId: input.githubRunnerPoolId,
+				resourceName: name,
 				metadata: { kind: "pool" },
 			});
-			return true;
+			return { warning };
 		}),
 
 	checkMachine: create

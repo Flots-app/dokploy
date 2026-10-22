@@ -26,11 +26,14 @@ import {
 	checkRunnerMachine,
 	clearPoolRouting,
 	generateMachineKey,
+	knownRunnerReleases,
+	retryRunnerNodeNow,
 } from "@dokploy/server/utils/github-runners/controller";
 import {
 	diskThresholds,
 	vmDiskThresholds,
 } from "@dokploy/server/utils/github-runners/disk";
+import { envKeys } from "@dokploy/server/utils/github-runners/env";
 import {
 	createGithubRunnerClient,
 	findAppInstallation,
@@ -39,6 +42,7 @@ import {
 } from "@dokploy/server/utils/github-runners/github-api";
 import { nextMachine } from "@dokploy/server/utils/github-runners/placement";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
+import { RUNTIME_VERSION } from "@dokploy/server/utils/github-runners/runtime";
 import {
 	MANAGER_ACCOUNT,
 	machineSetupScript,
@@ -46,6 +50,10 @@ import {
 	publicKeyFingerprint,
 	type SetupCode,
 } from "@dokploy/server/utils/github-runners/setup";
+import {
+	latestRunnerRelease,
+	runnerVersionStatus,
+} from "@dokploy/server/utils/github-runners/versions";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, ne } from "drizzle-orm";
 import type { z } from "zod";
@@ -79,11 +87,7 @@ const publicPool = (pool: GithubRunnerPool) => {
 		...rest,
 		hasToken: Boolean(token),
 		hasAppPrivateKey: Boolean(appPrivateKey),
-		runnerEnvKeys: runnerEnv
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line && !line.startsWith("#"))
-			.map((line) => line.split("=")[0]),
+		runnerEnvKeys: envKeys(runnerEnv),
 	};
 };
 
@@ -396,10 +400,11 @@ export const removeGithubRunnerPool = async (
 			message: "Remove the machines of this pool first",
 		});
 	}
-	await clearPoolRouting(pool);
+	const warning = await clearPoolRouting(pool);
 	await db
 		.delete(githubRunnerPools)
 		.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+	return { name: pool.name, warning };
 };
 
 /** Two pools of the same target cannot publish to the same variable. */
@@ -723,6 +728,7 @@ export const resetGithubRunnerHostKey = async (
 		.update(githubRunnerNodes)
 		.set({ hostKeyFingerprint: fingerprint })
 		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	retryRunnerNodeNow(nodeId);
 };
 
 /** Everything the runners page shows, refreshed every few seconds. */
@@ -759,6 +765,8 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 				})
 			: [],
 	]);
+	const releases = knownRunnerReleases();
+	const now = Date.now();
 	return pools.map((pool) => {
 		const poolNodes = nodes
 			.filter((node) => node.githubRunnerPoolId === pool.githubRunnerPoolId)
@@ -790,10 +798,26 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 							(operation) =>
 								operation.githubRunnerNodeId === node.githubRunnerNodeId,
 						) ?? null,
+					/** Whether the actions/runner release it runs is still accepted. */
+					runnerUpdate: runnerVersionStatus({
+						installed: node.observed?.runtime?.runnerVersion ?? null,
+						releases,
+						pinned: pool.runnerVersion,
+						updating:
+							node.enabled &&
+							(node.phase === "ready" || node.phase === "draining"),
+						now,
+					}),
+					/** Dokploy's runtime on the machine is older than this Dokploy's. */
+					runtimeUpdatePending:
+						(node.observed?.runtime?.version ?? RUNTIME_VERSION) <
+						RUNTIME_VERSION,
 				};
 			});
 		return {
 			...publicPool(pool),
+			/** Latest actions/runner release, once the controller listed them. */
+			latestRunnerVersion: latestRunnerRelease(releases)?.version ?? null,
 			/** Runs sent to the fallback in the last week, latest first. */
 			reroutes: reroutes
 				.filter((row) => row.githubRunnerPoolId === pool.githubRunnerPoolId)

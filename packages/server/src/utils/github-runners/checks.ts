@@ -31,19 +31,6 @@ const check = (
 	message: string,
 ): NodeCheck => ({ id, label, status, message });
 
-export const versionAtLeast = (version: string | null, minimum: string) => {
-	if (!version) return false;
-	const parts = version.replace(/^v/, "").split(/[.-]/).map(Number);
-	const wanted = minimum.split(".").map(Number);
-	for (let index = 0; index < wanted.length; index++) {
-		const value = parts[index] ?? 0;
-		const target = wanted[index] ?? 0;
-		if (Number.isNaN(value)) return false;
-		if (value !== target) return value > target;
-	}
-	return true;
-};
-
 const budgetChecks = (
 	platform: "linux" | "macos",
 	host: { cpus: number; memoryBytes: number },

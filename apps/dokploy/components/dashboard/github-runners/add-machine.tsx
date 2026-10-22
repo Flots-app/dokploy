@@ -1,3 +1,4 @@
+import { MACHINE_NAME } from "@dokploy/server/utils/github-runners/setup-constants";
 import {
 	AlertTriangle,
 	CheckCircle2,
@@ -33,7 +34,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type RouterOutputs } from "@/utils/api";
 import { BudgetFields } from "./budget-fields";
 import { type BudgetValues, defaultBudget, parseLabels } from "./budget-values";
-import { formatBytes, formatCpus } from "./format";
+import { errorText, formatBytes, formatCpus } from "./format";
 import { EnrollMachine } from "./machine-enrollment";
 import { GenerateKeyButton, MachinePrep } from "./machine-setup";
 import { NumberInput } from "./shared";
@@ -49,8 +50,6 @@ interface Connection {
 	sshKeyId: string;
 	vmName: string;
 }
-
-const NAME = /^[a-z0-9][a-z0-9-]{0,23}$/;
 
 const CheckIcon = ({ status }: { status: string }) =>
 	status === "pass" ? (
@@ -97,7 +96,7 @@ const ConnectionFields = ({
 							set({ name: event.target.value.toLowerCase() })
 						}
 					/>
-					{value.name && !NAME.test(value.name) && (
+					{value.name && !MACHINE_NAME.test(value.name) && (
 						<p className="text-xs text-destructive">
 							Lowercase letters, digits and hyphens, 24 characters at most.
 						</p>
@@ -284,7 +283,7 @@ const connectionKey = (connection: Connection) =>
 
 /** Mounted only while the dialog is open, so each opening starts afresh. */
 const isConnectionReady = (connection: Connection) =>
-	NAME.test(connection.name) &&
+	MACHINE_NAME.test(connection.name) &&
 	Boolean(connection.host.trim()) &&
 	Boolean(connection.username.trim()) &&
 	Boolean(connection.sshKeyId) &&
@@ -309,7 +308,7 @@ const budgetInput = (budget: BudgetValues) => ({
 });
 
 const ErrorBlock = ({ error }: { error: { message: string } | null }) =>
-	error ? <AlertBlock type="error">{error.message}</AlertBlock> : null;
+	error ? <AlertBlock type="error">{errorText(error)}</AlertBlock> : null;
 
 const PendingButton = ({
 	pending,
@@ -381,9 +380,7 @@ const AddMachineForm = ({
 			toast.success(`${connection.name} added: provisioning started`);
 			onDone();
 		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Unable to add the machine",
-			);
+			toast.error(errorText(error, "Unable to add the machine"));
 		}
 	};
 
@@ -445,12 +442,18 @@ export const AddMachine = ({ poolId }: { poolId: string }) => {
 						and installs everything.
 					</DialogDescription>
 				</DialogHeader>
+				{/* Both tabs stay mounted: switching away would drop an enrollment
+				    already created on the server, or a run of checks. */}
 				<Tabs defaultValue="script">
 					<TabsList>
 						<TabsTrigger value="script">Setup script (recommended)</TabsTrigger>
 						<TabsTrigger value="ssh">Existing SSH access</TabsTrigger>
 					</TabsList>
-					<TabsContent value="script" className="grid gap-6 pt-4">
+					<TabsContent
+						value="script"
+						forceMount
+						className="grid gap-6 pt-4 data-[state=inactive]:hidden"
+					>
 						<p className="text-sm text-muted-foreground">
 							Run one script on the machine as an administrator: it creates a
 							dedicated account without admin rights, which only Dokploy's own
@@ -458,7 +461,11 @@ export const AddMachine = ({ poolId }: { poolId: string }) => {
 						</p>
 						<EnrollMachine poolId={poolId} onDone={() => setOpen(false)} />
 					</TabsContent>
-					<TabsContent value="ssh" className="grid gap-4 pt-4">
+					<TabsContent
+						value="ssh"
+						forceMount
+						className="grid gap-4 pt-4 data-[state=inactive]:hidden"
+					>
 						<AddMachineForm poolId={poolId} onDone={() => setOpen(false)} />
 					</TabsContent>
 				</Tabs>

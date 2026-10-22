@@ -4,7 +4,9 @@
  * file below changes; the controller reinstalls the runtime when the machine
  * reports an older version.
  */
-export const RUNTIME_VERSION = 5;
+import { parseEnvLines } from "./env";
+
+export const RUNTIME_VERSION = 6;
 
 const RUNTIME_ROOT = "/opt/dokploy-runners";
 export const RUNNERCTL = `${RUNTIME_ROOT}/bin/runnerctl`;
@@ -172,16 +174,21 @@ cmd_arm() {
 	echo "armed slot=$slot"
 }
 
+# A runner that did not stop may still run its job: never reported as stopped.
 cmd_stop() {
-	local slot
+	local slot unit
 	slot=$(slot_arg "\${1:-}")
-	systemctl stop "$(unit_of "$slot")" >/dev/null 2>&1 || true
-	systemctl reset-failed "$(unit_of "$slot")" >/dev/null 2>&1 || true
+	unit=$(unit_of "$slot")
+	systemctl stop "$unit" >/dev/null 2>&1 || die "slot $slot did not stop (state: $(slot_state "$slot"))"
+	systemctl reset-failed "$unit" >/dev/null 2>&1 || true
 	echo "stopped slot=$slot"
 }
 
 cmd_stop_all() {
-	systemctl stop 'dokploy-runner@*.service' >/dev/null 2>&1 || true
+	if ! systemctl stop 'dokploy-runner@*.service' >/dev/null 2>&1; then
+		echo "runnerctl: some runner slots did not stop" >&2
+		return 1
+	fi
 	systemctl reset-failed 'dokploy-runner@*.service' >/dev/null 2>&1 || true
 	echo "stopped all"
 }
@@ -264,6 +271,9 @@ cmd_install_release() {
 declare -gA GC_FREED=() GC_COUNT=()
 GC_FREE=0
 GC_TARGET=0
+# The cache directories, resolved: entries are compared with them (gc_cache_entry).
+GC_TOOL_CACHE=$(readlink -f "$ROOT/tool-cache" 2>/dev/null || echo "$ROOT/tool-cache")
+GC_HOME=$(readlink -f "$STATE/home" 2>/dev/null || echo "$STATE/home")
 
 gc_reached() { ((GC_FREE >= GC_TARGET)); }
 
@@ -322,9 +332,38 @@ gc_last_used() {
 		awk '{ for (i = 1; i <= NF; i++) if ($i > m) m = $i } END { printf "%d", m }'
 }
 
-# "<last used>\t<kind>\t<target>\t<tags>" for every cache entry no container uses.
+# Splits a record of gc_candidates into the last, kind, tags and entry variables
+# of the caller. The entry comes last: it is a path, which may hold tabs.
+gc_parse() {
+	local rest
+	last=\${1%%$'\t'*}
+	rest=\${1#*$'\t'}
+	kind=\${rest%%$'\t'*}
+	rest=\${rest#*$'\t'}
+	tags=\${rest%%$'\t'*}
+	entry=\${rest#*$'\t'}
+	# Evaluated in arithmetic: never anything but digits.
+	[[ "$last" =~ ^[0-9]+$ ]] || last=0
+}
+
+# Whether a path is an entry of a cache directory (a tool version, a cache of
+# the runner home) with no symbolic link, "." or ".." on the way: jobs write
+# these directories, and the cleanup runs as root.
+gc_cache_entry() {
+	local target=$1 parent
+	[ "$(readlink -f -- "$target" 2>/dev/null)" = "$target" ] || return 1
+	parent=\${target%/*}
+	case "$parent" in
+	"$GC_HOME" | "$GC_HOME/.cache" | "$GC_HOME/.local/share") return 0 ;;
+	esac
+	[ "\${parent%/*}" = "$GC_TOOL_CACHE" ]
+}
+
+# "<last used>\t<kind>\t<tags>\t<target>", NUL-terminated, for every cache entry
+# no container uses. A file name can hold anything but NUL: a job naming a
+# directory with a newline cannot forge a record.
 gc_candidates() {
-	local dev id last tags tag file seen dir name home="$STATE/home"
+	local dev id last tags tag file seen dir name home=$GC_HOME
 	dev=$(stat -c %d "$ROOT")
 	if gc_docker && [ "$(stat -c %d "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)" 2>/dev/null)" = "$dev" ]; then
 		local used
@@ -343,14 +382,15 @@ gc_candidates() {
 						if ((seen > last)); then last=$seen; fi
 					fi
 				done
-				printf '%s\timage\t%s\t%s\n' "$last" "$id" "$tags"
+				printf '%s\timage\t%s\t%s\0' "$last" "$tags" "$id"
 			done
 	fi
-	for dir in "$ROOT"/tool-cache/*/*; do
+	for dir in "$GC_TOOL_CACHE"/*/*; do
 		[ -d "$dir" ] && [ ! -L "$dir" ] || continue
 		[[ "$dir" == *"$GC_SUFFIX"* ]] && continue
+		gc_cache_entry "$dir" || continue
 		[ "$(stat -c %d "$dir")" = "$dev" ] || continue
-		printf '%s\ttool_cache\t%s\t\n' "$(gc_last_used "$dir")" "$dir"
+		printf '%s\ttool_cache\t\t%s\0' "$(gc_last_used "$dir")" "$dir"
 	done
 	for dir in "$home"/.cache/* "$home"/.local/share/* "$home"/* "$home"/.[!.]*; do
 		[ -d "$dir" ] && [ ! -L "$dir" ] || continue
@@ -358,14 +398,16 @@ gc_candidates() {
 		case "$name" in
 		.cache | .local | .config | .ssh | .gnupg | .docker | *"$GC_SUFFIX"*) continue ;;
 		esac
+		gc_cache_entry "$dir" || continue
 		[ "$(stat -c %d "$dir")" = "$dev" ] || continue
-		printf '%s\thome\t%s\t\n' "$(gc_last_used "$dir")" "$dir"
+		printf '%s\thome\t\t%s\0' "$(gc_last_used "$dir")" "$dir"
 	done
 }
 
 gc_remove() {
 	local kind=$1 target=$2 tags=$3 before=$GC_FREE
 	if [ "$kind" = image ]; then
+		[[ "$target" =~ ^sha256:[a-f0-9]{64}$ ]] || return 0
 		if [ -n "$tags" ]; then
 			# shellcheck disable=SC2086 # one argument per tag: the last one deletes the image
 			docker image rm $tags >/dev/null 2>&1 || return 0
@@ -375,7 +417,7 @@ gc_remove() {
 		gc_note images "$before" 1
 		return 0
 	fi
-	[ -d "$target" ] && [ ! -L "$target" ] || return 0
+	[ -d "$target" ] && [ ! -L "$target" ] && gc_cache_entry "$target" || return 0
 	# Renamed first: a job looking for it from now on sees a cache miss.
 	mv -T "$target" "$target$GC_SUFFIX-$$" 2>/dev/null || return 0
 	rm -rf "$target$GC_SUFFIX-$$"
@@ -429,14 +471,14 @@ cmd_gc() {
 		# Without access times, file caches only go in the idle step.
 		findmnt -no OPTIONS -T "$ROOT" 2>/dev/null | grep -qw noatime && atime=no
 		local -a entries=()
-		mapfile -t entries < <(gc_candidates | sort -n -k1,1)
+		mapfile -d '' -t entries < <(gc_candidates | sort -z -t $'\t' -n -k1,1)
 		i=0
 		for hours in 720 168 72 25; do
 			gc_build_cache "$hours"
 			gc_reached && break
 			cutoff=$(($(date +%s) - hours * 3600))
 			while ((i < \${#entries[@]})); do
-				IFS=$'\t' read -r last kind entry tags <<<"\${entries[i]}"
+				gc_parse "\${entries[i]}"
 				((last < cutoff)) || break
 				i=$((i + 1))
 				[ "$kind" = image ] || [ "$atime" = yes ] || continue
@@ -456,7 +498,7 @@ cmd_gc() {
 				gc_build_cache all
 				for line in "\${entries[@]}"; do
 					gc_reached && break
-					IFS=$'\t' read -r last kind entry tags <<<"$line"
+					gc_parse "$line"
 					gc_remove "$kind" "$entry" "$tags"
 				done
 				rm -f "$GC_LOCK"
@@ -475,9 +517,11 @@ cmd_gc() {
 }
 
 cmd_uninstall() {
-	cmd_stop_all >/dev/null
+	cmd_stop_all >/dev/null || echo "warning: removing the runtime anyway" >&2
 	systemctl stop "$SLICE" >/dev/null 2>&1 || true
-	rm -f /etc/systemd/system/dokploy-runner@.service "/etc/systemd/system/$SLICE"
+	rm -f /etc/systemd/system/dokploy-runner@.service "/etc/systemd/system/$SLICE" \
+		/etc/systemd/system/fstrim.timer.d/dokploy-runners.conf
+	rmdir /etc/systemd/system/fstrim.timer.d 2>/dev/null || true
 	rm -rf "/etc/systemd/system.control/$SLICE.d" "/etc/systemd/system/$SLICE.d"
 	if [ -f /etc/docker/daemon.json ] && command -v jq >/dev/null 2>&1 &&
 		jq -e '."cgroup-parent" == "dokploy-runners.slice"' /etc/docker/daemon.json >/dev/null 2>&1; then
@@ -771,13 +815,9 @@ export const runnerEnvironment = (pool: {
 	if (pool.jobCompletedHook) {
 		lines.push(`DOKPLOY_JOB_COMPLETED_HOOK=${quoteEnv(pool.jobCompletedHook)}`);
 	}
-	for (const raw of pool.runnerEnv.split("\n")) {
-		const line = raw.trim();
-		if (!line || line.startsWith("#")) continue;
-		const separator = line.indexOf("=");
-		const key = line.slice(0, separator);
-		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-		lines.push(`${key}=${quoteEnv(line.slice(separator + 1))}`);
+	// The form refuses other lines; one stored before that check is left out.
+	for (const entry of parseEnvLines(pool.runnerEnv)) {
+		if (entry) lines.push(`${entry.key}=${quoteEnv(entry.value)}`);
 	}
 	return `${lines.join("\n")}\n`;
 };

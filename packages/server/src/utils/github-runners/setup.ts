@@ -7,29 +7,23 @@
  * already verified, and the addresses it answers on. Nothing calls Dokploy
  * from the machine, so it works behind Cloudflare Access or a VPN.
  */
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import { sh, shellQuote } from "./runtime";
-
 import {
 	BOOT_DAEMON,
+	MACHINE_NAME,
 	MANAGER_ACCOUNT,
 	SETUP_CODE_PREFIX,
 } from "./setup-constants";
+import { fingerprintOf } from "./ssh";
 
 export { BOOT_DAEMON, MANAGER_ACCOUNT, SETUP_CODE_PREFIX };
 
 const PUBLIC_KEY = /^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]+)?$/;
-const MACHINE = /^[a-z0-9][a-z0-9-]{0,23}$/;
 
 /** SHA256 fingerprint of an OpenSSH public key, as ssh-keygen prints it. */
-export const publicKeyFingerprint = (publicKey: string) => {
-	const blob = publicKey.trim().split(/\s+/)[1] ?? "";
-	return `SHA256:${createHash("sha256")
-		.update(Buffer.from(blob, "base64"))
-		.digest("base64")
-		.replace(/=+$/, "")}`;
-};
+export const publicKeyFingerprint = (publicKey: string) =>
+	fingerprintOf(Buffer.from(publicKey.trim().split(/\s+/)[1] ?? "", "base64"));
 
 /** Root sshd drop-in: the runner account logs in with its key and nothing else. */
 const sshdDropIn = `# Managed by Dokploy: the GitHub runners account logs in with its key only.
@@ -148,15 +142,21 @@ if [ "$UNINSTALL" = 1 ]; then
 	exit 0
 fi
 
-step "Account $MANAGER_USER: standard, hidden, no password login"
+step "Account $MANAGER_USER: standard, hidden, no password"
 if ! id "$MANAGER_USER" >/dev/null 2>&1; then
-	# A random password nobody keeps: the account only logs in with its key.
-	# No pipe: under pipefail, tr would die of SIGPIPE once head has enough.
-	password=$(openssl rand -hex 20)
-	sysadminctl -addUser "$MANAGER_USER" -fullName "Dokploy GitHub runners" \
-		-shell /bin/bash -home "$MANAGER_HOME" -password "$password" >/dev/null 2>&1 ||
-		fail "sysadminctl could not create $MANAGER_USER"
-	unset password
+	# No password at all, so none can leak: one given to sysadminctl shows in
+	# ps while it runs, and stays valid for su and the login window. The
+	# account only logs in over SSH, with its key.
+	uid=$(dscl . -list /Users UniqueID | awk 'BEGIN {max = 500} $2 > max {max = $2} END {print max + 1}')
+	record="/Users/$MANAGER_USER"
+	{ dscl . -create "$record" &&
+		dscl . -create "$record" UniqueID "$uid" &&
+		dscl . -create "$record" PrimaryGroupID 20 &&
+		dscl . -create "$record" UserShell /bin/bash &&
+		dscl . -create "$record" NFSHomeDirectory "$MANAGER_HOME" &&
+		dscl . -create "$record" RealName "Dokploy GitHub runners" &&
+		dscl . -create "$record" Password '*'; } ||
+		fail "dscl could not create $MANAGER_USER"
 fi
 [ -d "$MANAGER_HOME" ] || createhomedir -c -u "$MANAGER_USER" >/dev/null
 dscl . -create "/Users/$MANAGER_USER" IsHidden 1
@@ -284,7 +284,7 @@ export const machineSetupScript = (input: {
 	publicKey: string;
 	keepAwake: boolean;
 }) => {
-	if (!MACHINE.test(input.machine)) {
+	if (!MACHINE_NAME.test(input.machine)) {
 		throw new Error(`Invalid machine name: ${input.machine}`);
 	}
 	if (!PUBLIC_KEY.test(input.publicKey.trim())) {
@@ -299,7 +299,7 @@ const fingerprint = z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/);
 
 const setupCode = z.object({
 	v: z.literal(1),
-	machine: z.string().regex(MACHINE),
+	machine: z.string().regex(MACHINE_NAME),
 	platform: z.enum(["linux", "macos"]),
 	user: z.literal(MANAGER_ACCOUNT),
 	port: z.number().int().min(1).max(65535),

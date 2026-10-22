@@ -126,11 +126,14 @@ const Reroutes = ({ pool }: { pool: RunnerPool }) =>
 
 /** Where the jobs of the pool go right now, and the runs moved to the fallback. */
 export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
-	if (!pool.routingVariable) return null;
 	const routing = pool.routing;
+	// Routing turned off: shown only while GitHub still holds the variable.
+	if (!pool.routingVariable && !routing?.error) return null;
 	const fallback = fallbackRunsOn(pool.fallbackLabels);
 	let line: { tone: string; text: string };
-	if (!routing) {
+	if (!pool.routingVariable) {
+		line = { tone: "bg-red-500", text: routing?.error ?? "" };
+	} else if (!routing) {
 		line = {
 			tone: "bg-muted-foreground",
 			text: `Publishing ${pool.routingVariable}…`,

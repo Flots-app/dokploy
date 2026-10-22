@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/utils/api";
 import {
 	elapsed,
+	errorText,
 	formatBytes,
 	formatDuration,
 	percentText,
@@ -167,11 +168,23 @@ export const JobsTable = ({
 	machineId: string | null;
 }) => {
 	const now = useNow();
-	const { data } = api.githubRunner.jobs.useQuery(
+	const { data, isPending, error } = api.githubRunner.jobs.useQuery(
 		{ githubRunnerPoolId: poolId, githubRunnerNodeId: machineId, limit: 50 },
 		{ refetchInterval: 10_000 },
 	);
-	if (!data?.length) {
+	if (isPending) {
+		return (
+			<Loader2 className="mx-auto size-5 animate-spin text-muted-foreground" />
+		);
+	}
+	if (error) {
+		return (
+			<p className="text-sm text-destructive">
+				Unable to load the jobs: {errorText(error)}
+			</p>
+		);
+	}
+	if (!data.length) {
 		return <p className="text-sm text-muted-foreground">No job yet.</p>;
 	}
 	return (

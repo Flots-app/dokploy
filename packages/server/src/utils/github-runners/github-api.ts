@@ -1,5 +1,6 @@
 import { createAppAuth } from "@octokit/auth-app";
-import { Octokit } from "octokit";
+import { Octokit, RequestError } from "octokit";
+import type { RunnerReleaseInfo } from "./versions";
 
 export interface GithubRunnerTarget {
 	scope: "organization" | "repository";
@@ -118,6 +119,73 @@ export interface GithubRunnerClient {
 }
 
 const REQUEST_TIMEOUT_MS = 20_000;
+const API_VERSION = "2022-11-28";
+const USER_AGENT = "dokploy-github-runners";
+/** Conditional GETs remembered per client: pages of runners, queued runs per repository. */
+const MAX_ETAGS = 500;
+
+/**
+ * Octokit for one GitHub API, for the calls it makes simpler (pagination,
+ * typed endpoints). Its retry and throttling plugins are off: they would wait
+ * out a rate limit inside the controller tick. Every request has a timeout.
+ */
+const githubOctokit = (
+	apiUrl: string,
+	options: {
+		fetch?: Fetch;
+		timeoutMs?: number;
+		authorization?: () => Promise<string>;
+	} = {},
+) => {
+	const octokit = new Octokit({
+		baseUrl: apiUrl.replace(/\/+$/, ""),
+		userAgent: USER_AGENT,
+		request: { fetch: options.fetch ?? fetch },
+		retry: { enabled: false },
+		throttle: { enabled: false },
+	});
+	octokit.hook.wrap("request", async (request, endpoint) =>
+		request({
+			...endpoint,
+			headers: {
+				...endpoint.headers,
+				"x-github-api-version": API_VERSION,
+				...(options.authorization
+					? { authorization: await options.authorization() }
+					: {}),
+			},
+			request: {
+				...endpoint.request,
+				signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
+			},
+		}),
+	);
+	return octokit;
+};
+
+/** The HTTP status of a failed Octokit call; null when GitHub did not answer. */
+const statusOf = (error: unknown) =>
+	error instanceof RequestError && error.response ? error.status : null;
+
+/** A failed Octokit call as the error the controller reads. */
+const apiError = (error: unknown, path: string) => {
+	const status = statusOf(error);
+	if (status === null) {
+		return new GithubRunnerApiError(
+			`GitHub API ${path} unreachable: ${error instanceof Error ? error.message : String(error)}`,
+			null,
+		);
+	}
+	const data = (error as RequestError).response?.data;
+	return new GithubRunnerApiError(
+		describeFailure(
+			status,
+			typeof data === "string" ? data : JSON.stringify(data ?? {}),
+			path,
+		),
+		status,
+	);
+};
 
 const describeFailure = (status: number, body: string, path: string) => {
 	let message = body.slice(0, 300);
@@ -145,7 +213,11 @@ const describeVariableFailure = (
 		? `GitHub refused to write the routing variable (${status}). The credentials need "Variables: read and write" on the ${target.scope === "organization" ? "organization" : "repository"}.`
 		: describeFailure(status, body, "actions/variables");
 
-const createAuthorization = (auth: GithubRunnerAuth, apiUrl: string) => {
+const createAuthorization = (
+	auth: GithubRunnerAuth,
+	apiUrl: string,
+	fetcher?: Fetch,
+) => {
 	if (auth.type === "token") {
 		return async () => `Bearer ${auth.token}`;
 	}
@@ -154,7 +226,7 @@ const createAuthorization = (auth: GithubRunnerAuth, apiUrl: string) => {
 		appId: auth.appId,
 		privateKey: auth.privateKey,
 		installationId: auth.installationId,
-		request: new Octokit({ baseUrl: apiUrl }).request,
+		request: githubOctokit(apiUrl, { fetch: fetcher }).request,
 	});
 	return async () => {
 		try {
@@ -183,8 +255,6 @@ export const findAppInstallation = async (
 	target: Pick<GithubRunnerTarget, "scope" | "owner" | "repository" | "apiUrl">,
 	options: { fetch?: Fetch } = {},
 ) => {
-	const fetcher = options.fetch ?? fetch;
-	const base = target.apiUrl.replace(/\/+$/, "");
 	let jwt: string;
 	try {
 		const appAuth = createAppAuth({
@@ -198,55 +268,43 @@ export const findAppInstallation = async (
 			null,
 		);
 	}
-	const get = (path: string) =>
-		fetcher(`${base}${path}`, {
-			headers: {
-				Accept: "application/vnd.github+json",
-				Authorization: `Bearer ${jwt}`,
-				"X-GitHub-Api-Version": "2022-11-28",
-				"User-Agent": "dokploy-github-runners",
-			},
-			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-		}).catch((error: unknown) => {
-			throw new GithubRunnerApiError(
-				`GitHub API ${path} unreachable: ${error instanceof Error ? error.message : String(error)}`,
-				null,
-			);
-		});
-	const owner = encodeURIComponent(target.owner);
-	const path =
+	const octokit = githubOctokit(target.apiUrl, {
+		fetch: options.fetch,
+		authorization: async () => `Bearer ${jwt}`,
+	});
+	const where =
 		target.scope === "organization"
-			? `/orgs/${owner}/installation`
-			: `/repos/${owner}/${encodeURIComponent(target.repository ?? "")}/installation`;
-	const response = await get(path);
-	if (response.ok) {
-		return String(((await response.json()) as { id: number }).id);
-	}
-	if (response.status === 401) {
-		throw new GithubRunnerApiError(
-			"GitHub rejected the App ID or the private key (401): check that both belong to the same GitHub App.",
-			401,
-		);
-	}
-	if (response.status === 404) {
-		const where =
+			? target.owner
+			: `${target.owner}/${target.repository}`;
+	try {
+		const { data } =
 			target.scope === "organization"
-				? target.owner
-				: `${target.owner}/${target.repository}`;
-		const page = await get("/app")
-			.then((res) =>
-				res.ok ? (res.json() as Promise<{ html_url?: string }>) : null,
-			)
-			.catch(() => null);
-		throw new GithubRunnerApiError(
-			`The GitHub App is not installed on ${where}.${page?.html_url ? ` Install it from ${page.html_url}/installations/new, then try again.` : ""}`,
-			404,
-		);
+				? await octokit.rest.apps.getOrgInstallation({ org: target.owner })
+				: await octokit.rest.apps.getRepoInstallation({
+						owner: target.owner,
+						repo: target.repository ?? "",
+					});
+		return String(data.id);
+	} catch (error) {
+		const status = statusOf(error);
+		if (status === 401) {
+			throw new GithubRunnerApiError(
+				"GitHub rejected the App ID or the private key (401): check that both belong to the same GitHub App.",
+				401,
+			);
+		}
+		if (status === 404) {
+			const page = await octokit.rest.apps
+				.getAuthenticated()
+				.then(({ data }) => data)
+				.catch(() => null);
+			throw new GithubRunnerApiError(
+				`The GitHub App is not installed on ${where}.${page?.html_url ? ` Install it from ${page.html_url}/installations/new, then try again.` : ""}`,
+				404,
+			);
+		}
+		throw apiError(error, `installation of ${where}`);
 	}
-	throw new GithubRunnerApiError(
-		describeFailure(response.status, await response.text(), path),
-		response.status,
-	);
 };
 
 /**
@@ -264,7 +322,7 @@ export const tokenExpiration = async (
 			headers: {
 				Accept: "application/vnd.github+json",
 				Authorization: `Bearer ${token}`,
-				"User-Agent": "dokploy-github-runners",
+				"User-Agent": USER_AGENT,
 			},
 			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 		},
@@ -286,23 +344,41 @@ export const createGithubRunnerClient = (
 	options: { fetch?: Fetch; timeoutMs?: number } = {},
 ): GithubRunnerClient => {
 	const fetcher = options.fetch ?? fetch;
-	const authorization = createAuthorization(auth, target.apiUrl);
+	const authorization = createAuthorization(auth, target.apiUrl, fetcher);
+	const octokit = githubOctokit(target.apiUrl, {
+		fetch: fetcher,
+		timeoutMs: options.timeoutMs,
+		authorization,
+	});
 	const base = target.apiUrl.replace(/\/+$/, "");
 	let groupId: number | null = target.scope === "repository" ? 1 : null;
 
-	// Conditional GETs: a 304 does not count against the GitHub rate limit, and the
-	// controller polls the same runner list every few seconds.
+	// Conditional GETs for what the controller polls (the runner list every
+	// tick, the queued runs of each repository every minute): a 304 does not
+	// count against the GitHub rate limit. Past MAX_ETAGS the least recently
+	// used entry goes, so a client living as long as the process stays small.
 	const etags = new Map<string, { etag: string; text: string }>();
+	const remember = (path: string, entry: { etag: string; text: string }) => {
+		etags.delete(path);
+		etags.set(path, entry);
+		const oldest = etags.keys().next().value;
+		if (etags.size > MAX_ETAGS && oldest !== undefined) etags.delete(oldest);
+	};
 
-	const request = async (method: string, path: string, body?: unknown) => {
-		const cached = method === "GET" ? etags.get(path) : undefined;
+	const request = async (
+		method: string,
+		path: string,
+		body?: unknown,
+		{ etag: conditional = false } = {},
+	) => {
+		const cached = conditional ? etags.get(path) : undefined;
 		const response = await fetcher(`${base}${path}`, {
 			method,
 			headers: {
 				Accept: "application/vnd.github+json",
 				Authorization: await authorization(),
-				"X-GitHub-Api-Version": "2022-11-28",
-				"User-Agent": "dokploy-github-runners",
+				"X-GitHub-Api-Version": API_VERSION,
+				"User-Agent": USER_AGENT,
 				...(cached ? { "If-None-Match": cached.etag } : {}),
 				...(body ? { "Content-Type": "application/json" } : {}),
 			},
@@ -315,18 +391,22 @@ export const createGithubRunnerClient = (
 			);
 		});
 		if (cached && response.status === 304) {
+			remember(path, cached);
 			return { status: 200, text: cached.text };
 		}
 		const text = await response.text();
 		const etag = response.headers.get("etag");
-		if (method === "GET" && response.ok && etag) {
-			etags.set(path, { etag, text });
-		}
+		if (conditional && response.ok && etag) remember(path, { etag, text });
 		return { status: response.status, text };
 	};
 
-	const json = async <T>(method: string, path: string, body?: unknown) => {
-		const response = await request(method, path, body);
+	const json = async <T>(
+		method: string,
+		path: string,
+		body?: unknown,
+		cache: { etag?: boolean } = {},
+	) => {
+		const response = await request(method, path, body, cache);
 		if (response.status < 200 || response.status >= 300) {
 			throw new GithubRunnerApiError(
 				describeFailure(response.status, response.text, path),
@@ -358,7 +438,9 @@ export const createGithubRunnerClient = (
 					labels: { name: string; type?: string }[];
 					version?: string | null;
 				}[];
-			}>("GET", `${listPath}?per_page=100&page=${page}`);
+			}>("GET", `${listPath}?per_page=100&page=${page}`, undefined, {
+				etag: true,
+			});
 			for (const runner of data.runners) {
 				runners.push({
 					id: runner.id,
@@ -452,7 +534,7 @@ export const createGithubRunnerClient = (
 	};
 
 	// Job data comes from the machines, where jobs run: never act outside the pool.
-	const runPath = (repository: string, runId: string) => {
+	const runOf = (repository: string, runId: string) => {
 		const [owner, name, extra] = repository.split("/");
 		const valid =
 			owner &&
@@ -470,8 +552,15 @@ export const createGithubRunnerClient = (
 				null,
 			);
 		}
-		return `/repos/${owner}/${name}/actions/runs/${runId}`;
+		return {
+			owner,
+			repo: name,
+			runId: Number(runId),
+			path: `/repos/${owner}/${name}/actions/runs/${runId}`,
+		};
 	};
+	const runPath = (repository: string, runId: string) =>
+		runOf(repository, runId).path;
 
 	const getRun: GithubRunnerClient["getRun"] = async (repository, runId) => {
 		const run = await json<{
@@ -490,32 +579,28 @@ export const createGithubRunnerClient = (
 		repository,
 		runId,
 	) => {
-		const jobs: WorkflowRunJob[] = [];
-		for (let page = 1; page <= 10; page++) {
-			const data = await json<{
-				total_count: number;
-				jobs: {
-					name: string;
-					status: string;
-					conclusion: string | null;
-					runner_name: string | null;
-					labels?: string[];
-					created_at?: string;
-				}[];
-			}>("GET", `${runPath(repository, runId)}/jobs?per_page=100&page=${page}`);
-			for (const job of data.jobs) {
-				jobs.push({
-					name: job.name,
-					status: job.status,
-					conclusion: job.conclusion,
-					runnerName: job.runner_name,
-					labels: job.labels ?? [],
-					createdAt: job.created_at ?? null,
-				});
-			}
-			if (data.jobs.length < 100 || jobs.length >= data.total_count) break;
-		}
-		return jobs;
+		const run = runOf(repository, runId);
+		let pages = 0;
+		const jobs = await octokit
+			.paginate(
+				octokit.rest.actions.listJobsForWorkflowRun,
+				{ owner: run.owner, repo: run.repo, run_id: run.runId, per_page: 100 },
+				(response, done) => {
+					if (++pages >= 10) done();
+					return response.data;
+				},
+			)
+			.catch((error: unknown) => {
+				throw apiError(error, `${run.path}/jobs`);
+			});
+		return jobs.map((job) => ({
+			name: job.name,
+			status: job.status,
+			conclusion: job.conclusion,
+			runnerName: job.runner_name,
+			labels: job.labels ?? [],
+			createdAt: job.created_at ?? null,
+		}));
 	};
 
 	const post = async (path: string) => {
@@ -580,17 +665,22 @@ export const createGithubRunnerClient = (
 		if (target.scope === "repository") {
 			return [`${target.owner}/${target.repository}`];
 		}
-		const names: string[] = [];
-		for (let page = 1; page <= 20; page++) {
-			const data = await json<
-				{ full_name: string; private: boolean; archived?: boolean }[]
-			>("GET", `/orgs/${owner}/repos?type=private&per_page=100&page=${page}`);
-			for (const repo of data) {
-				if (repo.private && !repo.archived) names.push(repo.full_name);
-			}
-			if (data.length < 100) break;
-		}
-		return names;
+		let pages = 0;
+		const repositories = await octokit
+			.paginate(
+				octokit.rest.repos.listForOrg,
+				{ org: target.owner, type: "private", per_page: 100 },
+				(response, done) => {
+					if (++pages >= 20) done();
+					return response.data;
+				},
+			)
+			.catch((error: unknown) => {
+				throw apiError(error, `/orgs/${owner}/repos`);
+			});
+		return repositories
+			.filter((repo) => repo.private && !repo.archived)
+			.map((repo) => repo.full_name);
 	};
 
 	const listQueuedRuns: GithubRunnerClient["listQueuedRuns"] = async (
@@ -617,6 +707,8 @@ export const createGithubRunnerClient = (
 		}>(
 			"GET",
 			`/repos/${owner}/${encodeURIComponent(name)}/actions/runs?status=queued&per_page=50`,
+			undefined,
+			{ etag: true },
 		);
 		return data.workflow_runs.map((run) => ({
 			id: run.id,
@@ -701,6 +793,84 @@ const releaseArch = (arch: string) => {
 };
 
 /**
+ * A release of a public repository on github.com. Authenticated when possible:
+ * the anonymous quota is 60 calls per hour per IP. A token GitHub rejects
+ * falls back to that quota.
+ */
+const readRelease = async (
+	repository: { owner: string; repo: string },
+	tag: string | null,
+	options: { fetch?: Fetch; authorization?: string },
+) => {
+	const get = (authorization?: string) => {
+		const octokit = githubOctokit("https://api.github.com", {
+			fetch: options.fetch,
+			authorization: authorization ? async () => authorization : undefined,
+		});
+		return tag
+			? octokit.rest.repos.getReleaseByTag({ ...repository, tag })
+			: octokit.rest.repos.getLatestRelease(repository);
+	};
+	try {
+		const { data } = await get(options.authorization).catch((error) => {
+			if (options.authorization && statusOf(error) === 401) return get();
+			throw error;
+		});
+		return data;
+	} catch (error) {
+		const status = statusOf(error);
+		throw new Error(
+			`Unable to read the ${repository.owner}/${repository.repo} release ${tag ?? "latest"} (${status ?? (error instanceof Error ? error.message : String(error))})`,
+		);
+	}
+};
+
+/**
+ * The latest actions/runner releases with their publication dates, to tell
+ * whether a machine's runner is behind and until when GitHub accepts it.
+ * Drafts and pre-releases are left out.
+ */
+export const listRunnerReleases = async (
+	options: { fetch?: Fetch; authorization?: string } = {},
+): Promise<RunnerReleaseInfo[]> => {
+	const list = (authorization?: string) =>
+		githubOctokit("https://api.github.com", {
+			fetch: options.fetch,
+			authorization: authorization ? async () => authorization : undefined,
+		}).rest.repos.listReleases({
+			owner: "actions",
+			repo: "runner",
+			per_page: 30,
+		});
+	try {
+		const { data } = await list(options.authorization).catch((error) => {
+			if (options.authorization && statusOf(error) === 401) return list();
+			throw error;
+		});
+		return data
+			.filter((release) => !release.draft && !release.prerelease)
+			.flatMap((release) =>
+				release.published_at
+					? [
+							{
+								version: release.tag_name.replace(/^v/, ""),
+								publishedAt: release.published_at,
+							},
+						]
+					: [],
+			);
+	} catch (error) {
+		throw apiError(error, "/repos/actions/runner/releases");
+	}
+};
+
+/** The SHA-256 GitHub computed for a release asset, when it publishes one. */
+const assetSha256 = (asset: {
+	browser_download_url: string;
+	digest?: string | null;
+}) => asset.digest?.match(/^sha256:([a-f0-9]{64})$/)?.[1];
+
+/**
  * Resolves the actions/runner release for Linux on the given architecture,
  * with the SHA-256 published by GitHub, which the machine verifies.
  */
@@ -709,34 +879,11 @@ export const resolveRunnerRelease = async (
 	arch: string,
 	options: { fetch?: Fetch; authorization?: string } = {},
 ): Promise<RunnerRelease> => {
-	const fetcher = options.fetch ?? fetch;
-	const path = version
-		? `/repos/actions/runner/releases/tags/v${version}`
-		: "/repos/actions/runner/releases/latest";
-	// Authenticated when possible: the anonymous quota is 60 calls per hour per IP.
-	const get = (authorization?: string) =>
-		fetcher(`https://api.github.com${path}`, {
-			headers: {
-				Accept: "application/vnd.github+json",
-				"User-Agent": "dokploy-github-runners",
-				...(authorization ? { Authorization: authorization } : {}),
-			},
-			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-		});
-	let response = await get(options.authorization);
-	if (options.authorization && response.status === 401) {
-		response = await get();
-	}
-	if (!response.ok) {
-		throw new Error(
-			`Unable to read the actions/runner release ${version ?? "latest"} (${response.status})`,
-		);
-	}
-	const release = (await response.json()) as {
-		tag_name: string;
-		body?: string | null;
-		assets: { name: string; browser_download_url: string; digest?: string }[];
-	};
+	const release = await readRelease(
+		{ owner: "actions", repo: "runner" },
+		version ? `v${version}` : null,
+		options,
+	);
 	const resolved = release.tag_name.replace(/^v/, "");
 	const platform = `linux-${releaseArch(arch)}`;
 	const asset = release.assets.find(
@@ -745,13 +892,14 @@ export const resolveRunnerRelease = async (
 	if (!asset) {
 		throw new Error(`actions/runner ${resolved} has no ${platform} archive`);
 	}
-	const fromDigest = asset.digest?.match(/^sha256:([a-f0-9]{64})$/)?.[1];
-	const fromNotes = release.body?.match(
-		new RegExp(
-			`<!-- BEGIN SHA ${platform} -->([a-f0-9]{64})<!-- END SHA ${platform} -->`,
-		),
-	)?.[1];
-	const sha256 = fromDigest ?? fromNotes;
+	// Older releases only list their checksums in the notes.
+	const sha256 =
+		assetSha256(asset) ??
+		release.body?.match(
+			new RegExp(
+				`<!-- BEGIN SHA ${platform} -->([a-f0-9]{64})<!-- END SHA ${platform} -->`,
+			),
+		)?.[1];
 	if (!sha256) {
 		throw new Error(
 			`actions/runner ${resolved} publishes no SHA-256 for ${platform}`,
@@ -766,34 +914,16 @@ export const resolveLimaRelease = async (
 	arch: string,
 	options: { fetch?: Fetch; authorization?: string } = {},
 ): Promise<RunnerRelease> => {
-	const fetcher = options.fetch ?? fetch;
-	const get = (authorization?: string) =>
-		fetcher(
-			`https://api.github.com/repos/lima-vm/lima/releases/tags/v${version}`,
-			{
-				headers: {
-					Accept: "application/vnd.github+json",
-					"User-Agent": "dokploy-github-runners",
-					...(authorization ? { Authorization: authorization } : {}),
-				},
-				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-			},
-		);
-	let response = await get(options.authorization);
-	if (options.authorization && response.status === 401) response = await get();
-	if (!response.ok) {
-		throw new Error(
-			`Unable to read the Lima release ${version} (${response.status})`,
-		);
-	}
-	const release = (await response.json()) as {
-		assets: { name: string; browser_download_url: string; digest?: string }[];
-	};
+	const release = await readRelease(
+		{ owner: "lima-vm", repo: "lima" },
+		`v${version}`,
+		options,
+	);
 	const platform = `Darwin-${arch === "arm64" || arch === "aarch64" ? "arm64" : "x86_64"}`;
 	const asset = release.assets.find(
 		(item) => item.name === `lima-${version}-${platform}.tar.gz`,
 	);
-	const sha256 = asset?.digest?.match(/^sha256:([a-f0-9]{64})$/)?.[1];
+	const sha256 = asset && assetSha256(asset);
 	if (!asset || !sha256) {
 		throw new Error(
 			`Lima ${version} publishes no verified ${platform} archive`,

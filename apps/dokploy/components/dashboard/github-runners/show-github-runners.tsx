@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/collapsible";
 import { api } from "@/utils/api";
 import { AddMachine } from "./add-machine";
-import { formatDuration, type RunnerPool } from "./format";
+import { errorText, formatDuration, type RunnerPool } from "./format";
 import { HandlePool } from "./handle-pool";
 import { MachineCard } from "./machine-card";
 import { JobsTable } from "./machine-monitoring";
@@ -126,8 +126,9 @@ const PoolSection = ({
 						{pool.scope === "organization" ? "Organization" : "Repository"}{" "}
 						{target}
 						{pool.runnerVersion
-							? ` · runner ${pool.runnerVersion}`
-							: " · latest runner"}
+							? ` · runner ${pool.runnerVersion} (pinned)`
+							: ` · runner ${pool.latestRunnerVersion ?? "latest"}`}
+						<RunnersBehind pool={pool} />
 					</p>
 					<div className="flex flex-wrap gap-1">
 						{["self-hosted", "Linux", ...pool.labels].map((label) => (
@@ -148,15 +149,14 @@ const PoolSection = ({
 							description="The pool has no machine; its settings and credentials are deleted."
 							onClick={async () => {
 								try {
-									await remove.mutateAsync({
+									const { warning } = await remove.mutateAsync({
 										githubRunnerPoolId: pool.githubRunnerPoolId,
 									});
 									await utils.githubRunner.overview.invalidate();
-									toast.success("Pool deleted");
+									if (warning) toast.warning(`Pool deleted. ${warning}`);
+									else toast.success("Pool deleted");
 								} catch (error) {
-									toast.error(
-										error instanceof Error ? error.message : "Unable to delete",
-									);
+									toast.error(errorText(error, "Unable to delete"));
 								}
 							}}
 						>
@@ -213,6 +213,21 @@ const PoolSection = ({
 	);
 };
 
+/** Machines whose actions/runner GitHub will soon, or no longer, accept. */
+const RunnersBehind = ({ pool }: { pool: RunnerPool }) => {
+	const behind = pool.nodes.filter(
+		(node) =>
+			node.runnerUpdate.state === "outdated" ||
+			node.runnerUpdate.state === "unsupported",
+	).length;
+	if (!behind) return null;
+	return (
+		<span className="text-orange-600 dark:text-orange-400">
+			{` · ${behind} machine${behind > 1 ? "s" : ""} on an outdated runner`}
+		</span>
+	);
+};
+
 export const ShowGithubRunners = () => {
 	const { data: permissions } = api.user.getPermissions.useQuery();
 	const { data, isPending, error } = api.githubRunner.overview.useQuery(
@@ -252,7 +267,7 @@ export const ShowGithubRunners = () => {
 								Loading <Loader2 className="size-4 animate-spin" />
 							</div>
 						) : error ? (
-							<p className="text-sm text-destructive">{error.message}</p>
+							<p className="text-sm text-destructive">{errorText(error)}</p>
 						) : data?.length === 0 ? (
 							<GettingStarted action={allowed.create && <HandlePool />} />
 						) : (

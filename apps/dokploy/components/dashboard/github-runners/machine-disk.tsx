@@ -13,7 +13,12 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { api } from "@/utils/api";
-import { formatBytes, formatDuration, type RunnerMachine } from "./format";
+import {
+	errorText,
+	formatBytes,
+	formatDuration,
+	type RunnerMachine,
+} from "./format";
 import { UsageBar } from "./shared";
 
 type Thresholds = NonNullable<RunnerMachine["diskThresholds"]["host"]>;
@@ -229,7 +234,7 @@ export const DiskCleanup = ({ machine }: { machine: RunnerMachine }) => {
 				);
 				setTimeout(() => void utils.githubRunner.overview.invalidate(), 5000);
 			})
-			.catch((error: Error) => toast.error(error.message));
+			.catch((error: unknown) => toast.error(errorText(error)));
 	return (
 		<div className="grid gap-4">
 			<div className="flex flex-wrap items-center justify-between gap-2">

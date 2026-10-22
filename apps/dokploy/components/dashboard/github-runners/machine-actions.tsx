@@ -15,7 +15,13 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/utils/api";
-import { elapsed, formatDuration, type RunnerMachine, runUrl } from "./format";
+import {
+	elapsed,
+	errorText,
+	formatDuration,
+	type RunnerMachine,
+	runUrl,
+} from "./format";
 import { CopyCode, NumberInput } from "./shared";
 import { useNow } from "./use-now";
 
@@ -161,7 +167,7 @@ const DisableMachineForm = ({
 			);
 			onOpenChange(false);
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Unable to disable");
+			toast.error(errorText(error, "Unable to disable"));
 		}
 	};
 
@@ -186,7 +192,7 @@ const DisableMachineForm = ({
 				rerun={rerun}
 			/>
 			{disable.error && (
-				<AlertBlock type="error">{disable.error.message}</AlertBlock>
+				<AlertBlock type="error">{errorText(disable.error)}</AlertBlock>
 			)}
 			<DialogFooter>
 				<Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -245,7 +251,7 @@ const RemoveMachineForm = ({
 			toast.success(`${machine.name}: removal started`);
 			onOpenChange(false);
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Unable to remove");
+			toast.error(errorText(error, "Unable to remove"));
 		}
 	};
 
@@ -325,7 +331,7 @@ const RemoveMachineForm = ({
 				</AlertBlock>
 			)}
 			{remove.error && (
-				<AlertBlock type="error">{remove.error.message}</AlertBlock>
+				<AlertBlock type="error">{errorText(remove.error)}</AlertBlock>
 			)}
 			<DialogFooter>
 				<Button variant="outline" onClick={() => onOpenChange(false)}>

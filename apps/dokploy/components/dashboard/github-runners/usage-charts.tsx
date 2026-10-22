@@ -1,6 +1,18 @@
 import { format } from "date-fns";
 import { Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+// Already loaded on demand: the monitoring dialog imports this module with
+// next/dynamic, and ui/chart imports recharts statically anyway.
+// react-doctor-disable-next-line react-doctor/prefer-dynamic-import
+import {
+	Area,
+	AreaChart,
+	CartesianGrid,
+	Line,
+	LineChart,
+	XAxis,
+	YAxis,
+} from "recharts";
 import { Button } from "@/components/ui/button";
 import {
 	type ChartConfig,
@@ -9,7 +21,7 @@ import {
 	ChartTooltipContent,
 } from "@/components/ui/chart";
 import { api } from "@/utils/api";
-import type { RunnerMachine } from "./format";
+import { errorText, type RunnerMachine } from "./format";
 
 const RANGES = [
 	{ hours: 1, label: "1 h" },
@@ -33,8 +45,6 @@ const runnersConfig = {
 const tick = (hours: number) => (value: number) =>
 	format(new Date(value), hours > 24 ? "MMM d" : "HH:mm");
 
-type Recharts = typeof import("recharts");
-
 interface Point {
 	at: string;
 	/** Epoch milliseconds: a time scale shows gaps where no sample was taken. */
@@ -46,43 +56,12 @@ interface Point {
 	runners: number;
 }
 
-/** recharts is loaded once the charts are shown, not with the runners page. */
-const useRecharts = () => {
-	const [state, setState] = useState<{
-		lib: Recharts | null;
-		failed: boolean;
-	}>({ lib: null, failed: false });
-	useEffect(() => {
-		let active = true;
-		import("recharts")
-			.then((lib) => {
-				if (active) setState({ lib, failed: false });
-			})
-			.catch(() => {
-				if (active) setState({ lib: null, failed: true });
-			});
-		return () => {
-			active = false;
-		};
-	}, []);
-	return state;
-};
-
 const label = (_: unknown, payload: ReadonlyArray<{ payload?: unknown }>) => {
 	const at = (payload?.[0]?.payload as { at?: string } | undefined)?.at;
 	return at ? format(new Date(at), "PPpp") : "";
 };
 
-const Charts = ({
-	lib,
-	points,
-	hours,
-}: {
-	lib: Recharts;
-	points: Point[];
-	hours: number;
-}) => {
-	const { Area, AreaChart, CartesianGrid, Line, LineChart, XAxis, YAxis } = lib;
+const Charts = ({ points, hours }: { points: Point[]; hours: number }) => {
 	return (
 		<>
 			<div>
@@ -211,9 +190,8 @@ const Charts = ({
 };
 
 export const UsageCharts = ({ machine }: { machine: RunnerMachine }) => {
-	const { lib, failed } = useRecharts();
 	const [hours, setHours] = useState(6);
-	const { data, isPending } = api.githubRunner.metrics.useQuery(
+	const { data, isPending, error } = api.githubRunner.metrics.useQuery(
 		{ githubRunnerNodeId: machine.githubRunnerNodeId, hours },
 		{ refetchInterval: 30_000 },
 	);
@@ -243,18 +221,18 @@ export const UsageCharts = ({ machine }: { machine: RunnerMachine }) => {
 					</Button>
 				))}
 			</div>
-			{failed ? (
+			{error ? (
 				<p className="text-sm text-destructive">
-					The charts could not be loaded; reload the page.
+					Unable to load the usage: {errorText(error)}
 				</p>
-			) : isPending || !lib ? (
+			) : isPending ? (
 				<Loader2 className="mx-auto size-5 animate-spin text-muted-foreground" />
 			) : points.length < 2 ? (
 				<p className="text-sm text-muted-foreground">
 					Samples are taken every 30 seconds while the machine is reachable.
 				</p>
 			) : (
-				<Charts lib={lib} points={points} hours={hours} />
+				<Charts points={points} hours={hours} />
 			)}
 		</div>
 	);

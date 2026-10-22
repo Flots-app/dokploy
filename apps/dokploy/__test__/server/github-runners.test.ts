@@ -1,17 +1,23 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	GithubRunnerDrain,
-	GithubRunnerPool,
+import { db } from "@dokploy/server/db";
+import {
+	apiCreateGithubRunnerPool,
+	apiStartGithubRunnerEnrollment,
+	type GithubRunnerDrain,
+	type GithubRunnerPool,
 } from "@dokploy/server/db/schema";
 import { assertSecretsDestination } from "@dokploy/server/services/github-runner";
 import {
@@ -25,12 +31,17 @@ import {
 import {
 	linuxChecks,
 	macChecks,
-	versionAtLeast,
 } from "@dokploy/server/utils/github-runners/checks";
 import {
+	clearPoolRouting,
+	completeDrain,
 	describeCleanup,
 	generateMachineKey,
 	limaLogLine,
+	provisionRunnerNode,
+	reconnectDelay,
+	rerouteQueuedRuns,
+	routePool,
 } from "@dokploy/server/utils/github-runners/controller";
 import {
 	cleanupDue,
@@ -41,6 +52,10 @@ import {
 	vmCleanupGoal,
 	vmDiskThresholds,
 } from "@dokploy/server/utils/github-runners/disk";
+import {
+	envKeys,
+	parseEnvLines,
+} from "@dokploy/server/utils/github-runners/env";
 import { toClientError } from "@dokploy/server/utils/github-runners/errors";
 import {
 	createGithubRunnerClient,
@@ -49,6 +64,7 @@ import {
 	type GithubRunner,
 	GithubRunnerApiError,
 	isPermanentGithubError,
+	listRunnerReleases,
 	resolveLimaRelease,
 	resolveRunnerRelease,
 	tokenExpiration,
@@ -108,6 +124,7 @@ import {
 	linuxFactsScript,
 	runnerEnvironment,
 	sh,
+	shellQuote,
 } from "@dokploy/server/utils/github-runners/runtime";
 import {
 	machineSetupScript,
@@ -115,6 +132,7 @@ import {
 	publicKeyFingerprint,
 	SETUP_CODE_PREFIX,
 } from "@dokploy/server/utils/github-runners/setup";
+import { MACHINE_NAME } from "@dokploy/server/utils/github-runners/setup-constants";
 import {
 	closeSharedSessions,
 	fingerprintOf,
@@ -126,12 +144,21 @@ import {
 	sharedNodeSession,
 	UnknownHostKeyError,
 } from "@dokploy/server/utils/github-runners/ssh";
-import { DrizzleQueryError } from "drizzle-orm";
+import {
+	compareVersions,
+	RUNNER_UPDATE_DEADLINE_MS,
+	runnerVersionStatus,
+} from "@dokploy/server/utils/github-runners/versions";
+import { DrizzleQueryError, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { Server, utils } from "ssh2";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readSetupCode } from "@/components/dashboard/github-runners/enrollment-code";
 import {
 	boundedNumber,
+	errorText,
 	settleNumber,
 } from "@/components/dashboard/github-runners/format";
 import {
@@ -141,6 +168,7 @@ import {
 	parseGithubTarget,
 	tokenTemplateUrl,
 } from "@/components/dashboard/github-runners/github-links";
+import { Slider } from "@/components/ui/slider";
 
 const GiB = 1024 ** 3;
 
@@ -232,8 +260,12 @@ describe("budget", () => {
 	});
 });
 
-const json = (status: number, body: unknown) =>
-	new Response(status === 204 ? null : JSON.stringify(body), { status });
+// GitHub answers JSON with its content type, which Octokit reads the body by.
+const json = (status: number, body: unknown, headers: HeadersInit = {}) =>
+	new Response(status === 204 ? null : JSON.stringify(body), {
+		status,
+		headers: { "content-type": "application/json; charset=utf-8", ...headers },
+	});
 
 const runner = (overrides: Partial<GithubRunner> = {}): GithubRunner => ({
 	id: 1,
@@ -453,24 +485,22 @@ describe("GitHub runner API", () => {
 	it("resolves the runner archive and its published SHA-256", async () => {
 		const sha = "a".repeat(64);
 		const fetcher = async () =>
-			new Response(
-				JSON.stringify({
-					tag_name: "v2.329.0",
-					body: `<!-- BEGIN SHA linux-x64 -->${"b".repeat(64)}<!-- END SHA linux-x64 -->`,
-					assets: [
-						{
-							name: "actions-runner-linux-arm64-2.329.0.tar.gz",
-							browser_download_url:
-								"https://github.com/actions/runner/releases/download/v2.329.0/actions-runner-linux-arm64-2.329.0.tar.gz",
-							digest: `sha256:${sha}`,
-						},
-						{
-							name: "actions-runner-linux-x64-2.329.0.tar.gz",
-							browser_download_url: "https://github.com/x64.tar.gz",
-						},
-					],
-				}),
-			);
+			json(200, {
+				tag_name: "v2.329.0",
+				body: `<!-- BEGIN SHA linux-x64 -->${"b".repeat(64)}<!-- END SHA linux-x64 -->`,
+				assets: [
+					{
+						name: "actions-runner-linux-arm64-2.329.0.tar.gz",
+						browser_download_url:
+							"https://github.com/actions/runner/releases/download/v2.329.0/actions-runner-linux-arm64-2.329.0.tar.gz",
+						digest: `sha256:${sha}`,
+					},
+					{
+						name: "actions-runner-linux-x64-2.329.0.tar.gz",
+						browser_download_url: "https://github.com/x64.tar.gz",
+					},
+				],
+			});
 		await expect(
 			resolveRunnerRelease(null, "aarch64", { fetch: fetcher }),
 		).resolves.toMatchObject({ version: "2.329.0", sha256: sha });
@@ -1298,13 +1328,6 @@ describe("machine checks", () => {
 		expect(legacy.every((item) => item.status !== "fail")).toBe(true);
 		// Older probes report nothing about the setup: no warning either.
 		expect(status("").setup).toBeNull();
-	});
-
-	it("compares versions", () => {
-		expect(versionAtLeast("2.2.0", "1.0.0")).toBe(true);
-		expect(versionAtLeast("v1.0.0", "1.0.0")).toBe(true);
-		expect(versionAtLeast("0.23.2", "1.0.0")).toBe(false);
-		expect(versionAtLeast(null, "1.0.0")).toBe(false);
 	});
 });
 
@@ -2515,25 +2538,32 @@ describe("machine enrollment", () => {
 		expect(script).not.toMatch(/dokploy-runner( |$)/m);
 	});
 
-	it("creates the Mac account password under pipefail", () => {
+	it("creates the Mac account without any password", () => {
 		const script = machineSetupScript({
 			platform: "macos",
 			machine: "m6",
 			publicKey: machineKey.publicKey,
 			keepAwake: true,
 		});
+		// Nothing secret on a command line (ps), nothing for su or the login window.
+		expect(script).not.toMatch(/-password|openssl rand/);
+		expect(script).toContain(`dscl . -create "$record" Password '*'`);
 		const line = script
 			.split("\n")
 			.map((text) => text.trim())
-			.find((text) => text.startsWith("password=$("));
+			.find((text) => text.startsWith("uid=$("));
 		expect(line).toBeDefined();
-		const length = execFileSync("bash", [
-			"-c",
-			`set -euo pipefail\n${line}\necho "\${#password}"`,
-		])
-			.toString()
-			.trim();
-		expect(Number(length)).toBeGreaterThanOrEqual(32);
+		const uid = (users: string) =>
+			execFileSync("bash", [
+				"-c",
+				`set -euo pipefail\ndscl() { printf '${users}'; }\n${line}\necho "$uid"`,
+			])
+				.toString()
+				.trim();
+		expect(uid("root 0\\nnobody -2\\n_www 70\\nkillian 501\\nci 503\\n")).toBe(
+			"504",
+		);
+		expect(uid("root 0\\nnobody -2\\n")).toBe("501");
 	});
 
 	it("only sends stored secrets to the target they were saved for", () => {
@@ -2675,16 +2705,13 @@ echo "os=$os"`,
 
 describe("managed Lima", () => {
 	const release = (assets: { name: string; digest?: string }[]) =>
-		({
-			ok: true,
-			status: 200,
-			json: async () => ({
-				assets: assets.map((asset) => ({
-					...asset,
-					browser_download_url: `https://example.test/${asset.name}`,
-				})),
-			}),
-		}) as Response;
+		json(200, {
+			tag_name: `v${LIMA_VERSION}`,
+			assets: assets.map((asset) => ({
+				...asset,
+				browser_download_url: `https://example.test/${asset.name}`,
+			})),
+		});
 	const digest = `sha256:${"b".repeat(64)}`;
 
 	it("pins the archive of the Mac's architecture by its digest", async () => {
@@ -2829,5 +2856,857 @@ ls`,
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+/** A shell function of a script, from its name to its closing brace. */
+const shellFunction = (script: string, name: string) => {
+	const start = script.indexOf(`\n${name}() {`);
+	return script.slice(start + 1, script.indexOf("\n}\n", start) + 3);
+};
+
+const runnerctlScript = () =>
+	extractRuntimeFile(
+		installRuntimeScript(),
+		"/opt/dokploy-runners/bin/runnerctl",
+	);
+
+/** Runs bash and returns its status and output, failing or not. */
+const bash = (script: string) => {
+	const result = spawnSync("bash", ["-c", script]);
+	return {
+		status: result.status,
+		stdout: result.stdout.toString(),
+		stderr: result.stderr.toString(),
+	};
+};
+
+/** runnerctl needs bash 4.4 (mapfile -d) and GNU find and stat, as on the machines. */
+const linuxShell = (() => {
+	try {
+		const version = execFileSync("bash", [
+			"-c",
+			"echo $BASH_VERSION",
+		]).toString();
+		return (
+			/^(4\.[4-9]|[5-9])/.test(version) &&
+			execFileSync("find", ["--version"]).toString().includes("GNU")
+		);
+	} catch {
+		return false;
+	}
+})();
+
+/** Records the updates the controller sends to the (mocked) database. */
+const recordUpdates = (returning: unknown[]) => {
+	const calls: { values: Record<string, unknown>; where: unknown }[] = [];
+	const original = vi.mocked(db.update).getMockImplementation();
+	vi.mocked(db.update).mockImplementation(() => {
+		const call: { values: Record<string, unknown>; where: unknown } = {
+			values: {},
+			where: undefined,
+		};
+		const query = {
+			set: (values: Record<string, unknown>) => {
+				call.values = values;
+				return query;
+			},
+			where: (where: unknown) => {
+				call.where = where;
+				calls.push(call);
+				return query;
+			},
+			returning: async () => returning,
+			// biome-ignore lint/suspicious/noThenProperty: drizzle queries are awaited as they are.
+			then: (resolve: (value: unknown) => void) => resolve([]),
+		};
+		return query as never;
+	});
+	return {
+		calls,
+		restore: () => vi.mocked(db.update).mockImplementation(original as never),
+	};
+};
+
+const renderSql = (where: unknown) => new PgDialect().sqlToQuery(where as SQL);
+
+describe("second review fixes", () => {
+	it("never takes a job's directory name for a cleanup record", () => {
+		const runnerctl = runnerctlScript();
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "dokploy-gc-")));
+		try {
+			const cache = join(dir, "tool-cache");
+			const home = join(dir, "home");
+			const victim = join(dir, "victim");
+			for (const path of [
+				join(cache, "node/18"),
+				join(home, ".cache/pip"),
+				join(victim, "data"),
+			]) {
+				mkdirSync(path, { recursive: true });
+			}
+			symlinkSync(dir, join(cache, "link"));
+			const forged = "x\n0\ttool_cache\t\t/etc";
+			const result = bash(
+				`set -euo pipefail
+GC_TOOL_CACHE=${shellQuote(cache)}
+GC_HOME=${shellQuote(home)}
+${shellFunction(runnerctl, "gc_parse")}
+${shellFunction(runnerctl, "gc_cache_entry")}
+check() { if gc_cache_entry "$1"; then echo "yes $2"; else echo "no $2"; fi; }
+check ${shellQuote(join(cache, "node/18"))} tool
+check ${shellQuote(join(home, ".cache/pip"))} home
+check ${shellQuote(join(cache, "node/18/../../../victim"))} dotdot
+check ${shellQuote(join(cache, "link/victim"))} symlink
+check ${shellQuote(victim)} outside
+check ${shellQuote(join(cache, "node/18/deeper"))} deeper
+last="" kind="" tags="" entry=""
+gc_parse ${shellQuote(`1700000000\ttool_cache\t\t${cache}/node/${forged}`)}
+printf 'last=%s kind=%s entry=%s\\n' "$last" "$kind" "\${entry#${cache}/node/}" | tr '\\n\\t' '|>'
+echo
+gc_parse 'entries[$(touch ${dir}/injected)]\thome\t\t${home}/.cache/pip'
+(( last < 1 )) && echo "last=$last"`,
+			);
+			expect(result.stderr).toBe("");
+			expect(result.stdout.split("\n")).toEqual([
+				"yes tool",
+				"yes home",
+				"no dotdot",
+				"no symlink",
+				"no outside",
+				"no deeper",
+				// One record per NUL: the newline stays in the path it belongs to.
+				"last=1700000000 kind=tool_cache entry=x|0>tool_cache>>/etc|",
+				"last=0",
+				"",
+			]);
+			expect(existsSync(join(dir, "injected"))).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it.skipIf(!linuxShell)(
+		"cleans the caches without following what jobs named or linked",
+		() => {
+			const dir = realpathSync(mkdtempSync(join(tmpdir(), "dokploy-gc-")));
+			try {
+				const root = join(dir, "root");
+				const state = join(dir, "state");
+				const victim = join(dir, "victim");
+				const forged = `x\n0\ttool_cache\t\t${victim}`;
+				for (const path of [
+					join(root, "tool-cache/node/18"),
+					join(root, "tool-cache/node", forged),
+					join(state, "home/.cache/pip"),
+					join(victim, "data"),
+				]) {
+					mkdirSync(path, { recursive: true });
+				}
+				symlinkSync(dir, join(root, "tool-cache/link"));
+				const runnerctl = runnerctlScript()
+					.replace("ROOT=/opt/dokploy-runners", `ROOT=${shellQuote(root)}`)
+					.replace(
+						"STATE=/var/lib/dokploy-runners",
+						`STATE=${shellQuote(state)}`,
+					);
+				const functions = runnerctl.slice(
+					0,
+					runnerctl.indexOf('\ncase "${1:-}" in'),
+				);
+				const result = bash(`${functions}
+gc_docker() { return 1; }
+GC_FREE=$(kib_free)
+GC_TARGET=$((GC_FREE * 2))
+mapfile -d '' -t entries < <(gc_candidates | sort -z -t $'\\t' -n -k1,1)
+echo "entries=\${#entries[@]}"
+for record in "\${entries[@]}"; do
+	gc_parse "$record"
+	gc_remove "$kind" "$entry" "$tags"
+done`);
+				expect(result.stderr).toBe("");
+				expect(result.stdout).toContain("entries=3");
+				expect(existsSync(join(victim, "data"))).toBe(true);
+				expect(existsSync(join(root, "tool-cache/node/18"))).toBe(false);
+				expect(existsSync(join(root, "tool-cache/node", forged))).toBe(false);
+				expect(existsSync(join(state, "home/.cache/pip"))).toBe(false);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("never reports a runner stopped when systemctl failed", () => {
+		const runnerctl = runnerctlScript();
+		const prelude = [
+			'die() { echo "runnerctl: $*" >&2; exit 1; }',
+			shellFunction(runnerctl, "slot_arg"),
+			shellFunction(runnerctl, "unit_of"),
+			shellFunction(runnerctl, "slot_state"),
+			shellFunction(runnerctl, "cmd_stop"),
+			shellFunction(runnerctl, "cmd_stop_all"),
+		].join("\n");
+		const systemctl = (stop: number) =>
+			`systemctl() { case "$1" in stop) return ${stop} ;; show) echo deactivating ;; esac; }`;
+		const failed = bash(
+			`set -euo pipefail\n${prelude}\n${systemctl(1)}\ncmd_stop 3`,
+		);
+		expect(failed.status).toBe(1);
+		expect(failed.stdout).not.toContain("stopped");
+		expect(failed.stderr).toContain(
+			"slot 3 did not stop (state: deactivating)",
+		);
+		const all = bash(
+			`set -euo pipefail\n${prelude}\n${systemctl(1)}\ncmd_stop_all || echo "status=$?"`,
+		);
+		expect(all.stdout).toBe("status=1\n");
+		expect(all.stderr).toContain("did not stop");
+		const stopped = bash(
+			`set -euo pipefail\n${prelude}\n${systemctl(0)}\ncmd_stop 3`,
+		);
+		expect(stopped.stdout).toBe("stopped slot=3\n");
+	});
+
+	it("leaves nothing behind when the runtime or the VM goes", () => {
+		const uninstall = shellFunction(runnerctlScript(), "cmd_uninstall");
+		expect(uninstall).toContain(
+			"/etc/systemd/system/fstrim.timer.d/dokploy-runners.conf",
+		);
+		expect(uninstall).toContain("cmd_stop_all >/dev/null ||");
+		// The boot daemon starts the VM while the flag exists: deleting the VM removes it.
+		const home = realpathSync(
+			mkdtempSync(join(tmpdir(), "dokploy-runner-home-")),
+		);
+		try {
+			mkdirSync(join(home, ".dokploy/lima/bin"), { recursive: true });
+			writeFileSync(join(home, ".dokploy/enabled"), "");
+			const limactl = join(home, ".dokploy/lima/bin/limactl");
+			writeFileSync(limactl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+			execFileSync("bash", ["-c", macDeleteVmScript("dokploy-runners")], {
+				env: { ...process.env, HOME: home },
+			});
+			expect(existsSync(join(home, ".dokploy/enabled"))).toBe(false);
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	it("only takes KEY=VALUE lines from the pool environment", () => {
+		const env = "DEBUG\nA=1\n# note\n=x\nB=two=parts";
+		expect(envKeys(env)).toEqual(["A", "B"]);
+		expect(parseEnvLines(env)).toEqual([
+			null,
+			{ key: "A", value: "1" },
+			null,
+			{ key: "B", value: "two=parts" },
+		]);
+		const file = runnerEnvironment({
+			runnerEnv: env,
+			jobStartedHook: null,
+			jobCompletedHook: null,
+		});
+		expect(file).not.toMatch(/DEBU/);
+		expect(file).toContain('A="1"\nB="two=parts"\n');
+	});
+
+	it("bounds what a pool stores", () => {
+		const pool = {
+			name: "Lab",
+			scope: "organization",
+			owner: "Flots-app",
+			authType: "token",
+			token: "ghp_x",
+		};
+		expect(apiCreateGithubRunnerPool.safeParse(pool).success).toBe(true);
+		for (const change of [
+			{ token: "x".repeat(1_001) },
+			{ authType: "app", appId: 1, appPrivateKey: "k".repeat(16_001) },
+			{ runnerEnv: `A=${"x".repeat(32_768)}` },
+			{ runnerEnv: "DEBUG" },
+			{ jobStartedHook: `/${"a".repeat(1_024)}` },
+		]) {
+			expect(
+				apiCreateGithubRunnerPool.safeParse({ ...pool, ...change }).success,
+				Object.keys(change).join(),
+			).toBe(false);
+		}
+	});
+
+	it("names machines the same way in the form, the API and the script", () => {
+		const enrollment = (name: string) =>
+			apiStartGithubRunnerEnrollment.safeParse({
+				githubRunnerPoolId: "pool",
+				name,
+				platform: "linux",
+			}).success;
+		const script = (machine: string) => () =>
+			machineSetupScript({
+				platform: "linux",
+				machine,
+				publicKey: machineKey.publicKey,
+				keepAwake: false,
+			});
+		for (const name of ["m6", "a".repeat(24)]) {
+			expect(MACHINE_NAME.test(name)).toBe(true);
+			expect(enrollment(name)).toBe(true);
+			expect(script(name)).not.toThrow();
+		}
+		for (const name of ["a".repeat(25), "-m6", "M6"]) {
+			expect(MACHINE_NAME.test(name)).toBe(false);
+			expect(enrollment(name)).toBe(false);
+			expect(script(name)).toThrow(/Invalid machine name/);
+		}
+	});
+
+	describe("drain completion", () => {
+		const drain: GithubRunnerDrain = {
+			mode: "wait",
+			reason: "disable",
+			requestedAt: "2026-10-22T08:00:00.000Z",
+			deadline: null,
+			operationId: "op-drain",
+		};
+		const node = (overrides: Record<string, unknown> = {}) =>
+			({
+				githubRunnerNodeId: "node-c6",
+				name: "m6",
+				platform: "macos",
+				vmName: "dokploy-runners",
+				enabled: false,
+				phase: "draining",
+				applied: null,
+				drain,
+				pool: { authType: "token", token: null, name: "Lab" },
+				...overrides,
+			}) as never;
+		const driver = () => {
+			const host = vi.fn(async (_script: string) => ({
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+			}));
+			const guest = vi.fn(async (_command: string) => ({
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+			}));
+			return { host, guest, driver: { host, guest } as never };
+		};
+
+		it("keeps an operator's re-enable made while the VM stopped", async () => {
+			const { calls, restore } = recordUpdates([]);
+			const { host, driver: fake } = driver();
+			vi.mocked(db.query.githubRunnerNodes.findFirst).mockResolvedValueOnce(
+				node({ enabled: true, phase: "ready", drain: null }),
+			);
+			try {
+				await completeDrain({ node: node(), driver: fake } as never);
+			} finally {
+				restore();
+			}
+			const ended = calls.find((call) => call.values.phase === "stopped");
+			expect(ended?.values).toEqual({ phase: "stopped", drain: null });
+			const query = renderSql(ended?.where);
+			expect(query.sql).toContain(`"phase" = $`);
+			expect(query.sql).toContain(`->>'requestedAt' = $`);
+			expect(query.sql).toContain(`->>'operationId' IS NOT DISTINCT FROM $`);
+			expect(query.params).toEqual(
+				expect.arrayContaining([
+					"node-c6",
+					"draining",
+					drain.requestedAt,
+					"op-drain",
+				]),
+			);
+			// Nothing matched: no "done", and the VM it stopped runs again.
+			expect(calls.some((call) => call.values.status === "done")).toBe(false);
+			expect(
+				host.mock.calls.map(
+					([script]) => /limactl (stop|start)/.exec(script)?.[0],
+				),
+			).toEqual(["limactl stop", "limactl start"]);
+		});
+
+		it("disables the machine when the drain is still the current one", async () => {
+			const { calls, restore } = recordUpdates([{ id: "node-c6" }]);
+			const { host, driver: fake } = driver();
+			try {
+				await completeDrain({ node: node(), driver: fake } as never);
+			} finally {
+				restore();
+			}
+			expect(calls.some((call) => call.values.status === "done")).toBe(true);
+			expect(host).toHaveBeenCalledTimes(1);
+		});
+
+		it("does not delete a machine whose removal was cancelled", async () => {
+			const { calls, restore } = recordUpdates([]);
+			const deletes = vi.mocked(db.delete).getMockImplementation();
+			vi.mocked(db.delete).mockImplementation(
+				() =>
+					({
+						where: () => ({ returning: async () => [] }),
+					}) as never,
+			);
+			const { guest, driver: fake } = driver();
+			try {
+				await completeDrain({
+					node: node({
+						platform: "linux",
+						drain: { ...drain, reason: "remove", uninstall: true },
+					}),
+					driver: fake,
+				} as never);
+			} finally {
+				restore();
+				vi.mocked(db.delete).mockImplementation(deletes as never);
+			}
+			expect(guest).toHaveBeenCalledWith(
+				"/opt/dokploy-runners/bin/runnerctl uninstall",
+				expect.anything(),
+			);
+			// Its runtime is gone: it is provisioned again before it takes jobs.
+			const kept = calls.find((call) => "applied" in call.values);
+			expect(kept?.values).toMatchObject({
+				applied: null,
+				lastError: expect.stringContaining("provision the machine again"),
+			});
+			expect(calls.some((call) => call.values.status === "done")).toBe(false);
+		});
+	});
+
+	it("refuses to provision a busy machine before writing anything", async () => {
+		const tasks = (
+			globalThis as {
+				__dokployGithubRunners?: { tasks: Map<string, Promise<void>> };
+			}
+		).__dokployGithubRunners?.tasks;
+		expect(tasks).toBeDefined();
+		tasks?.set("node-c7", new Promise(() => undefined));
+		vi.mocked(db.query.githubRunnerNodes.findFirst).mockResolvedValueOnce({
+			githubRunnerNodeId: "node-c7",
+			name: "m4",
+			phase: "ready",
+		} as never);
+		vi.mocked(db.update).mockClear();
+		vi.mocked(db.insert).mockClear();
+		try {
+			await expect(provisionRunnerNode("node-c7", null)).rejects.toThrow(
+				"Another task is running on this machine",
+			);
+		} finally {
+			tasks?.delete("node-c7");
+		}
+		// The machine keeps its phase and the running operation is not cancelled.
+		expect(db.update).not.toHaveBeenCalled();
+		expect(db.insert).not.toHaveBeenCalled();
+	});
+
+	it("tries an unreachable machine less and less often, up to a minute", () => {
+		expect([1, 2, 3, 4, 5, 10].map(reconnectDelay)).toEqual([
+			10_000, 20_000, 40_000, 60_000, 60_000, 60_000,
+		]);
+	});
+
+	it("stops a reroute scan GitHub cannot answer, a few repositories at a time", async () => {
+		let inFlight = 0;
+		let most = 0;
+		const listed: string[] = [];
+		const client = {
+			listRepositories: async () =>
+				Array.from({ length: 40 }, (_, index) => `Flots-app/repo-${index}`),
+			listQueuedRuns: async (repository: string) => {
+				listed.push(repository);
+				inFlight++;
+				most = Math.max(most, inFlight);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				inFlight--;
+				throw new GithubRunnerApiError("unreachable: timeout", null);
+			},
+		};
+		const errors = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		try {
+			await rerouteQueuedRuns(
+				{ githubRunnerPoolId: "pool-p4", name: "Lab", labels: ["ci"] } as never,
+				client as never,
+			);
+			// Four at a time; once three failed, no new repository is started.
+			expect(most).toBeLessThanOrEqual(4);
+			expect(listed.length).toBeLessThanOrEqual(3 + 4 - 1);
+			expect(errors).toHaveBeenCalledTimes(1);
+			expect(String(errors.mock.calls[0]?.[0])).toMatch(
+				/stopped early.*repo-0: unreachable/,
+			);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+
+	it("keeps the ETags of what it polls, within a bound", async () => {
+		const sent: { url: string; etag: string | null }[] = [];
+		const client = createGithubRunnerClient(
+			{
+				scope: "organization",
+				owner: "Flots-app",
+				repository: null,
+				runnerGroup: "Default",
+				apiUrl: "https://api.github.com",
+			},
+			{ type: "token", token: "t" },
+			{
+				fetch: async (url, init) => {
+					const etag = new Headers(init?.headers).get("if-none-match");
+					sent.push({ url: String(url), etag });
+					if (etag) return new Response(null, { status: 304 });
+					return json(
+						200,
+						String(url).includes("status=queued")
+							? { workflow_runs: [] }
+							: { status: "completed", conclusion: "success", run_attempt: 1 },
+						{ ETag: `"${sent.length}"` },
+					);
+				},
+			},
+		);
+		const queued = (index: number) =>
+			client.listQueuedRuns(`Flots-app/r${index}`);
+		for (let index = 0; index <= 500; index++) await queued(index);
+		sent.length = 0;
+		await queued(500);
+		await queued(0);
+		await client.getRun("Flots-app/r1", "77");
+		await client.getRun("Flots-app/r1", "77");
+		// The newest entry is still known, the oldest went; runs are never kept.
+		expect(sent.map((item) => item.etag !== null)).toEqual([
+			true,
+			false,
+			false,
+			false,
+		]);
+	});
+
+	it("pages the jobs of a run through Octokit, with a timeout", async () => {
+		const target = {
+			scope: "repository" as const,
+			owner: "Flots-app",
+			repository: "monorepo",
+			runnerGroup: "Default",
+			apiUrl: "https://api.github.com",
+		};
+		const urls: string[] = [];
+		const jobs = (count: number, start: number) =>
+			Array.from({ length: count }, (_, index) => ({
+				name: `job-${start + index}`,
+				status: "queued",
+				conclusion: null,
+				runner_name: null,
+				labels: ["self-hosted", "ci"],
+				created_at: "2026-10-22T08:00:00Z",
+			}));
+		const client = createGithubRunnerClient(
+			target,
+			{ type: "token", token: "t" },
+			{
+				fetch: async (url, init) => {
+					urls.push(String(url));
+					expect(new Headers(init?.headers).get("authorization")).toBe(
+						"Bearer t",
+					);
+					const base =
+						"https://api.github.com/repos/Flots-app/monorepo/actions/runs/9/jobs";
+					return String(url).includes("page=2")
+						? json(200, { total_count: 130, jobs: jobs(30, 100) })
+						: json(
+								200,
+								{ total_count: 130, jobs: jobs(100, 0) },
+								{ link: `<${base}?per_page=100&page=2>; rel="next"` },
+							);
+				},
+			},
+		);
+		const listed = await client.listRunJobs("Flots-app/monorepo", "9");
+		expect(listed).toHaveLength(130);
+		expect(listed[129]).toMatchObject({
+			name: "job-129",
+			labels: ["self-hosted", "ci"],
+		});
+		expect(urls).toHaveLength(2);
+		await expect(client.listRunJobs("someone/else", "9")).rejects.toThrow(
+			"outside this pool",
+		);
+		const slow = createGithubRunnerClient(
+			target,
+			{ type: "token", token: "t" },
+			{
+				timeoutMs: 20,
+				fetch: (_url, init) =>
+					new Promise((_resolve, reject) =>
+						init?.signal?.addEventListener("abort", () =>
+							reject(init.signal?.reason),
+						),
+					),
+			},
+		);
+		const timedOut = await slow
+			.listRunJobs("Flots-app/monorepo", "9")
+			.catch((error: unknown) => error);
+		expect(timedOut).toBeInstanceOf(GithubRunnerApiError);
+		expect((timedOut as GithubRunnerApiError).status).toBeNull();
+		expect(isPermanentGithubError(timedOut)).toBe(false);
+	});
+
+	describe("routing variable", () => {
+		let answer = 204;
+		const fetched: string[] = [];
+		const pool = (overrides: Record<string, unknown>) =>
+			({
+				githubRunnerPoolId: "pool-e1",
+				name: "Lab",
+				scope: "organization",
+				owner: "Flots-app",
+				repository: null,
+				runnerGroup: "Default",
+				apiUrl: "https://api.github.com",
+				authType: "token",
+				token: "t",
+				labels: ["ci"],
+				fallbackLabels: ["ubuntu-24.04"],
+				routingVariable: null,
+				routing: {
+					variable: "DOKPLOY_RUNS_ON",
+					target: "pool",
+					value: '["self-hosted","ci"]',
+					since: "2026-10-22T08:00:00.000Z",
+					unavailableSince: null,
+					syncedValue: '["self-hosted","ci"]',
+					syncedAt: "2026-10-22T08:00:00.000Z",
+					attemptedAt: "2026-10-22T08:00:00.000Z",
+					error: null,
+				},
+				...overrides,
+			}) as never;
+		beforeAll(() => {
+			vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+				fetched.push(`${init?.method ?? "GET"} ${url}`);
+				return init?.method === "DELETE" && answer !== 204
+					? json(answer, { message: "Resource not accessible by integration" })
+					: json(204, null);
+			});
+		});
+		afterAll(() => vi.unstubAllGlobals());
+
+		it("keeps the routing, with the error, until GitHub deleted the variable", async () => {
+			answer = 403;
+			const failed = recordUpdates([]);
+			try {
+				await routePool(pool({}));
+			} finally {
+				failed.restore();
+			}
+			expect(fetched).toContain(
+				"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON",
+			);
+			expect(failed.calls).toHaveLength(1);
+			expect(failed.calls[0]?.values.routing).toMatchObject({
+				variable: "DOKPLOY_RUNS_ON",
+				error: expect.stringContaining("Cannot delete DOKPLOY_RUNS_ON"),
+			});
+			answer = 204;
+			const deleted = recordUpdates([]);
+			try {
+				await routePool(pool({}));
+			} finally {
+				deleted.restore();
+			}
+			expect(deleted.calls[0]?.values).toEqual({ routing: null });
+		});
+
+		it("keeps a renamed variable until the previous one is deleted", async () => {
+			answer = 403;
+			fetched.length = 0;
+			const renamed = recordUpdates([]);
+			try {
+				await routePool(pool({ routingVariable: "CI_RUNS_ON" }));
+			} finally {
+				renamed.restore();
+			}
+			expect(fetched.slice(0, 2)).toEqual([
+				"PATCH https://api.github.com/orgs/Flots-app/actions/variables/CI_RUNS_ON",
+				"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON",
+			]);
+			expect(renamed.calls[0]?.values.routing).toMatchObject({
+				variable: "DOKPLOY_RUNS_ON",
+				error: expect.stringContaining("DOKPLOY_RUNS_ON could not be deleted"),
+			});
+		});
+
+		it("tells the operator when a deleted pool leaves its variable", async () => {
+			answer = 500;
+			await expect(
+				clearPoolRouting(pool({ githubRunnerPoolId: "pool-e1-delete" })),
+			).resolves.toMatch(
+				/DOKPLOY_RUNS_ON could not be deleted .*delete it on GitHub/,
+			);
+			answer = 204;
+			await expect(
+				clearPoolRouting(pool({ githubRunnerPoolId: "pool-e1-delete" })),
+			).resolves.toBeNull();
+		});
+	});
+
+	it("gives the slider thumb its accessible name", () => {
+		const markup = renderToStaticMarkup(
+			createElement(Slider, {
+				"aria-label": "CPU budget",
+				value: [50],
+				min: 10,
+				max: 100,
+			}),
+		);
+		expect(markup).toMatch(
+			/<span[^>]*role="slider"[^>]*aria-label="CPU budget"|<span[^>]*aria-label="CPU budget"[^>]*role="slider"/,
+		);
+	});
+
+	it("shows the validation messages instead of the zod issues", () => {
+		const refused = Object.assign(
+			new Error(
+				'[{"origin":"string","code":"invalid_format","message":"Invalid host"}]',
+			),
+			{
+				data: {
+					zodError: {
+						formErrors: [],
+						fieldErrors: { host: ["Invalid host"], token: ["Too small"] },
+					},
+				},
+			},
+		);
+		expect(errorText(refused)).toBe("Invalid host · token: Too small");
+		expect(errorText(new Error("Pool Lab has no token"))).toBe(
+			"Pool Lab has no token",
+		);
+		expect(errorText(null, "Unable to save")).toBe("Unable to save");
+	});
+});
+
+describe("runner versions", () => {
+	const DAY = 24 * 60 * 60_000;
+	const now = Date.parse("2026-10-22T12:00:00Z");
+	const ago = (days: number) => new Date(now - days * DAY).toISOString();
+	const releases = [
+		{ version: "2.331.0", publishedAt: ago(0.5) },
+		{ version: "2.330.0", publishedAt: ago(10) },
+		{ version: "2.329.0", publishedAt: ago(40) },
+	];
+	const status = (
+		installed: string | null,
+		options: Partial<Parameters<typeof runnerVersionStatus>[0]> = {},
+	) =>
+		runnerVersionStatus({
+			installed,
+			releases,
+			pinned: null,
+			updating: true,
+			now,
+			...options,
+		});
+
+	it("compares versions by number", () => {
+		expect(compareVersions("2.330.0", "2.329.10")).toBe(1);
+		expect(compareVersions("2.329.10", "2.329.9")).toBe(1);
+		expect(compareVersions("v2.329.0", "2.329.0")).toBe(0);
+		expect(compareVersions("2.328.0", "2.329.0")).toBe(-1);
+	});
+
+	it("is current on the latest release", () => {
+		expect(status("2.331.0").state).toBe("current");
+		expect(status("2.332.0").state).toBe("current");
+	});
+
+	it("waits for Dokploy's own update right after a release", () => {
+		const result = status("2.330.0");
+		expect(result.state).toBe("pending");
+		expect(result.latest).toBe("2.331.0");
+	});
+
+	it("flags an update Dokploy did not apply a day after the release", () => {
+		const result = status("2.330.0", {
+			releases: [
+				{ version: "2.331.0", publishedAt: ago(2) },
+				...releases.slice(1),
+			],
+		});
+		expect(result.state).toBe("outdated");
+		expect(result.message).toMatch(/events and its last error/);
+	});
+
+	it("counts GitHub's 30 days from the first newer release", () => {
+		// 2.329.0 is behind 2.330.0, out 10 days ago: 20 days left.
+		const result = status("2.329.0");
+		expect(result.deadline).toBe(
+			new Date(Date.parse(ago(10)) + RUNNER_UPDATE_DEADLINE_MS).toISOString(),
+		);
+		expect(result.state).toBe("outdated");
+		// 2.328.0 is behind 2.329.0, out 40 days ago: GitHub no longer queues jobs.
+		const unsupported = status("2.328.0");
+		expect(unsupported.state).toBe("unsupported");
+		expect(unsupported.message).toMatch(/no longer queues jobs/);
+	});
+
+	it("blames a pinned version and tells how to fix it", () => {
+		const result = status("2.330.0", { pinned: "2.330.0" });
+		expect(result.state).toBe("outdated");
+		expect(result.message).toMatch(/pinned in the pool settings \(2\.330\.0\)/);
+	});
+
+	it("waits for a disabled machine to be enabled", () => {
+		const result = status("2.330.0", { updating: false });
+		expect(result.state).toBe("pending");
+		expect(result.message).toMatch(/once the machine is enabled/);
+	});
+
+	it("says nothing it does not know", () => {
+		expect(status(null).state).toBe("unknown");
+		expect(status("2.330.0", { releases: [] }).state).toBe("unknown");
+	});
+
+	it("lists published runner releases only", async () => {
+		const fetch = vi.fn(
+			async (_url: string) =>
+				new Response(
+					JSON.stringify([
+						{
+							tag_name: "v2.332.0",
+							draft: true,
+							prerelease: false,
+							published_at: null,
+						},
+						{
+							tag_name: "v2.331.1",
+							draft: false,
+							prerelease: true,
+							published_at: ago(1),
+						},
+						{
+							tag_name: "v2.331.0",
+							draft: false,
+							prerelease: false,
+							published_at: ago(0.5),
+						},
+					]),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+		await expect(
+			listRunnerReleases({
+				fetch: fetch as unknown as typeof globalThis.fetch,
+			}),
+		).resolves.toEqual([{ version: "2.331.0", publishedAt: ago(0.5) }]);
+		expect(String(fetch.mock.calls[0]?.[0])).toContain(
+			"/repos/actions/runner/releases?per_page=30",
+		);
 	});
 });

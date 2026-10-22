@@ -18,7 +18,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { api } from "@/utils/api";
 import { BudgetFields } from "./budget-fields";
 import { type BudgetValues, parseLabels } from "./budget-values";
-import type { RunnerMachine } from "./format";
+import { errorText, type RunnerMachine } from "./format";
 import { RunningJobs } from "./machine-actions";
 
 type Mode = "wait" | "kill";
@@ -135,7 +135,7 @@ const EditMachineForm = ({
 			);
 			onDone();
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Unable to save");
+			toast.error(errorText(error, "Unable to save"));
 		}
 	};
 
@@ -171,7 +171,7 @@ const EditMachineForm = ({
 				/>
 			)}
 			{update.error && (
-				<AlertBlock type="error">{update.error.message}</AlertBlock>
+				<AlertBlock type="error">{errorText(update.error)}</AlertBlock>
 			)}
 			<DialogFooter>
 				<Button variant="outline" onClick={onDone}>

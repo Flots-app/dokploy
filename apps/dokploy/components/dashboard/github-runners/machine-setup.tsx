@@ -2,6 +2,7 @@ import { KeyRound, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { api } from "@/utils/api";
+import { errorText } from "./format";
 import { CopyCode } from "./shared";
 
 /** Creates the SSH key Dokploy uses to reach the runner machines, in one click. */
@@ -32,9 +33,7 @@ export const GenerateKeyButton = ({
 			if (key) onCreated(key.sshKeyId);
 			toast.success("Key created: authorize it on the machine (step below)");
 		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Unable to create the key",
-			);
+			toast.error(errorText(error, "Unable to create the key"));
 		}
 	};
 	return (

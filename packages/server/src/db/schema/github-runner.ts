@@ -15,6 +15,8 @@ import {
 } from "drizzle-orm/pg-core";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { parseEnvLines } from "../../utils/github-runners/env";
+import { MACHINE_NAME } from "../../utils/github-runners/setup-constants";
 import { organization } from "./account";
 import { github } from "./github";
 import { sshKeys } from "./ssh-key";
@@ -640,20 +642,18 @@ const githubName = z
 const absolutePath = z
 	.string()
 	.trim()
+	.max(1024)
 	.regex(/^\/[A-Za-z0-9._/-]+$/, "Must be an absolute path")
 	.nullable()
 	.default(null);
 
+// Read back (decrypted, parsed for its keys) by every overview poll.
 const envLines = z
 	.string()
+	.max(32_768, "The environment is limited to 32 KiB")
 	.default("")
 	.refine(
-		(value) =>
-			value
-				.split("\n")
-				.map((line) => line.trim())
-				.filter((line) => line && !line.startsWith("#"))
-				.every((line) => /^[A-Za-z_][A-Za-z0-9_]*=[^\0\r]*$/.test(line)),
+		(value) => parseEnvLines(value).every(Boolean),
 		"Each line must be KEY=VALUE",
 	);
 
@@ -672,10 +672,10 @@ const poolFields = z.object({
 		.regex(/^https:\/\//, "Must use https")
 		.default("https://api.github.com"),
 	authType: z.enum(["token", "app", "provider"]),
-	token: z.string().trim().min(1).nullable().default(null),
+	token: z.string().trim().min(1).max(1_000).nullable().default(null),
 	appId: z.number().int().positive().nullable().default(null),
 	appInstallationId: z.string().trim().regex(/^\d+$/).nullable().default(null),
-	appPrivateKey: z.string().trim().min(1).nullable().default(null),
+	appPrivateKey: z.string().trim().min(1).max(16_000).nullable().default(null),
 	githubId: z.string().min(1).nullable().default(null),
 	runnerVersion: z
 		.string()
@@ -763,12 +763,18 @@ export const apiTestGithubRunnerCredentials = poolFields
 const nodeName = z
 	.string()
 	.trim()
-	.min(1)
-	.max(24)
 	.regex(
-		/^[a-z0-9][a-z0-9-]*$/,
-		"Lowercase letters, digits and hyphens; it prefixes the runner names",
+		MACHINE_NAME,
+		"Lowercase letters, digits and hyphens, 24 at most; it prefixes the runner names",
 	);
+
+const vmName = z
+	.string()
+	.trim()
+	.min(1)
+	.max(40)
+	.regex(/^[a-z0-9][a-z0-9-]*$/, "Invalid VM name")
+	.default("dokploy-runners");
 
 const budgetFields = {
 	cpuPercent: z.number().int().min(10).max(100),
@@ -806,13 +812,7 @@ const connectionFields = {
 		.regex(/^[a-z_][a-z0-9_.-]*$/i, "Invalid username"),
 	sshKeyId: z.string().min(1),
 	platform: z.enum(["linux", "macos"]),
-	vmName: z
-		.string()
-		.trim()
-		.min(1)
-		.max(40)
-		.regex(/^[a-z0-9][a-z0-9-]*$/, "Invalid VM name")
-		.default("dokploy-runners"),
+	vmName,
 };
 
 export const apiStartGithubRunnerEnrollment = z.object({
@@ -820,13 +820,7 @@ export const apiStartGithubRunnerEnrollment = z.object({
 	name: nodeName,
 	description: z.string().trim().max(500).nullable().default(null),
 	platform: z.enum(["linux", "macos"]),
-	vmName: z
-		.string()
-		.trim()
-		.min(1)
-		.max(40)
-		.regex(/^[a-z0-9][a-z0-9-]*$/, "Invalid VM name")
-		.default("dokploy-runners"),
+	vmName,
 	keepAwake: z.boolean().default(true),
 });
 
