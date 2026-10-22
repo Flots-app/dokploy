@@ -1,5 +1,5 @@
 {
-  "id": "bf3d1128-7eb6-4134-b4f9-28df30e42f64",
+  "id": "def9d997-9844-4509-8e55-503603be5692",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -4167,6 +4167,55 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.github_runner_controller": {
+      "name": "github_runner_controller",
+      "schema": "",
+      "columns": {
+        "owner": {
+          "name": "owner",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "host": {
+          "name": "host",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "startedAt": {
+          "name": "startedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seenAt": {
+          "name": "seenAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.github_runner_job": {
       "name": "github_runner_job",
       "schema": "",
@@ -4374,6 +4423,48 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.github_runner_leader": {
+      "name": "github_runner_leader",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner": {
+          "name": "owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "since": {
+          "name": "since",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "until": {
+          "name": "until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "github_runner_leader_single": {
+          "name": "github_runner_leader_single",
+          "value": "\"github_runner_leader\".\"id\" = 1"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.github_runner_metric": {
@@ -5151,6 +5242,27 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{\"auto\":true,\"window\":null}'::jsonb"
+        },
+        "rolloutPolicy": {
+          "name": "rolloutPolicy",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"maxUnavailable\":1,\"canary\":true}'::jsonb"
+        },
+        "rollouts": {
+          "name": "rollouts",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "autonomyReserve": {
+          "name": "autonomyReserve",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 2
         },
         "createdAt": {
           "name": "createdAt",
@@ -10353,7 +10465,8 @@
         "disable",
         "enable",
         "remove",
-        "upgrade"
+        "upgrade",
+        "patch"
       ]
     },
     "public.githubRunnerPlacement": {

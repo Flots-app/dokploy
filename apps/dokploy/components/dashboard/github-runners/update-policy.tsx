@@ -193,6 +193,23 @@ export const UpdatePolicyFields = ({
 				onChange={(window) => onChange({ ...value, window })}
 			/>
 		)}
+		{value.auto && (
+			<div className="flex items-start justify-between gap-4">
+				<Label htmlFor={`${id}-os`} className="block font-normal">
+					Install the OS updates too
+					<span className="block text-xs text-muted-foreground">
+						Linux machines and the VM of a Mac: no new job, the running ones
+						end, then apt upgrade and a reboot if needed, one machine at a time.
+						macOS itself stays with you (it needs its owner or an MDM).
+					</span>
+				</Label>
+				<Switch
+					id={`${id}-os`}
+					checked={value.osPatches === true}
+					onCheckedChange={(osPatches) => onChange({ ...value, osPatches })}
+				/>
+			</div>
+		)}
 		<p className="text-xs text-muted-foreground">
 			Whatever this setting, Dokploy installs a runtime this Dokploy requires,
 			and updates the runner 3 days before GitHub stops sending it jobs. "Update

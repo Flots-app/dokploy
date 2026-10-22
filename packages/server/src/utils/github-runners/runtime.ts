@@ -6,16 +6,25 @@
  */
 import { parseEnvLines } from "./env";
 
-export const RUNTIME_VERSION = 6;
+export const RUNTIME_VERSION = 7;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
- * v6 changed the disk cleanup records, so it is required.
+ * v6 changed the disk cleanup records, so it is required. v7 adds the
+ * reserve a machine arms itself with while no controller answers: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 
 const RUNTIME_ROOT = "/opt/dokploy-runners";
 export const RUNNERCTL = `${RUNTIME_ROOT}/bin/runnerctl`;
+/** Touched by every controller contact; autonomy starts after this much silence. */
+export const CONTROLLER_SEEN = "/var/lib/dokploy-runners/controller-seen";
+export const AUTONOMY_AFTER_S = 90;
+/**
+ * A reserved registration is used before this age: GitHub removes an ephemeral
+ * runner that never connected after a day.
+ */
+export const SPARE_MAX_AGE_S = 20 * 60 * 60;
 
 /**
  * Shell source kept verbatim (backslashes included); `\${` stands for a literal
@@ -40,6 +49,7 @@ SLICE=dokploy-runners.slice
 GC_LOCK="$STATE/gc.lock"
 SEEN="$STATE/image-seen"
 GC_SUFFIX=.dokploy-gc
+SPARES="$STATE/spares"
 
 die() { echo "runnerctl: $*" >&2; exit 1; }
 
@@ -55,6 +65,8 @@ unit_of() { echo "dokploy-runner@$1.service"; }
 kib_free() { df -Pk "$ROOT" | awk 'NR==2 {print $4}'; }
 
 cmd_status() {
+	# The controller probes every few seconds: the machine knows it is watched.
+	touch "$STATE/controller-seen" 2>/dev/null || true
 	echo "runtime version=$(cat "$ETC/runtime-version" 2>/dev/null || echo 0)"
 	echo "host cpus=$(nproc --all) memory_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo) available_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) arch=$(uname -m) load=$(cut -d' ' -f1 /proc/loadavg)"
 	df -Pk "$ROOT" | awk 'NR==2 {print "disk total_kib=" $2 " free_kib=" $4}'
@@ -105,6 +117,122 @@ cmd_status() {
 		[[ "$id" =~ ^[0-9]+$ ]] || continue
 		echo "jobfile id=$id name=$(cat "$ROOT/slots/$id/.dokploy-runner-name" 2>/dev/null || true) job=$(base64 -w0 <"$file")"
 	done
+	for file in "$SPARES"/*/*; do
+		[ -f "$file" ] || continue
+		id=$(basename "$(dirname "$file")")
+		[[ "$id" =~ ^[0-9]+$ ]] || continue
+		echo "spare slot=$id name=\${file##*/} created=$(stat -c %Y "$file")"
+	done
+	if [ -s "$STATE/autonomy.log" ]; then
+		echo "autonomy armed=$(wc -l <"$STATE/autonomy.log") last=$(tail -n 1 "$STATE/autonomy.log" | cut -d' ' -f1)"
+	fi
+}
+
+# Reads the arm input (JIT files and runner name) into the slot directory.
+read_jit() {
+	local dir=$1 key value
+	while IFS=' ' read -r key value || [ -n "\${key:-}" ]; do
+		case "$key" in
+		.runner | .credentials | .credentials_rsaparams)
+			[[ "$value" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid $key"
+			install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0600 /dev/null "$dir/$key"
+			printf '%s' "$value" | base64 -d >"$dir/$key"
+			;;
+		name)
+			[[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid runner name"
+			printf '%s\n' "$value" >"$dir/.dokploy-runner-name"
+			;;
+		'') ;;
+		*) die "unexpected input: $key" ;;
+		esac
+		key=""
+	done
+}
+
+# A registration kept for the slot, armed by autoarm while no controller answers.
+cmd_spare_add() {
+	local slot name tmp
+	slot=$(slot_arg "\${1:-}")
+	install -d -m 0700 "$SPARES" "$SPARES/$slot"
+	tmp=$(mktemp "$SPARES/$slot/.new.XXXXXX")
+	cat >"$tmp"
+	name=$(awk '$1 == "name" {print $2}' "$tmp")
+	[[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { rm -f "$tmp"; die "invalid runner name"; }
+	grep -q '^.credentials ' "$tmp" || { rm -f "$tmp"; die "incomplete JIT configuration"; }
+	chmod 0600 "$tmp"
+	mv -f "$tmp" "$SPARES/$slot/$name"
+	echo "spare slot=$slot name=$name"
+}
+
+cmd_spare_drop() {
+	local slot name
+	slot=$(slot_arg "\${1:-}")
+	name=\${2:-}
+	[[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid runner name"
+	rm -f "$SPARES/$slot/$name"
+	echo "dropped slot=$slot name=$name"
+}
+
+# on <max runners> <disk reserve KiB> <firewall hash|host|none>, or off.
+cmd_autonomy() {
+	case "\${1:-}" in
+	off)
+		rm -f "$ETC/autonomy"
+		rm -rf "$SPARES"
+		echo "autonomy off"
+		;;
+	on)
+		[[ "\${2:-}" =~ ^[0-9]{1,2}$ ]] || die "invalid runner count"
+		[[ "\${3:-}" =~ ^[0-9]+$ ]] || die "invalid disk reserve"
+		[[ "\${4:-}" =~ ^([a-f0-9]{32}|host|none)$ ]] || die "invalid firewall"
+		printf 'max_runners=%s min_free_kib=%s firewall=%s\n' "$2" "$3" "$4" >"$ETC/autonomy.new"
+		mv -f "$ETC/autonomy.new" "$ETC/autonomy"
+		echo "autonomy on"
+		;;
+	*) die "usage: runnerctl autonomy on <runners> <reserve KiB> <firewall>|off" ;;
+	esac
+}
+
+# Run by a timer: once no controller has been seen for a while, free slots are
+# armed with the registrations kept for them, oldest first.
+cmd_autoarm() {
+	local settings seen now max min_free firewall slot spare name mtime
+	[ -f "$ETC/autonomy" ] || return 0
+	now=$(date +%s)
+	seen=$(stat -c %Y "$STATE/controller-seen" 2>/dev/null || echo 0)
+	((now - seen >= ${AUTONOMY_AFTER_S})) || return 0
+	settings=$(cat "$ETC/autonomy")
+	max=$(printf '%s' "$settings" | sed -n 's/.*max_runners=\([0-9]*\).*/\1/p')
+	min_free=$(printf '%s' "$settings" | sed -n 's/.*min_free_kib=\([0-9]*\).*/\1/p')
+	firewall=$(printf '%s' "$settings" | sed -n 's/.*firewall=\([a-z0-9]*\).*/\1/p')
+	[[ "$max" =~ ^[0-9]+$ && "$min_free" =~ ^[0-9]+$ ]] || return 0
+	# Linux: no job without the firewall it must run behind (a Mac filters on the host).
+	if [[ "$firewall" =~ ^[a-f0-9]{32}$ ]] && [ "$(cat /run/dokploy-firewall.hash 2>/dev/null)" != "$firewall" ]; then
+		echo "runnerctl: firewall not loaded, no slot armed" >&2
+		return 0
+	fi
+	for ((slot = 1; slot <= max; slot++)); do
+		case "$(slot_state "$slot")" in
+		active | activating | deactivating | reloading) continue ;;
+		esac
+		spare=""
+		while read -r mtime name; do
+			if ((now - \${mtime%.*} > ${SPARE_MAX_AGE_S})); then
+				rm -f "$SPARES/$slot/$name"
+				continue
+			fi
+			spare="$SPARES/$slot/$name"
+			break
+		done < <(find "$SPARES/$slot" -maxdepth 1 -type f ! -name '.*' -printf '%T@ %f\n' 2>/dev/null | sort -n)
+		[ -n "$spare" ] || continue
+		if (cmd_arm "$slot" "$min_free" <"$spare") >/dev/null; then
+			rm -f "$spare"
+			echo "$now slot=$slot name=\${spare##*/}" >>"$STATE/autonomy.log"
+		else
+			# Disk below the reserve, or a slot that would not start: next round.
+			return 0
+		fi
+	done
 }
 
 # Measures what a job gets: run inside the runner slice, so under the same CPU
@@ -127,7 +255,7 @@ cmd_caches() {
 }
 
 cmd_arm() {
-	local slot min_free_kib unit state free release dir key value
+	local slot min_free_kib unit state free release dir
 	slot=$(slot_arg "\${1:-}")
 	min_free_kib=\${2:-0}
 	[[ "$min_free_kib" =~ ^[0-9]+$ ]] || die "invalid disk reserve"
@@ -158,22 +286,7 @@ cmd_arm() {
 	rm -rf "$dir/_work" "$dir/_diag" "$dir/.runner" "$dir/.credentials" \
 		"$dir/.credentials_rsaparams" "$dir/.dokploy-runner-name" "$STATE/jobs/$slot"
 	install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$dir/_work"
-	while IFS=' ' read -r key value || [ -n "\${key:-}" ]; do
-		case "$key" in
-		.runner | .credentials | .credentials_rsaparams)
-			[[ "$value" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid $key"
-			install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0600 /dev/null "$dir/$key"
-			printf '%s' "$value" | base64 -d >"$dir/$key"
-			;;
-		name)
-			[[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid runner name"
-			printf '%s\n' "$value" >"$dir/.dokploy-runner-name"
-			;;
-		'') ;;
-		*) die "unexpected input: $key" ;;
-		esac
-		key=""
-	done
+	read_jit "$dir"
 	[ -s "$dir/.runner" ] && [ -s "$dir/.credentials" ] || die "incomplete JIT configuration"
 	systemctl reset-failed "$unit" >/dev/null 2>&1 || true
 	systemctl start --no-block "$unit"
@@ -523,6 +636,8 @@ cmd_gc() {
 }
 
 cmd_uninstall() {
+	systemctl disable --now dokploy-runner-autoarm.timer >/dev/null 2>&1 || true
+	rm -f /etc/systemd/system/dokploy-runner-autoarm.timer /etc/systemd/system/dokploy-runner-autoarm.service
 	cmd_stop_all >/dev/null || echo "warning: removing the runtime anyway" >&2
 	systemctl stop "$SLICE" >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/dokploy-runner@.service "/etc/systemd/system/$SLICE" \
@@ -552,8 +667,12 @@ limits) cmd_limits "\${2:-}" "\${3:-}" "\${4:-}" ;;
 env) cmd_env ;;
 install-release) cmd_install_release "\${2:-}" "\${3:-}" "\${4:-}" ;;
 gc) cmd_gc "\${2:-}" "\${3:-}" "\${4:-}" ;;
+spare-add) cmd_spare_add "\${2:-}" ;;
+spare-drop) cmd_spare_drop "\${2:-}" "\${3:-}" ;;
+autonomy) cmd_autonomy "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" ;;
+autoarm) cmd_autoarm ;;
 uninstall) cmd_uninstall ;;
-*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|install-release|uninstall" ;;
+*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|install-release|spare-add|spare-drop|autonomy|autoarm|uninstall" ;;
 esac
 `;
 
@@ -660,6 +779,26 @@ multi=$(($(now) - start))
 echo "bench cpus=$cpus single=$((1000000000000 / single)) multi=$((cpus * 1000000000000 / multi))"
 `;
 
+const autoarmService = `[Unit]
+Description=Dokploy GitHub Actions runners: arm free slots while no controller answers
+
+[Service]
+Type=oneshot
+ExecStart=${RUNNERCTL} autoarm
+`;
+
+const autoarmTimer = `[Unit]
+Description=Dokploy GitHub Actions runners: autonomy check
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=20
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
+`;
+
 const files: { path: string; mode: string; content: string }[] = [
 	{ path: RUNNERCTL, mode: "0755", content: runnerctl },
 	{ path: `${RUNTIME_ROOT}/bin/bench.sh`, mode: "0755", content: bench },
@@ -682,6 +821,16 @@ const files: { path: string; mode: string; content: string }[] = [
 		path: "/etc/systemd/system/dokploy-runner@.service",
 		mode: "0644",
 		content: runnerUnit,
+	},
+	{
+		path: "/etc/systemd/system/dokploy-runner-autoarm.service",
+		mode: "0644",
+		content: autoarmService,
+	},
+	{
+		path: "/etc/systemd/system/dokploy-runner-autoarm.timer",
+		mode: "0644",
+		content: autoarmTimer,
 	},
 ];
 
@@ -770,6 +919,8 @@ printf '[Timer]\\nOnCalendar=\\nOnCalendar=daily\\n' >/etc/systemd/system/fstrim
 systemctl daemon-reload
 systemctl enable --now fstrim.timer >/dev/null 2>&1 || true
 systemctl start dokploy-runners.slice
+install -d -m 0700 /var/lib/dokploy-runners/spares
+systemctl enable --now dokploy-runner-autoarm.timer >/dev/null
 echo ${RUNTIME_VERSION} >/etc/dokploy-runners/runtime-version
 log "Runtime ${RUNTIME_VERSION} installed"
 `;

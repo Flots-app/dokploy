@@ -117,6 +117,7 @@ export {
 	cleanRunnerCaches,
 	disableRunnerNode,
 	enableRunnerNode,
+	githubRunnerControllerStatus,
 	provisionRunnerNode,
 	readPresentedHostKey,
 	refreshRunnerCaches,

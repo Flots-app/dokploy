@@ -57,6 +57,7 @@ import { DisableMachineDialog, RemoveMachineDialog } from "./machine-actions";
 import { ContinueEnrollmentDialog } from "./machine-enrollment";
 import { MachineMonitoringDialog } from "./machine-monitoring";
 import { MachineOperationsDialog } from "./machine-operations";
+import { ReserveLine, UpdateProgress } from "./machine-resilience";
 import { PhaseBadge, UsageBar } from "./shared";
 import { useNow } from "./use-now";
 
@@ -660,6 +661,8 @@ const MachineFooter = ({
 		<RunnerVersion machine={machine} />
 		{machine.runtimeUpdatePending && <span>runtime update pending</span>}
 		<UpdateSetting machine={machine} />
+		<UpdateProgress machine={machine} />
+		<ReserveLine machine={machine} />
 		{machine.firewallStatus && (
 			<FirewallStatusText status={machine.firewallStatus} />
 		)}

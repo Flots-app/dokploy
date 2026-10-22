@@ -92,6 +92,7 @@ import {
 	linuxOsReportScript,
 	macOsReportScript,
 	type OsRelease,
+	osPatchScript,
 	osReleaseOf,
 	osStatus,
 	parseOsReport,
@@ -1079,6 +1080,7 @@ const scripts = () => ({
 		),
 	),
 	firewallClear: linuxFirewallClearScript(),
+	osPatch: osPatchScript(),
 });
 
 const extractRuntimeFile = (install: string, path: string) => {

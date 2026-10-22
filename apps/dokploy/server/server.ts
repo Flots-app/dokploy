@@ -72,7 +72,10 @@ void app.prepare().then(async () => {
 		await initEnterpriseBackupCronJobs();
 		await initInterruptedServiceMigrations();
 		if (!IS_CLOUD) {
-			await startGithubRunnerController();
+			await startGithubRunnerController({
+				kind: "dokploy",
+				version: packageInfo.version,
+			});
 		}
 
 		if (!IS_CLOUD) {

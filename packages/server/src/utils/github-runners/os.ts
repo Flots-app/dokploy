@@ -293,3 +293,32 @@ export const osStatus = (input: {
 		message: `${label}${supportEnds ? `, supported until ${day(supportEnds)}` : ""}${info.updates === null ? "" : ", up to date"}.${stale}`,
 	};
 };
+
+// ------------------------------------------------------------- OS updates
+
+/**
+ * Installs the pending updates of a Linux system (a machine, or the VM of a
+ * Mac), as root, once its jobs ended. apt only. Keeps the configuration files
+ * as they are, allows the new packages a kernel update needs, removes
+ * nothing. Prints whether a reboot is needed.
+ */
+export const osPatchScript = () => sh`set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+command -v apt-get >/dev/null 2>&1 || { echo "error: Dokploy installs OS updates with apt only" >&2; exit 1; }
+apt="apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+$apt update -qq
+$apt -y -q --with-new-pkgs upgrade
+echo "patched boot=$(cat /proc/sys/kernel/random/boot_id) reboot=$([ -f /var/run/reboot-required ] && echo yes || echo no)"
+`;
+
+/** Reads the line osPatchScript ends with. */
+export const parsePatchResult = (output: string) => {
+	const record = parseRecords(output).find((item) => item.kind === "patched");
+	return record
+		? {
+				bootId: record.fields.boot ?? null,
+				reboot: record.fields.reboot === "yes",
+			}
+		: null;
+};

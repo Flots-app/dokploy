@@ -108,6 +108,8 @@ export const planNode = (input: {
 	node: PlannerNode;
 	slots: LocalSlot[];
 	runners: GithubRunner[];
+	/** Registrations the machine keeps in reserve: not started, never forgotten here. */
+	spares?: string[];
 }): Plan => {
 	const { now, node } = input;
 	const actions: PlannedAction[] = [];
@@ -249,8 +251,9 @@ export const planNode = (input: {
 		}
 	}
 
+	const spares = new Set(input.spares ?? []);
 	for (const runner of runners) {
-		if (attached.has(runner.name)) continue;
+		if (attached.has(runner.name) || spares.has(runner.name)) continue;
 		// GitHub refuses to remove a busy runner; a crashed one goes offline first.
 		if (runner.busy) continue;
 		actions.push({

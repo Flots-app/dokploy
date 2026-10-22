@@ -1,4 +1,4 @@
-import { macFirewallStatus } from "./firewall";
+import { macFirewallStatus, macWaitForFirewall } from "./firewall";
 import { shellQuote, statusCommand } from "./runtime";
 import { BOOT_DAEMON } from "./setup-constants";
 
@@ -194,7 +194,7 @@ export const macWriteBootScript = (vmName: string) => {
 	const body = `#!/bin/bash
 # Managed by Dokploy: started by the ${BOOT_DAEMON} daemon at boot.
 [ -f ${enabledFlag} ] || exit 0
-${macStartVmScript(vmName)}`;
+${macWaitForFirewall}${macStartVmScript(vmName)}`;
 	if (body.includes("\nDOKPLOY_EOF\n"))
 		throw new Error("Unexpected boot script");
 	return `set -eu

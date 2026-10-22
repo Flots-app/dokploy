@@ -41,6 +41,7 @@ export const updateWindowSchema = z
 export const updatePolicySchema = z.object({
 	auto: z.boolean(),
 	window: updateWindowSchema.nullable(),
+	osPatches: z.boolean().optional(),
 });
 
 /**
@@ -101,6 +102,24 @@ export const inUpdateWindow = (
 		(window.days.includes(day) && minutes >= start) ||
 		(window.days.includes(previous) && minutes < end)
 	);
+};
+
+/**
+ * When the open window closes, to the minute; null when it is not open, or
+ * when there is no window (any time).
+ */
+export const updateWindowEnd = (
+	window: GithubRunnerUpdateWindow | null,
+	now: Date,
+) => {
+	if (!window || !inUpdateWindow(window, now)) return null;
+	const start = Math.floor(now.getTime() / 60_000) * 60_000;
+	// A window lasts less than a day: the end is within the next 24 hours.
+	for (let minute = 1; minute <= 24 * 60; minute++) {
+		const at = new Date(start + minute * 60_000);
+		if (!inUpdateWindow(window, at)) return at;
+	}
+	return null;
 };
 
 /** "Mon–Fri 02:00–05:00 (Europe/Paris)", or "any time". */

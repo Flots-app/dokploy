@@ -11,6 +11,7 @@ import {
 	pgEnum,
 	pgTable,
 	text,
+	timestamp,
 	uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { nanoid } from "nanoid";
@@ -62,6 +63,7 @@ export const githubRunnerOperationType = pgEnum("githubRunnerOperationType", [
 	"enable",
 	"remove",
 	"upgrade",
+	"patch",
 ]);
 
 export const githubRunnerOperationStatus = pgEnum(
@@ -72,7 +74,8 @@ export const githubRunnerOperationStatus = pgEnum(
 export type GithubRunnerDrainMode = "wait" | "kill";
 
 /** Why a machine stops taking jobs: once it is empty the controller finishes that action. */
-export type GithubRunnerDrainReason = "disable" | "apply" | "remove";
+/** patch: OS updates once the jobs ended, then back to ready. */
+export type GithubRunnerDrainReason = "disable" | "apply" | "remove" | "patch";
 
 export interface GithubRunnerDrain {
 	mode: GithubRunnerDrainMode;
@@ -83,6 +86,8 @@ export interface GithubRunnerDrain {
 	operationId: string | null;
 	/** With reason "remove": also delete the runtime (and the VM on macOS). */
 	uninstall?: boolean;
+	/** With reason "patch": given up if jobs still run then (end of the window). */
+	abortAt?: string | null;
 }
 
 /** What the controller last applied on the machine, compared with the desired settings. */
@@ -161,6 +166,16 @@ export interface GithubRunnerNodeObservation {
 	caches?: GithubRunnerCaches;
 	/** Latest controller actions on the machine, newest first. */
 	events?: { at: string; message: string }[];
+	/** The reserve the machine arms itself with while no controller answers. */
+	autonomy?: {
+		/** Registrations wanted per slot. */
+		reserve: number;
+		/** Registrations kept now, every slot together. */
+		spares: number;
+		/** Slots it armed on its own, and the last time. */
+		armed: number;
+		last: string | null;
+	};
 }
 
 export type GithubRunnerCleanupKind =
@@ -234,7 +249,15 @@ export interface GithubRunnerUpdatePolicy {
 	auto: boolean;
 	/** null: any time, between jobs. */
 	window: GithubRunnerUpdateWindow | null;
+	/**
+	 * Also install the OS updates in the window, once the jobs ended, and
+	 * reboot if needed: Linux machines and the VM of a Mac (macOS itself needs
+	 * its owner or an MDM).
+	 */
+	osPatches?: boolean;
 }
+
+export type GithubRunnerUpdateKind = "runtime" | "runner" | "os";
 
 export interface GithubRunnerUpdateState {
 	/** An operator asked to update now, whatever the policy. */
@@ -242,7 +265,47 @@ export interface GithubRunnerUpdateState {
 	/** The last update Dokploy tried failed; cleared by the next success. */
 	error?: string | null;
 	errorAt?: string | null;
+	/**
+	 * An update running on the machine: it counts against the machines of the
+	 * pool updated at the same time.
+	 */
+	inProgress?: {
+		kind: GithubRunnerUpdateKind;
+		target: string;
+		startedAt: string;
+	} | null;
+	/** OS updates, when the update policy installs them. */
+	patchedAt?: string | null;
+	patchError?: string | null;
+	patchErrorAt?: string | null;
 }
+
+/** How a pool rolls updates out over its machines. */
+export interface GithubRunnerRolloutPolicy {
+	/** Machines of the pool updated at the same time. */
+	maxUnavailable: number;
+	/** The first machine updated to a new release must stay healthy before the others follow. */
+	canary: boolean;
+}
+
+/** Rollout of a release to the machines of a pool, led by its canary. */
+export interface GithubRunnerRollout {
+	/** The release: "2.332.0" for the runner, "7" for the runtime. */
+	target: string;
+	canaryNodeId: string;
+	startedAt: string;
+	/** When the canary first reported the release. */
+	installedAt: string | null;
+	/** The canary stayed healthy long enough: the others may follow. */
+	passedAt: string | null;
+	/** The canary's update failed: the rollout waits for an operator. */
+	failedAt: string | null;
+	error: string | null;
+}
+
+export type GithubRunnerRollouts = Partial<
+	Record<"runner" | "runtime", GithubRunnerRollout>
+>;
 
 /** Operating system of a machine (or of a Mac's VM), as it reports it. */
 export interface GithubRunnerOsInfo {
@@ -325,6 +388,32 @@ export interface GithubRunnerRouting {
 	error: string | null;
 }
 
+/** Processes running the runner controller: one of them leads, the others stand by. */
+export const githubRunnerControllers = pgTable("github_runner_controller", {
+	owner: text("owner").notNull().primaryKey(),
+	/** dokploy: the Dokploy server; standalone: a controller of its own. */
+	kind: text("kind").$type<"dokploy" | "standalone">().notNull(),
+	host: text("host").notNull(),
+	version: text("version"),
+	startedAt: text("startedAt").notNull(),
+	seenAt: text("seenAt").notNull(),
+});
+
+/**
+ * The leader's lease, in the database's clock: renewed every few seconds, taken
+ * over once it expires.
+ */
+export const githubRunnerLeader = pgTable(
+	"github_runner_leader",
+	{
+		id: integer("id").notNull().primaryKey(),
+		owner: text("owner").notNull(),
+		since: timestamp("since", { withTimezone: true, mode: "string" }).notNull(),
+		until: timestamp("until", { withTimezone: true, mode: "string" }).notNull(),
+	},
+	(table) => [check("github_runner_leader_single", sql`${table.id} = 1`)],
+);
+
 export const githubRunnerPools = pgTable(
 	"github_runner_pool",
 	{
@@ -378,6 +467,19 @@ export const githubRunnerPools = pgTable(
 			.$type<GithubRunnerUpdatePolicy>()
 			.notNull()
 			.default({ auto: true, window: null }),
+		rolloutPolicy: jsonb("rolloutPolicy")
+			.$type<GithubRunnerRolloutPolicy>()
+			.notNull()
+			.default({ maxUnavailable: 1, canary: true }),
+		rollouts: jsonb("rollouts")
+			.$type<GithubRunnerRollouts>()
+			.notNull()
+			.default({}),
+		/**
+		 * Runner registrations each slot of a machine keeps in reserve, to arm
+		 * itself while no controller answers; 0 turns it off.
+		 */
+		autonomyReserve: integer("autonomyReserve").notNull().default(2),
 		createdAt: text("createdAt")
 			.notNull()
 			.$defaultFn(() => new Date().toISOString()),
@@ -826,6 +928,13 @@ const poolFields = z.object({
 	fallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
 	placement: z.enum(["fastest", "spread"]).default("fastest"),
 	updatePolicy: updatePolicySchema.default({ auto: true, window: null }),
+	rolloutPolicy: z
+		.object({
+			maxUnavailable: z.number().int().min(1).max(32),
+			canary: z.boolean(),
+		})
+		.default({ maxUnavailable: 1, canary: true }),
+	autonomyReserve: z.number().int().min(0).max(10).default(2),
 });
 
 const checkPoolTarget = (

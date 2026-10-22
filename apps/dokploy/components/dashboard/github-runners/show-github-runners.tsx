@@ -19,10 +19,12 @@ import {
 import { api } from "@/utils/api";
 import { FirewallTargetDialog } from "../firewalls/attach-firewall";
 import { AddMachine } from "./add-machine";
+import { ControllerStatus } from "./controller-status";
 import { errorText, formatDuration, type RunnerPool } from "./format";
 import { HandlePool } from "./handle-pool";
 import { MachineCard } from "./machine-card";
 import { JobsTable } from "./machine-monitoring";
+import { RolloutStatus } from "./pool-rollout";
 import { RoutingStatus } from "./pool-routing";
 import { GettingStarted, WorkflowSnippet } from "./pool-usage";
 
@@ -193,6 +195,7 @@ const PoolSection = ({
 					)}
 				</div>
 			</div>
+			<RolloutStatus pool={pool} canUpdate={permissions.update} />
 			<RoutingStatus pool={pool} />
 			<WorkflowSnippet pool={pool} />
 			<PoolStats pool={pool} />
@@ -285,6 +288,7 @@ export const ShowGithubRunners = () => {
 								be taken out at any time, waiting for its jobs or interrupting
 								them.
 							</CardDescription>
+							<ControllerStatus />
 						</div>
 						{allowed.create && <HandlePool />}
 					</CardHeader>

@@ -16,6 +16,7 @@ import {
 	getGithubRunnerJobStats,
 	getGithubRunnerMetrics,
 	getGithubRunnerOverview,
+	githubRunnerControllerStatus,
 	githubRunnerSetupScript,
 	IS_CLOUD,
 	listGithubRunnerJobs,
@@ -27,6 +28,7 @@ import {
 	removeRunnerNode,
 	requestGithubRunnerNodeUpdate,
 	resetGithubRunnerHostKey,
+	resumeGithubRunnerPoolRollout,
 	rotateRunnerNodeKey,
 	startGithubRunnerEnrollment,
 	testGithubRunnerCredentials,
@@ -407,6 +409,37 @@ export const githubRunnerRouter = createTRPCRouter({
 			});
 			return { requested: true };
 		}),
+
+	/** Lets the other machines follow a rollout its canary paused. */
+	resumeRollout: update
+		.input(
+			z.object({
+				githubRunnerPoolId: z.string().min(1),
+				kind: z.enum(["runner", "runtime"]),
+			}),
+		)
+		.mutation(async ({ input, ctx }) => {
+			const pool = await resumeGithubRunnerPoolRollout(
+				input.githubRunnerPoolId,
+				input.kind,
+				ctx.session.activeOrganizationId,
+			).catch(fail);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "githubRunner",
+				resourceId: pool.githubRunnerPoolId,
+				resourceName: pool.name,
+				metadata: {
+					kind: "pool",
+					operation: "resume-rollout",
+					update: input.kind,
+				},
+			});
+			return { resumed: true };
+		}),
+
+	/** Which controller process leads, and which ones stand by. */
+	controllerStatus: read.query(() => githubRunnerControllerStatus()),
 
 	/** Reads the OS of a machine again at the next tick. */
 	checkMachineOs: update

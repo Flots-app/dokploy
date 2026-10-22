@@ -29,6 +29,7 @@ import {
 	generateMachineKey,
 	knownOsReleases,
 	knownRunnerReleases,
+	resumeGithubRunnerRollout,
 	retryRunnerNodeNow,
 } from "@dokploy/server/utils/github-runners/controller";
 import {
@@ -726,10 +727,26 @@ export const requestGithubRunnerNodeUpdate = async (
 	}
 	await db
 		.update(githubRunnerNodes)
-		.set({ updateState: { requestedAt: new Date().toISOString() } })
+		.set({
+			updateState: {
+				...node.updateState,
+				requestedAt: new Date().toISOString(),
+			},
+		})
 		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 	retryRunnerNodeNow(nodeId);
 	return node;
+};
+
+/** Resumes a rollout its canary paused: the next machine to update leads it again. */
+export const resumeGithubRunnerPoolRollout = async (
+	poolId: string,
+	kind: "runner" | "runtime",
+	organizationId: string,
+) => {
+	const pool = await findGithubRunnerPool(poolId, organizationId);
+	await resumeGithubRunnerRollout(pool.githubRunnerPoolId, kind);
+	return pool;
 };
 
 export const updateGithubRunnerNode = async (
@@ -806,7 +823,7 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 	const nodeFirewall = (nodeId: string) =>
 		attachments.find((row) => row.githubRunnerNodeId === nodeId)?.firewall ??
 		null;
-	const releases = knownRunnerReleases();
+	const releases = knownRunnerReleases(pools);
 	const now = Date.now();
 	return pools.map((pool) => {
 		const poolNodes = nodes
@@ -861,6 +878,11 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 						open: windowOpen,
 						requestedAt: node.updateState?.requestedAt ?? null,
 						error: node.updateState?.error ?? null,
+						inProgress: node.updateState?.inProgress ?? null,
+						/** OS updates installed in the window (Linux, the VM of a Mac). */
+						osPatches: policy.osPatches === true,
+						patchedAt: node.updateState?.patchedAt ?? null,
+						patchError: node.updateState?.patchError ?? null,
 					},
 					/** Whether the actions/runner release it runs is still accepted. */
 					runnerUpdate: machineRunnerStatus(pool, node, releases, now),

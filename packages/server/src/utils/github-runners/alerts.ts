@@ -23,6 +23,9 @@ export type RunnerAlertKind =
 	| "disk"
 	| "runner-version"
 	| "update-failed"
+	| "os-patch"
+	| "rollout-runner"
+	| "rollout-runtime"
 	| "os-host"
 	| "os-guest"
 	| "firewall"
@@ -168,6 +171,14 @@ const machineConditions = (input: {
 			`${updateError}. Dokploy tries again every 30 minutes; "Update now" in the machine menu tries at once.`,
 		);
 	}
+	if (node.enabled && node.updateState?.patchError) {
+		add(
+			"os-patch",
+			"warning",
+			`OS updates failed on ${name}`,
+			`${node.updateState.patchError}. Dokploy tries again in the next update window.`,
+		);
+	}
 	const runner = machineRunnerStatus(pool, node, input.runnerReleases, now);
 	if (runner.state === "unsupported") {
 		add(
@@ -272,6 +283,21 @@ export const runnerAlertConditions = (input: {
 			`${pool.name}: no machine takes jobs`,
 			`None of the machines of ${pool.name} can take jobs, and the pool has no fallback: jobs wait in GitHub's queue. See the machines on the GitHub Runners page.`,
 			5 * MINUTE,
+		);
+	}
+	const names = new Map(
+		nodes.map((node) => [node.githubRunnerNodeId, node.name]),
+	);
+	for (const kind of ["runner", "runtime"] as const) {
+		const rollout = pool.rollouts?.[kind];
+		if (!rollout?.failedAt) continue;
+		const canary = names.get(rollout.canaryNodeId) ?? "its canary";
+		const what = kind === "runner" ? "actions/runner" : "the Dokploy runtime";
+		add(
+			`rollout-${kind}`,
+			"warning",
+			`${pool.name}: rollout of ${what} ${rollout.target} paused`,
+			`The update failed on ${canary}, the first machine to install it: ${rollout.error ?? "unknown error"}. The other machines keep their release until the rollout is resumed from the pool.`,
 		);
 	}
 	if (pool.routingVariable && pool.routing?.error) {

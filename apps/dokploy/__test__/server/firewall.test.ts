@@ -289,7 +289,11 @@ exit 0
 				`export PATH=${bin}:/usr/bin:/bin`,
 			)
 			.replace("STATE=/var/db/dokploy-firewall", `STATE=${state}`)
-			.replace("LOADED=/var/run/dokploy-firewall.hash", `LOADED=${dir}/loaded`),
+			.replace("LOADED=/var/run/dokploy-firewall.hash", `LOADED=${dir}/loaded`)
+			.replace(
+				"EXPECTED=/var/db/dokploy-firewall.expected",
+				`EXPECTED=${dir}/expected`,
+			),
 	);
 	const run = (args: string[], input = "") =>
 		spawnSync("/bin/bash", [helper, ...args], { input, encoding: "utf8" });
@@ -314,6 +318,10 @@ exit 0
 			`pfctl -q -a com.apple/dokploy.firewall -f ${state}/anchor.conf`,
 		);
 		expect(readFileSync(join(state, "token"), "utf8").trim()).toBe("4242");
+		// The boot script of the VM waits for these rules.
+		expect(readFileSync(join(dir, "expected"), "utf8").trim()).toBe(
+			ruleset.hash,
+		);
 	});
 
 	it("refuses anything Dokploy does not write", () => {

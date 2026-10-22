@@ -46,6 +46,11 @@ export const poolFormSchema = z
 		fallbackLabels: z.string(),
 		placement: z.enum(["fastest", "spread"]),
 		updatePolicy: updatePolicySchema,
+		rolloutPolicy: z.object({
+			maxUnavailable: z.number().int().min(1).max(32),
+			canary: z.boolean(),
+		}),
+		autonomyReserve: z.number().int().min(0).max(10),
 	})
 	.refine((value) => value.scope === "organization" || value.repository, {
 		path: ["repository"],
@@ -87,6 +92,8 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 	fallbackLabels: (pool?.fallbackLabels ?? ["ubuntu-24.04"]).join(", "),
 	placement: pool?.placement ?? "fastest",
 	updatePolicy: pool?.updatePolicy ?? { auto: true, window: null },
+	rolloutPolicy: pool?.rolloutPolicy ?? { maxUnavailable: 1, canary: true },
+	autonomyReserve: pool?.autonomyReserve ?? 2,
 });
 
 /** Undefined (an unmounted field) keeps the stored value; empty clears it. */
@@ -123,6 +130,8 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 	routingVariable: values.routingEnabled ? values.routingVariable : null,
 	placement: values.placement,
 	updatePolicy: values.updatePolicy,
+	rolloutPolicy: values.rolloutPolicy,
+	autonomyReserve: values.autonomyReserve,
 	fallbackLabels: parseLabels(values.fallbackLabels).length
 		? parseLabels(values.fallbackLabels)
 		: ["ubuntu-24.04"],

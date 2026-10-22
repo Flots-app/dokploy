@@ -85,6 +85,10 @@ export interface RuntimeStatus {
 	dockerActive: boolean;
 	slots: LocalSlot[];
 	jobFiles: JobFile[];
+	/** Registrations kept for each slot, to arm itself without a controller. */
+	spares: { slot: number; name: string; createdAt: number }[];
+	/** Slots the machine armed on its own: how many, and the last time (epoch seconds). */
+	autonomy: { armed: number; last: number } | null;
 }
 
 const epochToIso = (value: string | undefined) => {
@@ -183,6 +187,22 @@ export const parseRuntimeStatus = (records: ProbeRecord[]): RuntimeStatus => {
 				];
 			}),
 		jobFiles,
+		spares: records
+			.filter((record) => record.kind === "spare")
+			.flatMap((record) => {
+				const slot = int(record.fields.slot);
+				const createdAt = int(record.fields.created);
+				const name = record.fields.name ?? "";
+				return slot && createdAt && /^[A-Za-z0-9._-]+$/.test(name)
+					? [{ slot, name, createdAt }]
+					: [];
+			}),
+		autonomy: (() => {
+			const record = find(records, "autonomy");
+			const armed = int(record.armed);
+			const last = int(record.last);
+			return armed && last ? { armed, last } : null;
+		})(),
 	};
 };
 

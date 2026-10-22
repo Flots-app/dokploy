@@ -42,6 +42,8 @@ ACCOUNT=${MANAGER_ACCOUNT}
 ANCHOR=com.apple/dokploy.firewall
 STATE=/var/db/dokploy-firewall
 LOADED=/var/run/dokploy-firewall.hash
+# World-readable: the boot script of the VM waits for these rules before starting it.
+EXPECTED=/var/db/dokploy-firewall.expected
 fail() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || fail "run it as root"
 
@@ -122,12 +124,15 @@ apply)
 	validate "$tmp"
 	load "$tmp"
 	mv -f "$tmp" "$STATE/rules"
+	cp "$LOADED" "$EXPECTED.tmp"
+	chmod 644 "$EXPECTED.tmp"
+	mv -f "$EXPECTED.tmp" "$EXPECTED"
 	status
 	;;
 clear)
 	pfctl -q -a "$ANCHOR" -F all 2>/dev/null || true
 	[ ! -s "$STATE/token" ] || pfctl -X "$(cat "$STATE/token")" >/dev/null 2>&1 || true
-	rm -f "$STATE/token" "$STATE/rules" "$STATE/anchor.conf" "$LOADED"
+	rm -f "$STATE/token" "$STATE/rules" "$STATE/anchor.conf" "$LOADED" "$EXPECTED"
 	status
 	;;
 status) status ;;
@@ -180,8 +185,26 @@ launchctl bootstrap system "$firewall_daemon"
 export const macFirewallUninstall = sh`
 	launchctl bootout system/${MAC_FIREWALL_DAEMON} >/dev/null 2>&1 || true
 	[ ! -x ${MAC_FIREWALL_HELPER} ] || ${MAC_FIREWALL_HELPER} clear >/dev/null 2>&1 || true
-	rm -f /Library/LaunchDaemons/${MAC_FIREWALL_DAEMON}.plist ${MAC_FIREWALL_HELPER} /etc/sudoers.d/dokploy-firewall
+	rm -f /Library/LaunchDaemons/${MAC_FIREWALL_DAEMON}.plist ${MAC_FIREWALL_HELPER} /etc/sudoers.d/dokploy-firewall /var/db/dokploy-firewall.expected
 	rm -rf /var/db/dokploy-firewall
+`;
+
+/**
+ * Boot script lines (macOS, as the account Dokploy logs in with): when the jobs
+ * must run behind a firewall, the VM starts only once pf loaded its rules, so
+ * a machine arming itself never runs a job without them.
+ */
+export const macWaitForFirewall = sh`if [ -f /var/db/dokploy-firewall.expected ]; then
+	expected=$(cat /var/db/dokploy-firewall.expected)
+	for _ in $(seq 1 90); do
+		[ "$(cat /var/run/dokploy-firewall.hash 2>/dev/null)" = "$expected" ] && break
+		sleep 2
+	done
+	if [ "$(cat /var/run/dokploy-firewall.hash 2>/dev/null)" != "$expected" ]; then
+		echo "The firewall of the jobs is not loaded: the VM stays stopped" >&2
+		exit 1
+	fi
+fi
 `;
 
 /** Probe lines (as the account Dokploy logs in with, macOS). */

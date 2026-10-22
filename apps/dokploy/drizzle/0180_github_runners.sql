@@ -3,7 +3,7 @@ CREATE TYPE "public"."githubRunnerAuthType" AS ENUM('token', 'app', 'provider');
 CREATE TYPE "public"."githubRunnerJobOutcome" AS ENUM('running', 'completed', 'interrupted');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerNodePhase" AS ENUM('enrolling', 'new', 'provisioning', 'ready', 'draining', 'stopped', 'error');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerOperationStatus" AS ENUM('running', 'done', 'error', 'cancelled');--> statement-breakpoint
-CREATE TYPE "public"."githubRunnerOperationType" AS ENUM('provision', 'apply', 'disable', 'enable', 'remove', 'upgrade');--> statement-breakpoint
+CREATE TYPE "public"."githubRunnerOperationType" AS ENUM('provision', 'apply', 'disable', 'enable', 'remove', 'upgrade', 'patch');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerPlacement" AS ENUM('fastest', 'spread');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerPlatform" AS ENUM('linux', 'macos');--> statement-breakpoint
 CREATE TYPE "public"."githubRunnerRerouteStatus" AS ENUM('cancelling', 'requested', 'rerouted', 'failed');--> statement-breakpoint
@@ -46,6 +46,15 @@ CREATE TABLE "github_runner_alert" (
 	"resolvedAt" text
 );
 --> statement-breakpoint
+CREATE TABLE "github_runner_controller" (
+	"owner" text PRIMARY KEY NOT NULL,
+	"kind" text NOT NULL,
+	"host" text NOT NULL,
+	"version" text,
+	"startedAt" text NOT NULL,
+	"seenAt" text NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "github_runner_job" (
 	"githubRunnerJobId" text PRIMARY KEY NOT NULL,
 	"organizationId" text NOT NULL,
@@ -65,6 +74,14 @@ CREATE TABLE "github_runner_job" (
 	"rerunStatus" "githubRunnerRerunStatus",
 	"rerunNote" text,
 	"rerunAt" text
+);
+--> statement-breakpoint
+CREATE TABLE "github_runner_leader" (
+	"id" integer PRIMARY KEY NOT NULL,
+	"owner" text NOT NULL,
+	"since" timestamp with time zone NOT NULL,
+	"until" timestamp with time zone NOT NULL,
+	CONSTRAINT "github_runner_leader_single" CHECK ("github_runner_leader"."id" = 1)
 );
 --> statement-breakpoint
 CREATE TABLE "github_runner_metric" (
@@ -168,6 +185,9 @@ CREATE TABLE "github_runner_pool" (
 	"routing" jsonb,
 	"placement" "githubRunnerPlacement" DEFAULT 'fastest' NOT NULL,
 	"updatePolicy" jsonb DEFAULT '{"auto":true,"window":null}'::jsonb NOT NULL,
+	"rolloutPolicy" jsonb DEFAULT '{"maxUnavailable":1,"canary":true}'::jsonb NOT NULL,
+	"rollouts" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"autonomyReserve" integer DEFAULT 2 NOT NULL,
 	"createdAt" text NOT NULL,
 	CONSTRAINT "github_runner_pool_repository_scope" CHECK (("github_runner_pool"."scope" = 'repository') = ("github_runner_pool"."repository" IS NOT NULL))
 );

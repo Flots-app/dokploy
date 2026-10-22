@@ -51,6 +51,7 @@ import {
 	poolFormSchema,
 	toPoolInput,
 } from "./pool-form";
+import { ResilienceFields } from "./pool-resilience";
 import { RoutingFields } from "./pool-routing";
 import { UpdatePolicyFields } from "./update-policy";
 
@@ -401,6 +402,7 @@ const AdvancedFields = ({
 					</FormItem>
 				)}
 			/>
+			<ResilienceFields form={form} />
 			<div className="grid gap-4 sm:grid-cols-2">
 				<FormField
 					control={form.control}

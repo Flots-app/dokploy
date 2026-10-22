@@ -12,9 +12,13 @@ import {
 	type GithubRunnerOperation,
 	type GithubRunnerOsReport,
 	type GithubRunnerPool,
+	type GithubRunnerRollout,
+	type GithubRunnerUpdateKind,
 	github,
 	githubRunnerAlerts,
+	githubRunnerControllers,
 	githubRunnerJobs,
+	githubRunnerLeader,
 	githubRunnerMetrics,
 	githubRunnerNodes,
 	githubRunnerOperations,
@@ -25,6 +29,7 @@ import {
 	and,
 	asc,
 	eq,
+	gte,
 	inArray,
 	isNotNull,
 	isNull,
@@ -53,6 +58,7 @@ import {
 	runnerAlertConditions,
 	syncRunnerAlerts,
 } from "./alerts";
+import { planSpares } from "./autonomy";
 import {
 	effectiveBudget,
 	formatBytes,
@@ -119,8 +125,10 @@ import {
 	linuxOsReportScript,
 	macOsReportScript,
 	type OsRelease,
+	osPatchScript,
 	osProduct,
 	parseOsReport,
+	parsePatchResult,
 } from "./os";
 import {
 	type PlacementMachine,
@@ -136,11 +144,13 @@ import {
 import {
 	isKillDrain,
 	isRunnerOf,
+	isStale,
 	type PlannedAction,
 	planNode,
 	runnerNamePrefix,
 } from "./reconcile";
 import { decideRerun, initialRerunStatus } from "./rerun";
+import { canaryProgress, rolloutGate, UPDATE_KIND_LABELS } from "./rollout";
 import {
 	decideRouting,
 	fallbackRunsOn,
@@ -150,6 +160,7 @@ import {
 	waitsForPool,
 } from "./routing";
 import {
+	CONTROLLER_SEEN,
 	installRuntimeScript,
 	MIN_RUNTIME_VERSION,
 	RUNNERCTL,
@@ -167,13 +178,25 @@ import {
 	effectiveUpdatePolicy,
 	type UpdateReason,
 	updateDecision,
+	updateWindowEnd,
 } from "./updates";
 import { type RunnerReleaseInfo, runnerVersionStatus } from "./versions";
 
 const GiB = 1024 ** 3;
 export const TICK_MS = 5_000;
-const TICK_LEASE_MS = 2 * 60_000;
-const TASK_LEASE_MS = 45 * 60_000;
+/**
+ * Leases on a machine are short and renewed while held: when the process
+ * holding one dies, another instance takes the machine over within a minute
+ * and a half.
+ */
+const TICK_LEASE_MS = 90_000;
+const TASK_LEASE_MS = 90_000;
+const LEASE_RENEW_MS = 30_000;
+/** The leader renews its lease every heartbeat; it expires after this long. */
+const LEADER_TTL_S = 20;
+const HEARTBEAT_MS = 5_000;
+/** Work left running by a process that died is recovered this often. */
+const ORPHANS_EVERY_MS = 60_000;
 const METRIC_EVERY_MS = 30_000;
 const CACHES_EVERY_MS = 10 * 60_000;
 const ROUTINE_CLEANUP_EVERY_MS = 6 * 60 * 60_000;
@@ -260,6 +283,21 @@ interface ControllerState {
 	firewalls: { at: number; value: RunnerFirewalls } | null;
 	/** A firewall that failed to load waits until then before trying again. */
 	firewallRetryAt: Map<string, number>;
+	/** Leases this process holds, renewed until released. */
+	leaseRenewals: Map<string, NodeJS.Timeout>;
+	/** Hash of the firewall rules each machine must run its jobs behind; null for none. */
+	firewallExpected: Map<string, string | null>;
+	/** Autonomy settings last written on each machine. */
+	autonomyApplied: Map<string, string>;
+	/** Why each machine's update waits, as last told in its events. */
+	updateWaiting: Map<string, string>;
+	/** Whether this process leads: only the leader ticks. */
+	leader: boolean;
+	heartbeat: NodeJS.Timeout | null;
+	kind: "dokploy" | "standalone";
+	version: string | null;
+	startedAt: string;
+	lastOrphanCheck: number;
 }
 
 const shared = globalThis as { __dokployGithubRunners?: ControllerState };
@@ -298,6 +336,16 @@ shared.__dokployGithubRunners ??= {
 	lastAlertsAt: 0,
 	firewalls: null,
 	firewallRetryAt: new Map(),
+	leaseRenewals: new Map(),
+	firewallExpected: new Map(),
+	autonomyApplied: new Map(),
+	updateWaiting: new Map(),
+	leader: false,
+	heartbeat: null,
+	kind: "dokploy",
+	version: null,
+	startedAt: new Date().toISOString(),
+	lastOrphanCheck: 0,
 };
 const state: ControllerState = shared.__dokployGithubRunners;
 // State kept across a hot reload predates fields added since.
@@ -311,6 +359,16 @@ state.tokenChecks ??= new Map();
 state.lastAlertsAt ??= 0;
 state.firewalls ??= null;
 state.firewallRetryAt ??= new Map();
+state.leaseRenewals ??= new Map();
+state.firewallExpected ??= new Map();
+state.autonomyApplied ??= new Map();
+state.updateWaiting ??= new Map();
+state.leader ??= false;
+state.heartbeat ??= null;
+state.kind ??= "dokploy";
+state.version ??= null;
+state.startedAt ??= new Date().toISOString();
+state.lastOrphanCheck ??= 0;
 state.rerouteScans ??= new Set();
 state.reconnects ??= new Map();
 const OWNER = state.owner;
@@ -532,7 +590,7 @@ const connect = (node: NodeWithRelations) =>
 
 // ------------------------------------------------------- leases and queues
 
-const acquireLease = async (nodeId: string, durationMs: number) => {
+const takeLease = async (nodeId: string, durationMs: number) => {
 	const now = new Date();
 	const rows = await db
 		.update(githubRunnerNodes)
@@ -554,8 +612,35 @@ const acquireLease = async (nodeId: string, durationMs: number) => {
 	return rows.length > 0;
 };
 
-const releaseLease = (nodeId: string) =>
-	db
+const stopRenewing = (nodeId: string) => {
+	const timer = state.leaseRenewals.get(nodeId);
+	if (timer) clearInterval(timer);
+	state.leaseRenewals.delete(nodeId);
+};
+
+/** Leases a machine, and keeps the lease alive until it is released. */
+const acquireLease = async (nodeId: string, durationMs: number) => {
+	if (!(await takeLease(nodeId, durationMs))) return false;
+	if (!state.leaseRenewals.has(nodeId)) {
+		const timer = setInterval(() => {
+			void takeLease(nodeId, durationMs)
+				.then((kept) => {
+					if (kept) return;
+					// Another instance took it after an outage: let the work end.
+					stopRenewing(nodeId);
+					console.error(`GitHub runners: lost the lease on machine ${nodeId}`);
+				})
+				.catch(() => undefined);
+		}, LEASE_RENEW_MS);
+		timer.unref?.();
+		state.leaseRenewals.set(nodeId, timer);
+	}
+	return true;
+};
+
+const releaseLease = (nodeId: string) => {
+	stopRenewing(nodeId);
+	return db
 		.update(githubRunnerNodes)
 		.set({ lockedBy: null, lockedUntil: null })
 		.where(
@@ -564,6 +649,7 @@ const releaseLease = (nodeId: string) =>
 				eq(githubRunnerNodes.lockedBy, OWNER),
 			),
 		);
+};
 
 /** Long tasks of a machine (provisioning, VM restart...). The tick skips the machine meanwhile. */
 const tasks = state.tasks;
@@ -595,6 +681,7 @@ const runTask = (
 	const promise = (async () => {
 		await waitForTick(nodeId);
 		let session: NodeSession | null = null;
+		let keepalive: NodeJS.Timeout | null = null;
 		const leased = await acquireLease(nodeId, TASK_LEASE_MS);
 		try {
 			if (!leased)
@@ -604,6 +691,17 @@ const runTask = (
 			// It answers: the tick observes it again without waiting for a retry.
 			state.reconnects.delete(nodeId);
 			const driver = createNodeDriver(session, node);
+			// A long task holds the machine without probing it: it still tells
+			// the machine a controller is there, so it does not arm itself.
+			keepalive = setInterval(() => {
+				void driver
+					.guest(`sh -c 'touch ${CONTROLLER_SEEN} 2>/dev/null || true'`, {
+						label: "Keepalive",
+						timeoutMs: 20_000,
+						allowFailure: true,
+					})
+					.catch(() => undefined);
+			}, 30_000);
 			await task({ node, driver, session, log });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -617,6 +715,7 @@ const runTask = (
 					.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 			}
 		} finally {
+			if (keepalive) clearInterval(keepalive);
 			session?.close();
 			if (leased) await releaseLease(nodeId);
 		}
@@ -1543,6 +1642,10 @@ export const completeDrain = async ({ node, driver }: TaskContext) => {
 			timeoutMs: 5 * 60_000,
 			label: "VM stop",
 		});
+	if (drain.reason === "patch") {
+		await finishPatch({ node, driver } as TaskContext, drain);
+		return;
+	}
 	if (drain.reason === "disable") {
 		if (node.platform === "macos") {
 			await log(`All runners stopped; shutting VM ${node.vmName} down`);
@@ -2505,6 +2608,7 @@ const refreshOsReleases = (product: string) => {
 /** Release lines of an OS known to the controller, for the overview. */
 export const knownOsReleases = (id: string) => {
 	const product = osProduct(id);
+	if (product) refreshOsReleases(product);
 	return product ? (state.osReleases.get(product)?.releases ?? []) : [];
 };
 
@@ -2652,6 +2756,7 @@ export const enforceFirewall = async (
 				})
 			: null;
 		const loaded = probe.firewall?.loaded ?? null;
+		state.firewallExpected.set(nodeId, null);
 		if (!firewall || !compiled || !filters(compiled.outbound)) {
 			if (loaded) {
 				await clearFirewall(driver, node.platform);
@@ -2664,6 +2769,7 @@ export const enforceFirewall = async (
 			node.platform === "macos"
 				? pfRuleset(compiled)
 				: nftablesRuleset(compiled);
+		state.firewallExpected.set(nodeId, ruleset.hash);
 		const applied = (appliedAt: string): GithubRunnerFirewallState => ({
 			firewallId: firewall.firewallId,
 			revision: firewall.revision,
@@ -2735,6 +2841,546 @@ export const enforceFirewall = async (
 	}
 };
 
+// ------------------------------------------------------------- rollouts
+
+const rolloutMachines = (pool: GithubRunnerPool) =>
+	db.query.githubRunnerNodes.findMany({
+		where: eq(githubRunnerNodes.githubRunnerPoolId, pool.githubRunnerPoolId),
+		columns: {
+			githubRunnerNodeId: true,
+			name: true,
+			enabled: true,
+			updateState: true,
+		},
+	});
+
+/**
+ * Takes a place among the machines of the pool updated at the same time (and
+ * the canary's role for a new release), or says why the machine waits. One
+ * transaction per pool at a time, so two machines never take the last place.
+ */
+export const claimUpdate = (
+	node: NodeWithRelations,
+	kind: GithubRunnerUpdateKind,
+	target: string,
+	reason: UpdateReason,
+) =>
+	db.transaction(async (tx) => {
+		const poolId = node.githubRunnerPoolId;
+		await tx.execute(
+			sql`SELECT 1 FROM ${githubRunnerPools} WHERE ${githubRunnerPools.githubRunnerPoolId} = ${poolId} FOR UPDATE`,
+		);
+		const [pool, machines] = await Promise.all([
+			tx.query.githubRunnerPools.findFirst({
+				where: eq(githubRunnerPools.githubRunnerPoolId, poolId),
+				columns: { rolloutPolicy: true, rollouts: true },
+			}),
+			tx.query.githubRunnerNodes.findMany({
+				where: eq(githubRunnerNodes.githubRunnerPoolId, poolId),
+				columns: {
+					githubRunnerNodeId: true,
+					name: true,
+					enabled: true,
+					updateState: true,
+				},
+			}),
+		]);
+		const self = machines.find(
+			(machine) => machine.githubRunnerNodeId === node.githubRunnerNodeId,
+		);
+		if (!pool || !self)
+			return { go: false, reason: "machine removed" } as const;
+		const now = new Date();
+		const gate = rolloutGate({
+			kind,
+			target,
+			reason,
+			selfId: node.githubRunnerNodeId,
+			policy: pool.rolloutPolicy,
+			rollout: kind === "os" ? undefined : pool.rollouts[kind],
+			machines,
+			now: now.getTime(),
+		});
+		if (!gate.go) return gate;
+		await tx
+			.update(githubRunnerNodes)
+			.set({
+				updateState: {
+					...self.updateState,
+					inProgress: { kind, target, startedAt: now.toISOString() },
+				},
+			})
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
+		const current = kind === "os" ? undefined : pool.rollouts[kind];
+		if (
+			gate.canary &&
+			kind !== "os" &&
+			(current?.target !== target ||
+				current.canaryNodeId !== node.githubRunnerNodeId)
+		) {
+			await tx
+				.update(githubRunnerPools)
+				.set({
+					rollouts: {
+						...pool.rollouts,
+						[kind]: {
+							target,
+							canaryNodeId: node.githubRunnerNodeId,
+							startedAt: now.toISOString(),
+							installedAt: null,
+							passedAt: null,
+							failedAt: null,
+							error: null,
+						},
+					},
+				})
+				.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+		}
+		return gate;
+	});
+
+/** Changes the rollout of a kind, unless another one replaced it meanwhile. */
+const setRollout = async (
+	poolId: string,
+	kind: "runner" | "runtime",
+	expected: GithubRunnerRollout,
+	next: GithubRunnerRollout,
+) => {
+	await db
+		.update(githubRunnerPools)
+		.set({
+			rollouts: sql`jsonb_set(${githubRunnerPools.rollouts}, ${`{${kind}}`}, ${JSON.stringify(next)}::jsonb)`,
+		})
+		.where(
+			and(
+				eq(githubRunnerPools.githubRunnerPoolId, poolId),
+				sql`${githubRunnerPools.rollouts} -> ${kind} ->> 'target' = ${expected.target}`,
+				sql`${githubRunnerPools.rollouts} -> ${kind} ->> 'canaryNodeId' = ${expected.canaryNodeId}`,
+			),
+		);
+};
+
+/** Tells once in the machine's events why its update waits. */
+const noteWaiting = (
+	nodeId: string,
+	message: string,
+	events: { at: string; message: string }[],
+) => {
+	if (state.updateWaiting.get(nodeId) === message) return;
+	state.updateWaiting.set(nodeId, message);
+	recordEvent(events, message);
+};
+
+/** Forgets the rollout of a kind: the next machine to update leads it again. */
+export const resumeGithubRunnerRollout = (
+	poolId: string,
+	kind: "runner" | "runtime",
+) =>
+	db
+		.update(githubRunnerPools)
+		.set({ rollouts: sql`${githubRunnerPools.rollouts} - ${kind}` })
+		.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+
+/** The update of a machine ended: its place is free for the next one. */
+const endUpdate = async (
+	nodeId: string,
+	outcome: { error: string | null; keepRequest: boolean },
+) => {
+	const fresh = await db.query.githubRunnerNodes.findFirst({
+		where: eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+		columns: { updateState: true },
+	});
+	const current = fresh?.updateState ?? {};
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			updateState: {
+				...current,
+				inProgress: null,
+				requestedAt: outcome.keepRequest ? (current.requestedAt ?? null) : null,
+				error: outcome.error,
+				errorAt: outcome.error ? new Date().toISOString() : null,
+			},
+			...(outcome.error ? { lastError: outcome.error } : {}),
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+};
+
+/**
+ * Follows the canaries the machine leads: the soak starts once it reports the
+ * release, the others follow once it stayed healthy, and an unhealthy canary
+ * pauses the rollout.
+ */
+const followCanary = async (
+	node: NodeWithRelations,
+	installed: Record<"runner" | "runtime", string | null>,
+	healthy: boolean,
+	events: { at: string; message: string }[],
+) => {
+	await Promise.all(
+		(["runtime", "runner"] as const).map(async (kind) => {
+			const rollout = node.pool.rollouts[kind];
+			if (rollout?.canaryNodeId !== node.githubRunnerNodeId) return;
+			const next = canaryProgress({
+				rollout,
+				installed: installed[kind],
+				healthy,
+				now: Date.now(),
+			});
+			if (!next) return;
+			await setRollout(node.githubRunnerPoolId, kind, rollout, next);
+			const what = `${UPDATE_KIND_LABELS[kind]} ${rollout.target}`;
+			if (next.passedAt) {
+				recordEvent(
+					events,
+					`Canary passed: the other machines can install ${what}`,
+				);
+			} else if (next.failedAt) {
+				recordEvent(events, `Rollout of ${what} paused: ${next.error}`);
+			}
+		}),
+	);
+};
+
+/** Pauses the rollout this machine leads after its update failed. */
+const failCanary = async (
+	node: NodeWithRelations,
+	kind: "runner" | "runtime",
+	target: string,
+	error: string,
+) => {
+	const fresh = await db.query.githubRunnerPools.findFirst({
+		where: eq(githubRunnerPools.githubRunnerPoolId, node.githubRunnerPoolId),
+		columns: { rollouts: true },
+	});
+	const rollout = fresh?.rollouts[kind];
+	if (
+		rollout?.target !== target ||
+		rollout.canaryNodeId !== node.githubRunnerNodeId
+	) {
+		return;
+	}
+	await setRollout(node.githubRunnerPoolId, kind, rollout, {
+		...rollout,
+		installedAt: null,
+		failedAt: new Date().toISOString(),
+		error,
+	});
+};
+
+// ------------------------------------------------------------- OS updates
+
+/** Without an update window, OS updates give up after this long waiting for jobs. */
+const PATCH_WAIT_MS = 2 * 60 * 60_000;
+/** A machine that rebooted for its updates answers again within this long. */
+const REBOOT_TIMEOUT_MS = 15 * 60_000;
+/** OS updates are installed at most this often on a machine. */
+const PATCH_EVERY_MS = 12 * 60 * 60_000;
+
+/** The system Dokploy updates on the machine: the Linux host, or the VM of a Mac. */
+const patchableOs = (node: GithubRunnerNode) =>
+	node.platform === "macos"
+		? (node.osReport?.guest ?? null)
+		: (node.osReport?.host ?? null);
+
+/**
+ * Starts the OS updates of a machine: it stops taking jobs, its jobs end, then
+ * completeDrain installs the updates and reboots if needed (finishPatch).
+ * Given up, the machine back to work, if jobs still run at the end of the
+ * update window.
+ */
+const startPatch = async (
+	node: NodeWithRelations,
+	reason: UpdateReason,
+	events: { at: string; message: string }[],
+) => {
+	const nodeId = node.githubRunnerNodeId;
+	const gate = await claimUpdate(node, "os", "os", reason);
+	if (!gate.go) {
+		noteWaiting(nodeId, `OS updates wait: ${gate.reason}`, events);
+		return;
+	}
+	state.updateWaiting.delete(nodeId);
+	const now = new Date();
+	const end = updateWindowEnd(
+		effectiveUpdatePolicy(node.pool, node).window,
+		now,
+	);
+	let operationId: string | null = null;
+	try {
+		operationId = (
+			await createOperation(node, "patch", "Install the OS updates", null)
+		).githubRunnerOperationId;
+	} catch {
+		// Another operation runs: the updates wait for the next tick.
+		await endUpdate(nodeId, { error: null, keepRequest: true });
+		return;
+	}
+	const drain: GithubRunnerDrain = {
+		mode: "wait",
+		reason: "patch",
+		requestedAt: now.toISOString(),
+		deadline: null,
+		operationId,
+		abortAt: (end ?? new Date(now.getTime() + PATCH_WAIT_MS)).toISOString(),
+	};
+	const started = await db
+		.update(githubRunnerNodes)
+		.set({ phase: "draining", drain })
+		.where(
+			and(
+				eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+				eq(githubRunnerNodes.phase, "ready"),
+				isNull(githubRunnerNodes.drain),
+			),
+		)
+		.returning({ id: githubRunnerNodes.githubRunnerNodeId });
+	if (!started.length) {
+		await finishOperation(
+			operationId,
+			"cancelled",
+			"The machine changed meanwhile",
+		);
+		await endUpdate(nodeId, { error: null, keepRequest: true });
+		return;
+	}
+	await appendOperationLog(
+		operationId,
+		`No new job; the OS updates are installed once the running jobs end (given up at ${drain.abortAt?.slice(11, 16)} UTC otherwise)`,
+	);
+	recordEvent(events, "OS updates: no new job until they are installed");
+};
+
+/** Back to work, with the outcome of the OS updates recorded. */
+const endPatch = async (
+	node: NodeWithRelations,
+	drain: GithubRunnerDrain,
+	outcome: { error: string | null; installed: boolean },
+) => {
+	const nodeId = node.githubRunnerNodeId;
+	const fresh = await loadRunnerNode(nodeId);
+	await endDrain(nodeId, drain, fresh.enabled ? "ready" : "stopped");
+	const current = fresh.updateState ?? {};
+	const at = new Date().toISOString();
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			updateState: {
+				...current,
+				inProgress: null,
+				patchedAt: outcome.installed ? at : (current.patchedAt ?? null),
+				patchError: outcome.error,
+				patchErrorAt: outcome.error ? at : null,
+			},
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	// The OS report shows the updates gone at the next tick.
+	state.osReportAt.delete(nodeId);
+	await finishOperation(
+		drain.operationId,
+		outcome.error ? "error" : outcome.installed ? "done" : "cancelled",
+		outcome.error ?? undefined,
+	);
+	notify(node.pool, {
+		event: "info",
+		severity: outcome.error ? "warning" : "info",
+		title: outcome.error
+			? `OS updates failed on ${node.name}`
+			: outcome.installed
+				? `OS updates installed on ${node.name}`
+				: `OS updates postponed on ${node.name}`,
+		message:
+			outcome.error ??
+			(outcome.installed
+				? `${node.name} installed its OS updates and takes jobs again.`
+				: `Jobs still ran at the end of the update window: ${node.name} takes jobs again, and the updates wait for the next window.`),
+		pool: node.pool.name,
+		machine: node.name,
+		at: new Date(),
+	});
+};
+
+/** Waits for a Linux machine that rebooted: it answers with another boot id. */
+const waitForReboot = async (
+	node: NodeWithRelations,
+	bootId: string | null,
+	log: (line: string) => Promise<void>,
+) => {
+	const deadline = Date.now() + REBOOT_TIMEOUT_MS;
+	await new Promise((resolve) => setTimeout(resolve, 20_000));
+	while (Date.now() < deadline) {
+		let session: NodeSession | null = null;
+		try {
+			session = await connect(node);
+			const { stdout } = await createNodeDriver(session, node).guest(
+				"cat /proc/sys/kernel/random/boot_id",
+				{ label: "Boot id", timeoutMs: 20_000 },
+			);
+			if (stdout.trim() && stdout.trim() !== bootId) {
+				await log("The machine is back");
+				return;
+			}
+		} catch {
+			// Still rebooting.
+		} finally {
+			session?.close();
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10_000));
+	}
+	throw new Error(
+		`${node.name} did not answer within ${REBOOT_TIMEOUT_MS / 60_000} minutes of its reboot`,
+	);
+};
+
+/** completeDrain for OS updates: the machine runs no job any more. */
+const finishPatch = async (
+	{ node, driver }: TaskContext,
+	drain: GithubRunnerDrain,
+) => {
+	const log = (line: string) => appendOperationLog(drain.operationId, line);
+	const where = node.platform === "macos" ? ` in VM ${node.vmName}` : "";
+	let error: string | null = null;
+	try {
+		await log(`Installing the OS updates${where} (apt)`);
+		const { stdout } = await driver.guest("bash -s", {
+			input: osPatchScript(),
+			label: "OS updates",
+			timeoutMs: 45 * 60_000,
+		});
+		const result = parsePatchResult(stdout);
+		if (!result) throw new Error("the update script did not finish");
+		await log("Updates installed");
+		if (result.reboot && node.platform === "macos") {
+			await log(`Restarting VM ${node.vmName} to finish them`);
+			await driver.host(macStopVmScript(node.vmName), {
+				timeoutMs: 5 * 60_000,
+				label: "VM stop",
+			});
+			await startVm(driver, node, log);
+		} else if (result.reboot) {
+			await log("Rebooting the machine to finish them");
+			await driver.guest(
+				"systemd-run --on-active=5 --unit=dokploy-reboot systemctl reboot",
+				{ label: "Reboot", timeoutMs: 30_000 },
+			);
+			await waitForReboot(node, result.bootId, log);
+		}
+	} catch (cause) {
+		error = cause instanceof Error ? cause.message : String(cause);
+		await log(`Error: ${error}`);
+	}
+	await endPatch(node, drain, { error, installed: !error });
+};
+
+// ------------------------------------------------------------- autonomy
+
+/** The first runtime that keeps a reserve and arms itself (runnerctl autoarm). */
+const AUTONOMY_RUNTIME = 7;
+
+/**
+ * Keeps the machine's reserve of runner registrations full and fresh, and
+ * tells it when it may arm itself: only while it takes jobs, behind the
+ * firewall it must run them behind.
+ */
+const maintainReserve = async (
+	observation: Observation,
+	runtime: RuntimeStatus,
+	context: {
+		runners: GithubRunner[] | null;
+		client: GithubRunnerClient;
+		labels: string[];
+		accepting: boolean;
+		maxRunners: number;
+		events: { at: string; message: string }[];
+	},
+) => {
+	const { node, driver } = observation;
+	const nodeId = node.githubRunnerNodeId;
+	const prefix = runnerNamePrefix(node.name);
+	const reserve = node.pool.autonomyReserve;
+	const planner = {
+		enabled: node.enabled,
+		phase: node.phase,
+		drain: node.drain,
+		maxRunners: context.maxRunners,
+		namePrefix: prefix,
+		labels: context.labels,
+		runnerVersion: null,
+		admission: { ok: true },
+		maxArmsPerTick: 0,
+	};
+	const actions = planSpares({
+		now: Date.now(),
+		accepting: context.accepting,
+		maxRunners: context.maxRunners,
+		reserve,
+		spares: runtime.spares,
+		runners:
+			context.runners?.filter((runner) => isRunnerOf(prefix, runner.name)) ??
+			null,
+		isStale: (runner) => isStale(runner, planner),
+	});
+	// Off first, so a machine about to stop taking jobs never arms itself.
+	const minFreeKib = Math.floor(
+		(node.platform === "macos" ? VM_MIN_FREE_BYTES : node.diskReserveGb * GiB) /
+			1024,
+	);
+	const firewall =
+		node.platform === "macos"
+			? "host"
+			: (state.firewallExpected.get(nodeId) ?? "none");
+	const setting =
+		context.accepting && reserve > 0
+			? `on ${context.maxRunners} ${minFreeKib} ${firewall}`
+			: "off";
+	const writeSetting = async () => {
+		if (state.autonomyApplied.get(nodeId) === setting) return;
+		await driver.guest(`${RUNNERCTL} autonomy ${setting}`, {
+			label: "Autonomy",
+			timeoutMs: 60_000,
+		});
+		state.autonomyApplied.set(nodeId, setting);
+	};
+	if (setting === "off") await writeSetting();
+	await sequentially(actions, async (action) => {
+		if (action.type === "drop") {
+			if (action.runnerId !== null) {
+				await context.client.deleteRunner(action.runnerId).catch(() => null);
+			}
+			await driver.guest(
+				`${RUNNERCTL} spare-drop ${action.slot} ${action.name}`,
+				{ label: "Reserve", timeoutMs: 60_000 },
+			);
+			return;
+		}
+		const name = `${prefix}${action.slot}-${randomBytes(3).toString("hex")}`;
+		const jit = await context.client.generateJitConfig({
+			name,
+			labels: context.labels,
+		});
+		try {
+			const files = decodeJitConfig(jit.encodedJitConfig);
+			await driver.guest(`${RUNNERCTL} spare-add ${action.slot}`, {
+				input: `${[...files.map((file) => `${file.name} ${file.base64}`), `name ${name}`].join("\n")}\n`,
+				label: "Reserve",
+				timeoutMs: 60_000,
+			});
+		} catch (error) {
+			await context.client.deleteRunner(jit.runnerId).catch(() => null);
+			throw error;
+		}
+	});
+	if (setting !== "off") await writeSetting();
+	const previous = node.observed?.autonomy?.last ?? null;
+	const armed = runtime.autonomy;
+	if (armed && (!previous || Date.parse(previous) < armed.last * 1000)) {
+		recordEvent(
+			context.events,
+			`Armed its runners on its own while no controller answered (${armed.armed} so far, last at ${new Date(armed.last * 1000).toISOString().slice(11, 16)} UTC)`,
+		);
+	}
+};
+
 const actOnNode = async (
 	observation: Observation,
 	runners: GithubRunner[] | null,
@@ -2799,11 +3445,21 @@ const actOnNode = async (
 			const policy = effectiveUpdatePolicy(node.pool, node);
 			const requestedAt = node.updateState?.requestedAt ?? null;
 			const failedAt = node.updateState?.errorAt ?? null;
-			const startUpdate = (
+			let updateStarted = false;
+			const startUpdate = async (
 				what: string,
+				kind: "runner" | "runtime",
+				target: string,
 				reason: UpdateReason,
 				install: (context: TaskContext) => Promise<void>,
-			) =>
+			) => {
+				const gate = await claimUpdate(node, kind, target, reason);
+				if (!gate.go) {
+					noteWaiting(nodeId, `${what} waits: ${gate.reason}`, events);
+					return;
+				}
+				updateStarted = true;
+				state.updateWaiting.delete(nodeId);
 				setTimeout(() => {
 					const started = runTask(
 						nodeId,
@@ -2811,29 +3467,25 @@ const actOnNode = async (
 						async (context) => {
 							await install(context);
 							// An "update now" stays until nothing is left to update.
-							await db
-								.update(githubRunnerNodes)
-								.set({ updateState: requestedAt ? { requestedAt } : null })
-								.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+							await endUpdate(nodeId, { error: null, keepRequest: true });
 						},
 						async (error) => {
 							const message = `${what} failed: ${error instanceof Error ? error.message : String(error)}`;
 							pushEvent(nodeId, message);
-							await db
-								.update(githubRunnerNodes)
-								.set({
-									lastError: message,
-									updateState: {
-										requestedAt: null,
-										error: message,
-										errorAt: new Date().toISOString(),
-									},
-								})
-								.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+							await endUpdate(nodeId, { error: message, keepRequest: false });
+							if (gate.canary) await failCanary(node, kind, target, message);
 						},
 					);
-					if (started) pushEvent(nodeId, `${what}${UPDATE_REASONS[reason]}`);
+					if (started) {
+						pushEvent(
+							nodeId,
+							`${what}${UPDATE_REASONS[reason]}${gate.canary ? " (canary of the pool)" : ""}`,
+						);
+					} else {
+						void endUpdate(nodeId, { error: null, keepRequest: true });
+					}
 				}, 0);
+			};
 			const decide = (extra: {
 				required?: boolean;
 				deadline?: string | null;
@@ -2853,8 +3505,10 @@ const actOnNode = async (
 					required: runtime.runtimeVersion < MIN_RUNTIME_VERSION,
 				});
 				if (decision.allowed) {
-					startUpdate(
+					await startUpdate(
 						`Updating the runtime to v${RUNTIME_VERSION}`,
+						"runtime",
+						String(RUNTIME_VERSION),
 						decision.reason,
 						async ({ driver }) => {
 							await installRuntime(driver, async () => undefined);
@@ -2876,8 +3530,10 @@ const actOnNode = async (
 					});
 					const decision = decide({ deadline });
 					if (decision.allowed) {
-						startUpdate(
+						await startUpdate(
 							`Installing actions/runner ${release.version}`,
+							"runner",
+							release.version,
 							decision.reason,
 							async ({ node, driver }) => {
 								await installRelease(driver, release, async () => undefined);
@@ -2896,10 +3552,39 @@ const actOnNode = async (
 					// Asked to update, and nothing is left to update.
 					await db
 						.update(githubRunnerNodes)
-						.set({ updateState: null })
+						.set({
+							updateState: {
+								...node.updateState,
+								requestedAt: null,
+								error: null,
+								errorAt: null,
+							},
+						})
 						.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 					recordEvent(events, "Runner and runtime are up to date");
 				}
+			}
+			// OS updates, when the policy installs them, once nothing else updates.
+			const pending = patchableOs(node);
+			if (
+				policy.osPatches &&
+				!updateStarted &&
+				phase === "ready" &&
+				node.enabled &&
+				!node.drain &&
+				!node.updateState?.inProgress &&
+				pending &&
+				((pending.updates ?? 0) > 0 || pending.reboot === true) &&
+				now - Date.parse(node.updateState?.patchedAt ?? "1970-01-01") >
+					PATCH_EVERY_MS
+			) {
+				const decision = updateDecision({
+					policy,
+					now: new Date(now),
+					requested: false,
+					failedAt: node.updateState?.patchErrorAt ?? null,
+				});
+				if (decision.allowed) await startPatch(node, decision.reason, events);
 			}
 			refreshOsReport(node, driver, probe.vm?.status === "Running");
 
@@ -2992,6 +3677,7 @@ const actOnNode = async (
 			},
 			slots: effectiveSlots,
 			runners: runners ?? [],
+			spares: runtime?.spares.map((spare) => spare.name) ?? [],
 		});
 		busy = plan.busy;
 		slots = plan.slots;
@@ -3008,6 +3694,35 @@ const actOnNode = async (
 					: plan.actions;
 			await executeActions(observation, actions, client, labels, events);
 			await recordJobs(node, runtime);
+			await followCanary(
+				node,
+				{
+					runtime: String(runtime.runtimeVersion),
+					runner: runtime.release,
+				},
+				admission.ok &&
+					plan.slots.some(
+						(slot) => slot.state === "idle" || slot.state === "busy",
+					),
+				events,
+			);
+			if (runtime.runtimeVersion >= AUTONOMY_RUNTIME) {
+				await maintainReserve(observation, runtime, {
+					runners,
+					client,
+					labels,
+					accepting: node.enabled && phase === "ready" && !node.drain,
+					maxRunners: resolveMaxRunners(
+						node.maxRunners,
+						node.platform,
+						host,
+						node,
+					),
+					events,
+				}).catch((error) => {
+					lastError = `Reserve not kept: ${error instanceof Error ? error.message : String(error)}`;
+				});
+			}
 		}
 		// A stopped VM runs nothing; a running VM whose runtime does not answer
 		// may still run jobs, so it is never taken for drained.
@@ -3017,6 +3732,17 @@ const actOnNode = async (
 				node.platform === "macos" &&
 				probe.vm !== null &&
 				probe.vm.status !== "Running");
+		// OS updates that could not start before the end of the window wait for the next one.
+		const patch = node.drain?.reason === "patch" ? node.drain : null;
+		if (
+			patch?.abortAt &&
+			!drained &&
+			!tasks.has(nodeId) &&
+			now >= Date.parse(patch.abortAt)
+		) {
+			await endPatch(node, patch, { error: null, installed: false });
+			phase = "ready";
+		}
 
 		const pressure =
 			runtime && host ? diskGoal(node, host, runtime, now) : null;
@@ -3110,6 +3836,17 @@ const actOnNode = async (
 		usage,
 		caches: node.observed?.caches,
 		events,
+		autonomy:
+			runtime && runtime.runtimeVersion >= AUTONOMY_RUNTIME
+				? {
+						reserve: node.pool.autonomyReserve,
+						spares: runtime.spares.length,
+						armed: runtime.autonomy?.armed ?? 0,
+						last: runtime.autonomy
+							? new Date(runtime.autonomy.last * 1000).toISOString()
+							: null,
+					}
+				: node.observed?.autonomy,
 	};
 
 	await db
@@ -3829,8 +4566,15 @@ const refreshRunnerReleases = (pools: GithubRunnerPool[]) => {
 	);
 };
 
-/** The actions/runner releases known to the controller, newest first or not. */
-export const knownRunnerReleases = () => state.runnerReleases?.releases ?? [];
+/**
+ * The actions/runner releases this process knows, newest first or not. Given
+ * the pools, a stale list is refreshed in the background: a process that does
+ * not lead (the Dokploy server next to a standalone controller) does not tick.
+ */
+export const knownRunnerReleases = (pools?: GithubRunnerPool[]) => {
+	if (pools?.length) refreshRunnerReleases(pools);
+	return state.runnerReleases?.releases ?? [];
+};
 
 // ------------------------------------------------------------- alerts
 
@@ -3914,6 +4658,7 @@ const evaluateAlerts = async () => {
 };
 
 const tickGithubRunners = async () => {
+	if (!state.leader) return;
 	if (state.running) {
 		state.rerun = true;
 		return;
@@ -4017,61 +4762,232 @@ export const requestTick = () => {
 };
 
 /**
- * Operations interrupted by a restart: provisioning is restarted from scratch by
- * the operator; drains are level-triggered and simply continue.
+ * Work left behind by a process that stopped: its leases expired, so nobody
+ * renews them. Provisioning starts again from scratch (by the operator); a drain
+ * is level-triggered and simply goes on. Operations younger than a minute are
+ * left alone: their task may not hold its lease yet.
  */
-const recoverInterruptedWork = async () => {
-	const interrupted = await db.query.githubRunnerOperations.findMany({
-		where: eq(githubRunnerOperations.status, "running"),
-	});
-	const nodes = interrupted.length
-		? await db.query.githubRunnerNodes.findMany({
-				where: inArray(
-					githubRunnerNodes.githubRunnerNodeId,
-					interrupted.map((operation) => operation.githubRunnerNodeId),
+const recoverOrphanedWork = async () => {
+	const now = new Date();
+	const nowIso = now.toISOString();
+	const leased = (node: { lockedUntil: string | null } | undefined) =>
+		Boolean(node?.lockedUntil && node.lockedUntil > nowIso);
+	const [running, nodes] = await Promise.all([
+		db.query.githubRunnerOperations.findMany({
+			where: and(
+				eq(githubRunnerOperations.status, "running"),
+				lt(
+					githubRunnerOperations.createdAt,
+					new Date(now.getTime() - 60_000).toISOString(),
 				),
-				columns: { githubRunnerNodeId: true, drain: true },
-			})
-		: [];
-	const drains = new Set(nodes.map((node) => node.drain?.operationId));
+			),
+			columns: { logs: false },
+		}),
+		db.query.githubRunnerNodes.findMany({
+			columns: {
+				githubRunnerNodeId: true,
+				phase: true,
+				drain: true,
+				lockedUntil: true,
+				updateState: true,
+			},
+		}),
+	]);
+	const byId = new Map(nodes.map((node) => [node.githubRunnerNodeId, node]));
+	const orphaned = running.filter((operation) => {
+		const node = byId.get(operation.githubRunnerNodeId);
+		if (node?.drain?.operationId === operation.githubRunnerOperationId) {
+			return false;
+		}
+		return !leased(node) && !tasks.has(operation.githubRunnerNodeId);
+	});
 	await Promise.all(
-		interrupted
-			// A drain is level-triggered: its operation goes on after the restart.
-			.filter((operation) => !drains.has(operation.githubRunnerOperationId))
-			.map(async (operation) => {
-				await appendOperationLog(
-					operation.githubRunnerOperationId,
-					"Interrupted by a Dokploy restart",
-				);
-				await finishOperation(
-					operation.githubRunnerOperationId,
-					"error",
-					"Interrupted by a Dokploy restart",
-				);
-			}),
+		orphaned.map(async (operation) => {
+			const message = "Interrupted: the Dokploy process running it stopped";
+			await appendOperationLog(operation.githubRunnerOperationId, message);
+			await finishOperation(
+				operation.githubRunnerOperationId,
+				"error",
+				message,
+			);
+		}),
 	);
-	await db
-		.update(githubRunnerNodes)
-		.set({
-			phase: "error",
-			lastError: "Provisioning interrupted by a Dokploy restart",
+	const free = nodes.filter(
+		(node) => !leased(node) && !tasks.has(node.githubRunnerNodeId),
+	);
+	const stuck = free.filter((node) => node.phase === "provisioning");
+	if (stuck.length) {
+		await db
+			.update(githubRunnerNodes)
+			.set({
+				phase: "error",
+				lastError:
+					"Provisioning interrupted: the Dokploy process running it stopped",
+			})
+			.where(
+				and(
+					inArray(
+						githubRunnerNodes.githubRunnerNodeId,
+						stuck.map((node) => node.githubRunnerNodeId),
+					),
+					eq(githubRunnerNodes.phase, "provisioning"),
+				),
+			);
+	}
+	// An update counted against the pool, left by a process that stopped.
+	await Promise.all(
+		free
+			.filter((node) => node.updateState?.inProgress)
+			.map((node) =>
+				db
+					.update(githubRunnerNodes)
+					.set({ updateState: { ...node.updateState, inProgress: null } })
+					.where(
+						eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId),
+					),
+			),
+	);
+};
+
+// ------------------------------------------------------------- leadership
+
+/**
+ * Takes or renews the leadership, in the database's clock so the instances'
+ * clocks do not matter. Returns whether this process leads.
+ */
+const renewLeadership = async () => {
+	const ttl = sql`now() + make_interval(secs => ${LEADER_TTL_S})`;
+	const rows = await db
+		.insert(githubRunnerLeader)
+		.values({ id: 1, owner: OWNER, since: sql`now()`, until: ttl })
+		.onConflictDoUpdate({
+			target: githubRunnerLeader.id,
+			set: {
+				owner: OWNER,
+				since: sql`CASE WHEN ${githubRunnerLeader.owner} = ${OWNER} THEN ${githubRunnerLeader.since} ELSE now() END`,
+				until: ttl,
+			},
+			setWhere: sql`${githubRunnerLeader.owner} = ${OWNER} OR ${githubRunnerLeader.until} < now()`,
 		})
-		.where(eq(githubRunnerNodes.phase, "provisioning"));
-	// Dokploy runs a single instance: leases left by the previous process are stale.
-	await db.update(githubRunnerNodes).set({ lockedBy: null, lockedUntil: null });
+		.returning({ owner: githubRunnerLeader.owner });
+	return rows.length > 0;
 };
 
-export const startGithubRunnerController = async () => {
-	if (state.timer || process.env.DOKPLOY_GITHUB_RUNNERS_CONTROLLER === "false")
+const heartbeat = async () => {
+	const now = new Date().toISOString();
+	await db
+		.insert(githubRunnerControllers)
+		.values({
+			owner: OWNER,
+			kind: state.kind,
+			host: hostname(),
+			version: state.version,
+			startedAt: state.startedAt,
+			seenAt: now,
+		})
+		.onConflictDoUpdate({
+			target: githubRunnerControllers.owner,
+			set: { seenAt: now, version: state.version },
+		});
+	const leading = await renewLeadership();
+	if (leading && !state.leader) {
+		console.log(`GitHub runner controller: leading (${OWNER})`);
+		state.leader = true;
+		state.lastOrphanCheck = 0;
+		requestTick();
+	} else if (!leading && state.leader) {
+		console.log(`GitHub runner controller: standing by (${OWNER})`);
+		state.leader = false;
+	}
+	if (state.leader && Date.now() - state.lastOrphanCheck > ORPHANS_EVERY_MS) {
+		state.lastOrphanCheck = Date.now();
+		await recoverOrphanedWork();
+		await db
+			.delete(githubRunnerControllers)
+			.where(
+				lt(
+					githubRunnerControllers.seenAt,
+					new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+				),
+			);
+	}
+};
+
+/** Who leads, and which controller processes answered lately. */
+export const githubRunnerControllerStatus = async () => {
+	const [leader, instances] = await Promise.all([
+		db.query.githubRunnerLeader.findFirst({
+			where: and(
+				eq(githubRunnerLeader.id, 1),
+				sql`${githubRunnerLeader.until} > now()`,
+			),
+		}),
+		db.query.githubRunnerControllers.findMany({
+			where: gte(
+				githubRunnerControllers.seenAt,
+				new Date(Date.now() - 30_000).toISOString(),
+			),
+		}),
+	]);
+	return {
+		leader: leader
+			? {
+					owner: leader.owner,
+					since: leader.since,
+					instance:
+						instances.find((instance) => instance.owner === leader.owner) ??
+						null,
+				}
+			: null,
+		standby: instances.filter((instance) => instance.owner !== leader?.owner),
+	};
+};
+
+/**
+ * Starts the controller of this process. Every process runs one: the Dokploy
+ * server and, for high availability, standalone controllers on the same
+ * database (dist/runner-controller.mjs). One leads and ticks; the others
+ * renew their candidacy and take over within LEADER_TTL_S of its end. Every
+ * process still runs the operations its users start, under machine leases.
+ */
+export const startGithubRunnerController = async (
+	options: { kind?: "dokploy" | "standalone"; version?: string | null } = {},
+) => {
+	if (
+		state.heartbeat ||
+		process.env.DOKPLOY_GITHUB_RUNNERS_CONTROLLER === "false"
+	)
 		return;
-	await recoverInterruptedWork();
+	state.kind = options.kind ?? "dokploy";
+	state.version = options.version ?? null;
+	await heartbeat();
+	state.heartbeat = setInterval(
+		() =>
+			void heartbeat().catch((error) => {
+				// Without the database, nobody can tell who leads: stop ticking.
+				if (state.leader)
+					console.error("GitHub runner controller: lost the database", error);
+				state.leader = false;
+			}),
+		HEARTBEAT_MS,
+	);
 	state.timer = setInterval(() => void tickGithubRunners(), TICK_MS);
-	console.log("GitHub runner controller started");
+	console.log(`GitHub runner controller started (${state.kind})`);
 };
 
-export const stopGithubRunnerController = () => {
+/** Stops ticking and hands the leadership over at once. */
+export const stopGithubRunnerController = async () => {
 	if (state.timer) clearInterval(state.timer);
+	if (state.heartbeat) clearInterval(state.heartbeat);
 	state.timer = null;
+	state.heartbeat = null;
+	if (state.leader) {
+		state.leader = false;
+		await db
+			.delete(githubRunnerLeader)
+			.where(eq(githubRunnerLeader.owner, OWNER))
+			.catch(() => undefined);
+	}
 };
 
 /** The host key a machine presents now, for the operator to approve after a reinstall. */
