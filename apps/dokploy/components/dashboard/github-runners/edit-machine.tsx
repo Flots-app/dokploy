@@ -1,3 +1,4 @@
+import type { GithubRunnerUpdatePolicy } from "@dokploy/server/db/schema";
 import { vmSize } from "@dokploy/server/utils/github-runners/budget";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
@@ -15,11 +16,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import { api } from "@/utils/api";
 import { BudgetFields } from "./budget-fields";
 import { type BudgetValues, parseLabels } from "./budget-values";
 import { errorText, type RunnerMachine } from "./format";
 import { RunningJobs } from "./machine-actions";
+import { UpdatePolicyFields } from "./update-policy";
 
 type Mode = "wait" | "kill";
 
@@ -108,6 +111,13 @@ const EditMachineForm = ({
 	);
 	const [description, setDescription] = useState(machine.description ?? "");
 	const [mode, setMode] = useState<Mode>("wait");
+	// null follows the pool.
+	const [updatePolicy, setUpdatePolicy] =
+		useState<GithubRunnerUpdatePolicy | null>(() =>
+			machine.updates.inherited
+				? null
+				: { auto: machine.updates.auto, window: machine.updates.window },
+		);
 	const host = machine.observed?.host ?? null;
 	const restart = vmRestartFor(machine, budget);
 
@@ -123,6 +133,7 @@ const EditMachineForm = ({
 				diskCleanupGb: budget.diskCleanupGb,
 				vmDiskGb: Math.max(budget.vmDiskGb, machine.applied?.vmDiskGb ?? 0),
 				extraLabels: parseLabels(budget.extraLabels),
+				updatePolicy,
 				mode,
 			});
 			await utils.githubRunner.overview.invalidate();
@@ -162,6 +173,42 @@ const EditMachineForm = ({
 					once it does.
 				</AlertBlock>
 			)}
+			<div className="grid gap-3">
+				<div className="flex items-start justify-between gap-4">
+					<Label
+						htmlFor="machine-updates-inherit"
+						className="block font-normal"
+					>
+						Updates: follow the pool
+						<span className="block text-xs text-muted-foreground">
+							{machine.updates.inherited
+								? `Now: ${machine.updates.auto ? machine.updates.description : "automatic updates off"}.`
+								: "Turn on to drop this machine's own setting."}
+						</span>
+					</Label>
+					<Switch
+						id="machine-updates-inherit"
+						checked={updatePolicy === null}
+						onCheckedChange={(inherit) =>
+							setUpdatePolicy(
+								inherit
+									? null
+									: {
+											auto: machine.updates.auto,
+											window: machine.updates.window,
+										},
+							)
+						}
+					/>
+				</div>
+				{updatePolicy && (
+					<UpdatePolicyFields
+						id="machine-updates"
+						value={updatePolicy}
+						onChange={setUpdatePolicy}
+					/>
+				)}
+			</div>
 			{restart && (
 				<VmRestartChoice
 					machine={machine}

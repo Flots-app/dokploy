@@ -26,6 +26,7 @@ import {
 	checkRunnerMachine,
 	clearPoolRouting,
 	generateMachineKey,
+	knownOsReleases,
 	knownRunnerReleases,
 	retryRunnerNodeNow,
 } from "@dokploy/server/utils/github-runners/controller";
@@ -40,6 +41,7 @@ import {
 	findRunnerGroup,
 	tokenExpiration,
 } from "@dokploy/server/utils/github-runners/github-api";
+import { osStatus } from "@dokploy/server/utils/github-runners/os";
 import { nextMachine } from "@dokploy/server/utils/github-runners/placement";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
 import { RUNTIME_VERSION } from "@dokploy/server/utils/github-runners/runtime";
@@ -50,6 +52,11 @@ import {
 	publicKeyFingerprint,
 	type SetupCode,
 } from "@dokploy/server/utils/github-runners/setup";
+import {
+	describeUpdateWindow,
+	effectiveUpdatePolicy,
+	inUpdateWindow,
+} from "@dokploy/server/utils/github-runners/updates";
 import {
 	latestRunnerRelease,
 	runnerVersionStatus,
@@ -703,6 +710,26 @@ export const finishGithubRunnerEnrollment = async (
 	return publicNode(updated);
 };
 
+/** "Update now": the next tick updates the runtime and the runner, whatever the policy. */
+export const requestGithubRunnerNodeUpdate = async (
+	nodeId: string,
+	organizationId: string,
+) => {
+	const node = await findGithubRunnerNode(nodeId, organizationId);
+	if (node.phase !== "ready" && node.phase !== "draining") {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `${node.name} must be ready to be updated`,
+		});
+	}
+	await db
+		.update(githubRunnerNodes)
+		.set({ updateState: { requestedAt: new Date().toISOString() } })
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+	retryRunnerNodeNow(nodeId);
+	return node;
+};
+
 export const updateGithubRunnerNode = async (
 	input: z.infer<typeof apiUpdateGithubRunnerNode>,
 	organizationId: string,
@@ -773,6 +800,8 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 			.map((row) => {
 				const node = publicNode(row);
 				const host = node.observed?.host ?? null;
+				const policy = effectiveUpdatePolicy(pool, node);
+				const windowOpen = inUpdateWindow(policy.window, new Date(now));
 				return {
 					...node,
 					sshKeyName: node.sshKey?.name ?? null,
@@ -798,6 +827,16 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 							(operation) =>
 								operation.githubRunnerNodeId === node.githubRunnerNodeId,
 						) ?? null,
+					/** The update policy it follows, its own or its pool's. */
+					updates: {
+						inherited: node.updatePolicy === null,
+						auto: policy.auto,
+						window: policy.window,
+						description: describeUpdateWindow(policy.window),
+						open: windowOpen,
+						requestedAt: node.updateState?.requestedAt ?? null,
+						error: node.updateState?.error ?? null,
+					},
 					/** Whether the actions/runner release it runs is still accepted. */
 					runnerUpdate: runnerVersionStatus({
 						installed: node.observed?.runtime?.runnerVersion ?? null,
@@ -807,7 +846,33 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 							node.enabled &&
 							(node.phase === "ready" || node.phase === "draining"),
 						now,
+						policy: {
+							auto: policy.auto,
+							window: policy.window
+								? describeUpdateWindow(policy.window)
+								: null,
+							open: windowOpen,
+						},
+						updateError: node.updateState?.error ?? null,
 					}),
+					/** The OS of the machine, and of its VM on a Mac. */
+					os: {
+						checkedAt: node.osReport?.at ?? null,
+						error: node.osReport?.error ?? null,
+						host: osStatus({
+							info: node.osReport?.host ?? null,
+							releases: knownOsReleases(node.osReport?.host?.id ?? ""),
+							now,
+						}),
+						guest:
+							node.platform === "macos"
+								? osStatus({
+										info: node.osReport?.guest ?? null,
+										releases: knownOsReleases(node.osReport?.guest?.id ?? ""),
+										now,
+									})
+								: null,
+					},
 					/** Dokploy's runtime on the machine is older than this Dokploy's. */
 					runtimeUpdatePending:
 						(node.observed?.runtime?.version ?? RUNTIME_VERSION) <

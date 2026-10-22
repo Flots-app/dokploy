@@ -112,6 +112,7 @@ export * from "./utils/filesystem/ssh";
 export * from "./utils/git-branch-validation";
 export {
 	applyRunnerNodeConfig,
+	checkRunnerNodeOs,
 	cleanRunnerCaches,
 	disableRunnerNode,
 	enableRunnerNode,

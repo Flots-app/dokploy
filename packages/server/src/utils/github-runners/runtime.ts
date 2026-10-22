@@ -7,6 +7,12 @@
 import { parseEnvLines } from "./env";
 
 export const RUNTIME_VERSION = 6;
+/**
+ * The oldest runtime this controller can drive. An older one is updated at
+ * once, whatever the update policy; a newer optional runtime waits for it.
+ * v6 changed the disk cleanup records, so it is required.
+ */
+export const MIN_RUNTIME_VERSION = 6;
 
 const RUNTIME_ROOT = "/opt/dokploy-runners";
 export const RUNNERCTL = `${RUNTIME_ROOT}/bin/runnerctl`;

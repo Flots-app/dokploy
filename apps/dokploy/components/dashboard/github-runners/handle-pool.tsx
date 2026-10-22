@@ -52,6 +52,7 @@ import {
 	toPoolInput,
 } from "./pool-form";
 import { RoutingFields } from "./pool-routing";
+import { UpdatePolicyFields } from "./update-policy";
 
 type PoolForm = UseFormReturn<PoolFormValues>;
 
@@ -380,6 +381,27 @@ const AdvancedFields = ({
 						</FormItem>
 					)}
 				/>
+			</div>
+			<FormField
+				control={form.control}
+				name="updatePolicy"
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>Updates</FormLabel>
+						<UpdatePolicyFields
+							id="pool-updates"
+							value={field.value}
+							onChange={field.onChange}
+						/>
+						<FormDescription>
+							Every machine of the pool follows it, unless it has its own
+							setting (machine menu › Resources).
+						</FormDescription>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
+			<div className="grid gap-4 sm:grid-cols-2">
 				<FormField
 					control={form.control}
 					name="jobStartedHook"

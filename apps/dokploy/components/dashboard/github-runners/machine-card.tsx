@@ -2,6 +2,7 @@ import { formatDistanceToNow } from "date-fns";
 import {
 	Activity,
 	Apple,
+	Download,
 	KeyRound,
 	KeySquare,
 	ListChecks,
@@ -294,6 +295,79 @@ const RunnerVersion = ({ machine }: { machine: RunnerMachine }) => {
 	);
 };
 
+const OS_BADGE = {
+	updates: { variant: "blue", label: "updates" },
+	outdated: { variant: "orange", label: "updates needed" },
+	unsupported: { variant: "red", label: "unsupported" },
+} as const;
+
+type OsStatusView = RunnerMachine["os"]["host"];
+
+const OsName = ({
+	prefix,
+	status,
+}: {
+	prefix: string;
+	status: OsStatusView;
+}) => {
+	if (!status.label) return null;
+	const badge =
+		status.state === "current" || status.state === "unknown"
+			? null
+			: OS_BADGE[status.state];
+	return (
+		<span className="flex items-center gap-1.5">
+			{prefix}
+			{status.label}
+			{badge && (
+				<Badge variant={badge.variant} title={status.message}>
+					{badge.label}
+				</Badge>
+			)}
+		</span>
+	);
+};
+
+/** The OS of the machine, and of its VM on a Mac, with when it was read. */
+const OsLine = ({
+	machine,
+	canUpdate,
+}: {
+	machine: RunnerMachine;
+	canUpdate: boolean;
+}) => {
+	const check = api.githubRunner.checkMachineOs.useMutation();
+	const { host, guest, checkedAt } = machine.os;
+	if (!host.label && !checkedAt) return null;
+	return (
+		<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+			<OsName prefix="" status={host} />
+			{guest && <OsName prefix="VM " status={guest} />}
+			{checkedAt && (
+				<span>
+					checked{" "}
+					{formatDistanceToNow(new Date(checkedAt), { addSuffix: true })}
+				</span>
+			)}
+			{canUpdate && (
+				<Button
+					variant="link"
+					className="h-auto p-0 text-xs"
+					disabled={check.isPending || check.isSuccess}
+					onClick={() =>
+						check
+							.mutateAsync({ githubRunnerNodeId: machine.githubRunnerNodeId })
+							.then(() => toast.success(`${machine.name}: OS check started`))
+							.catch((error) => toast.error(errorText(error)))
+					}
+				>
+					{check.isSuccess ? "Checking…" : "Check now"}
+				</Button>
+			)}
+		</div>
+	);
+};
+
 const MachineAlerts = ({
 	machine,
 	busy,
@@ -308,9 +382,22 @@ const MachineAlerts = ({
 	const drain = drainMessage(machine, busy);
 	const admission = machine.observed?.admission;
 	const runner = machine.runnerUpdate;
+	const os = [machine.os.host, machine.os.guest].flatMap((status, index) =>
+		status && (status.state === "outdated" || status.state === "unsupported")
+			? [{ key: index === 0 ? "host" : "vm", vm: index === 1, status }]
+			: [],
+	);
 	return (
 		<>
 			{drain && <AlertBlock type="warning">{drain}</AlertBlock>}
+			{os.map(({ key, vm, status }) => (
+				<AlertBlock
+					key={key}
+					type={status.state === "unsupported" ? "error" : "warning"}
+				>
+					{vm ? `VM: ${status.message}` : status.message}
+				</AlertBlock>
+			))}
 			{(runner.state === "outdated" || runner.state === "unsupported") && (
 				<AlertBlock type={runner.state === "unsupported" ? "error" : "warning"}>
 					{runner.message}
@@ -339,6 +426,36 @@ const MachineAlerts = ({
 	);
 };
 
+/** "Update now", shown while the runner or the runtime has an update. */
+const UpdateNowItem = ({ machine }: { machine: RunnerMachine }) => {
+	const utils = api.useUtils();
+	const updateNow = api.githubRunner.updateMachineNow.useMutation();
+	const ready = machine.phase === "ready" || machine.phase === "draining";
+	const behind =
+		machine.runtimeUpdatePending ||
+		["pending", "outdated", "unsupported"].includes(machine.runnerUpdate.state);
+	if (!ready || !behind) return null;
+	const onSelect = async () => {
+		try {
+			await updateNow.mutateAsync({
+				githubRunnerNodeId: machine.githubRunnerNodeId,
+			});
+			await utils.githubRunner.overview.invalidate();
+			toast.success(`${machine.name}: update started, between jobs`);
+		} catch (error) {
+			toast.error(errorText(error, "Unable to start the update"));
+		}
+	};
+	return (
+		<DropdownMenuItem
+			disabled={updateNow.isPending || Boolean(machine.updates.requestedAt)}
+			onSelect={() => void onSelect()}
+		>
+			<Download className="size-4" /> Update now
+		</DropdownMenuItem>
+	);
+};
+
 const MachineActions = ({
 	machine,
 	canCreate,
@@ -356,6 +473,7 @@ const MachineActions = ({
 	const enable = api.githubRunner.enableMachine.useMutation();
 	const provision = api.githubRunner.provisionMachine.useMutation();
 	const rotate = api.githubRunner.rotateKey.useMutation();
+
 	const working =
 		machine.phase === "provisioning" || Boolean(machine.operation);
 	const enrolling = machine.phase === "enrolling";
@@ -435,6 +553,7 @@ const MachineActions = ({
 							>
 								<RotateCw className="size-4" /> Reinstall runtime
 							</DropdownMenuItem>
+							<UpdateNowItem machine={machine} />
 							<DropdownMenuItem onSelect={() => onOpen("hostkey")}>
 								<KeyRound className="size-4" /> SSH host key
 							</DropdownMenuItem>
@@ -504,6 +623,19 @@ const MachineTitle = ({ machine }: { machine: RunnerMachine }) => {
 	);
 };
 
+/** How the machine gets updates, when it is not "automatic, any time". */
+const UpdateSetting = ({ machine }: { machine: RunnerMachine }) => {
+	const { updates } = machine;
+	const text = updates.requestedAt
+		? "update requested"
+		: !updates.auto
+			? "auto-updates off"
+			: updates.window
+				? `updates ${updates.description}${updates.open ? " (open now)" : ""}`
+				: null;
+	return text ? <span>{text}</span> : null;
+};
+
 const MachineFooter = ({
 	machine,
 	busy,
@@ -518,6 +650,7 @@ const MachineFooter = ({
 		</span>
 		<RunnerVersion machine={machine} />
 		{machine.runtimeUpdatePending && <span>runtime update pending</span>}
+		<UpdateSetting machine={machine} />
 		{machine.extraLabels.map((label) => (
 			<Badge key={label} variant="outline">
 				{label}
@@ -576,6 +709,7 @@ export const MachineCard = ({
 					onOpen={setDialog}
 				/>
 			</div>
+			<OsLine machine={machine} canUpdate={canUpdate} />
 			<MachineAlerts
 				machine={machine}
 				busy={busy}

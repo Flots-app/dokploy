@@ -1,5 +1,5 @@
 {
-  "id": "2b2f52b6-e4e1-4b07-ae20-66d36194792e",
+  "id": "03b84ab0-53d6-46cd-9495-96cdfcfd9f3f",
   "prevId": "0b8f5a0a-a261-4c0c-a40c-356367a5b338",
   "version": "7",
   "dialect": "postgresql",
@@ -4184,6 +4184,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "updatePolicy": {
+          "name": "updatePolicy",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updateState": {
+          "name": "updateState",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "osReport": {
+          "name": "osReport",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "hostKeyFingerprint": {
           "name": "hostKeyFingerprint",
           "type": "text",
@@ -4729,6 +4747,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'fastest'"
+        },
+        "updatePolicy": {
+          "name": "updatePolicy",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"auto\":true,\"window\":null}'::jsonb"
         },
         "createdAt": {
           "name": "createdAt",

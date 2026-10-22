@@ -1,3 +1,4 @@
+import { updatePolicySchema } from "@dokploy/server/utils/github-runners/updates";
 import { z } from "zod";
 import { parseLabels } from "./budget-values";
 import type { RunnerPool } from "./format";
@@ -44,6 +45,7 @@ export const poolFormSchema = z
 			.refine((name) => !/^github_/i.test(name), "Cannot start with GITHUB_"),
 		fallbackLabels: z.string(),
 		placement: z.enum(["fastest", "spread"]),
+		updatePolicy: updatePolicySchema,
 	})
 	.refine((value) => value.scope === "organization" || value.repository, {
 		path: ["repository"],
@@ -84,6 +86,7 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 	routingVariable: pool?.routingVariable ?? "DOKPLOY_RUNS_ON",
 	fallbackLabels: (pool?.fallbackLabels ?? ["ubuntu-24.04"]).join(", "),
 	placement: pool?.placement ?? "fastest",
+	updatePolicy: pool?.updatePolicy ?? { auto: true, window: null },
 });
 
 /** Undefined (an unmounted field) keeps the stored value; empty clears it. */
@@ -119,6 +122,7 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 	rerunInterruptedJobs: values.rerunInterruptedJobs ?? true,
 	routingVariable: values.routingEnabled ? values.routingVariable : null,
 	placement: values.placement,
+	updatePolicy: values.updatePolicy,
 	fallbackLabels: parseLabels(values.fallbackLabels).length
 		? parseLabels(values.fallbackLabels)
 		: ["ubuntu-24.04"],

@@ -9,6 +9,7 @@ import {
 	type GithubRunnerNode,
 	type GithubRunnerNodeObservation,
 	type GithubRunnerOperation,
+	type GithubRunnerOsReport,
 	type GithubRunnerPool,
 	github,
 	githubRunnerJobs,
@@ -91,6 +92,14 @@ import {
 	macWriteBootScript,
 } from "./macos";
 import {
+	fetchOsReleases,
+	linuxOsReportScript,
+	macOsReportScript,
+	type OsRelease,
+	osProduct,
+	parseOsReport,
+} from "./os";
+import {
 	type PlacementMachine,
 	placeWaitingRunners,
 	type WaitingTarget,
@@ -119,6 +128,7 @@ import {
 } from "./routing";
 import {
 	installRuntimeScript,
+	MIN_RUNTIME_VERSION,
 	RUNNERCTL,
 	RUNTIME_VERSION,
 	runnerEnvironment,
@@ -130,7 +140,12 @@ import {
 	openNodeSession,
 	sharedNodeSession,
 } from "./ssh";
-import type { RunnerReleaseInfo } from "./versions";
+import {
+	effectiveUpdatePolicy,
+	type UpdateReason,
+	updateDecision,
+} from "./updates";
+import { type RunnerReleaseInfo, runnerVersionStatus } from "./versions";
 
 const GiB = 1024 ** 3;
 export const TICK_MS = 5_000;
@@ -203,6 +218,11 @@ interface ControllerState {
 	/** actions/runner releases, to tell machines left on an older one. */
 	runnerReleases: { at: number; releases: RunnerReleaseInfo[] } | null;
 	runnerReleasesTriedAt: number;
+	/** Last OS report of each machine. */
+	osReportAt: Map<string, number>;
+	/** Support dates of each OS product (endoflife.date). */
+	osReleases: Map<string, { at: number; releases: OsRelease[] }>;
+	osReleasesTriedAt: Map<string, number>;
 }
 
 const shared = globalThis as { __dokployGithubRunners?: ControllerState };
@@ -234,12 +254,18 @@ shared.__dokployGithubRunners ??= {
 	pendingTick: null,
 	runnerReleases: null,
 	runnerReleasesTriedAt: 0,
+	osReportAt: new Map(),
+	osReleases: new Map(),
+	osReleasesTriedAt: new Map(),
 };
 const state: ControllerState = shared.__dokployGithubRunners;
 // State kept across a hot reload predates fields added since.
 state.drainRetryAt ??= new Map();
 state.runnerReleases ??= null;
 state.runnerReleasesTriedAt ??= 0;
+state.osReportAt ??= new Map();
+state.osReleases ??= new Map();
+state.osReleasesTriedAt ??= new Map();
 state.rerouteScans ??= new Set();
 state.reconnects ??= new Map();
 const OWNER = state.owner;
@@ -2359,6 +2385,114 @@ const describePressure = (node: NodeWithRelations, pressure: DiskPressure) => {
 	return `${why}: removing the least recently used caches${where} until ${formatBytes(pressure.targetBytes)} are free`;
 };
 
+const UPDATE_REASONS: Record<UpdateReason, string> = {
+	requested: " (asked from Dokploy)",
+	required: ": this Dokploy needs it, whatever the update window",
+	deadline:
+		" outside the update window: GitHub stops queuing jobs on the installed release within 3 days",
+	window: " (update window)",
+	anytime: "",
+};
+
+const OS_REPORT_EVERY_MS = 12 * 60 * 60_000;
+const OS_RELEASES_TTL_MS = 24 * 60 * 60_000;
+const OS_RELEASES_RETRY_MS = 60 * 60_000;
+
+/** Support dates of an OS product, refreshed daily in the background. */
+const refreshOsReleases = (product: string) => {
+	const known = state.osReleases.get(product);
+	const tried = state.osReleasesTriedAt.get(product) ?? 0;
+	if (known && Date.now() - known.at < OS_RELEASES_TTL_MS) return;
+	if (Date.now() - tried < OS_RELEASES_RETRY_MS) return;
+	state.osReleasesTriedAt.set(product, Date.now());
+	void fetchOsReleases(product)
+		.then((releases) => {
+			state.osReleases.set(product, { at: Date.now(), releases });
+		})
+		.catch((error) =>
+			console.error(
+				`GitHub runners: unable to read the ${product} support dates`,
+				error instanceof Error ? error.message : error,
+			),
+		);
+};
+
+/** Release lines of an OS known to the controller, for the overview. */
+export const knownOsReleases = (id: string) => {
+	const product = osProduct(id);
+	return product ? (state.osReleases.get(product)?.releases ?? []) : [];
+};
+
+/**
+ * Reads the OS of a machine (and of a Mac's VM) every 12 hours, in the
+ * background: softwareupdate can take a minute and must not hold the tick.
+ */
+const refreshOsReport = (
+	node: NodeWithRelations,
+	driver: NodeDriver,
+	vmRunning: boolean,
+) => {
+	const nodeId = node.githubRunnerNodeId;
+	const last = state.osReportAt.get(nodeId) ?? 0;
+	if (Date.now() - last < OS_REPORT_EVERY_MS) return;
+	state.osReportAt.set(nodeId, Date.now());
+	void (async () => {
+		const report: GithubRunnerOsReport = {
+			at: new Date().toISOString(),
+			host: null,
+			guest: null,
+		};
+		const errors: string[] = [];
+		const read = async (
+			where: string,
+			run: () => Promise<{ stdout: string }>,
+		) => {
+			try {
+				return parseOsReport((await run()).stdout);
+			} catch (error) {
+				errors.push(
+					`${where}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return null;
+			}
+		};
+		report.host = await read("machine", () =>
+			driver.host(
+				node.platform === "macos" ? macOsReportScript() : linuxOsReportScript(),
+				{ label: "OS report", timeoutMs: 3 * 60_000, allowFailure: true },
+			),
+		);
+		if (node.platform === "macos" && vmRunning) {
+			report.guest = await read("VM", () =>
+				driver.guest(`bash -c ${shellQuote(linuxOsReportScript())}`, {
+					label: "VM OS report",
+					timeoutMs: 2 * 60_000,
+					allowFailure: true,
+				}),
+			);
+		}
+		if (errors.length) report.error = errors.join("; ");
+		await db
+			.update(githubRunnerNodes)
+			.set({ osReport: report })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		for (const info of [report.host, report.guest]) {
+			const product = info && osProduct(info.id);
+			if (product) refreshOsReleases(product);
+		}
+	})().catch((error) => {
+		// Tried again at the next tick rather than in 12 hours.
+		state.osReportAt.delete(nodeId);
+		console.error(`GitHub runners: OS report of ${node.name} failed`, error);
+	});
+};
+
+/** Asks for a new OS report of a machine at the next tick. */
+export const checkRunnerNodeOs = (nodeId: string) => {
+	state.osReportAt.delete(nodeId);
+	requestTick();
+};
+
 const actOnNode = async (
 	observation: Observation,
 	runners: GithubRunner[] | null,
@@ -2418,29 +2552,92 @@ const actOnNode = async (
 
 		const host = probe.host;
 		if (runtime && host) {
-			// Runtime and runner updates happen in the background, between ticks.
+			// Runtime and runner updates happen in the background, between ticks,
+			// when the machine's update policy allows them (see updates.ts).
+			const policy = effectiveUpdatePolicy(node.pool, node);
+			const requestedAt = node.updateState?.requestedAt ?? null;
+			const failedAt = node.updateState?.errorAt ?? null;
+			const startUpdate = (
+				what: string,
+				reason: UpdateReason,
+				install: (context: TaskContext) => Promise<void>,
+			) =>
+				setTimeout(() => {
+					const started = runTask(
+						nodeId,
+						null,
+						async (context) => {
+							await install(context);
+							// An "update now" stays until nothing is left to update.
+							await db
+								.update(githubRunnerNodes)
+								.set({ updateState: requestedAt ? { requestedAt } : null })
+								.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+						},
+						async (error) => {
+							const message = `${what} failed: ${error instanceof Error ? error.message : String(error)}`;
+							pushEvent(nodeId, message);
+							await db
+								.update(githubRunnerNodes)
+								.set({
+									lastError: message,
+									updateState: {
+										requestedAt: null,
+										error: message,
+										errorAt: new Date().toISOString(),
+									},
+								})
+								.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+						},
+					);
+					if (started) pushEvent(nodeId, `${what}${UPDATE_REASONS[reason]}`);
+				}, 0);
+			const decide = (extra: {
+				required?: boolean;
+				deadline?: string | null;
+			}) =>
+				updateDecision({
+					policy,
+					now: new Date(now),
+					requested: requestedAt !== null,
+					failedAt,
+					...extra,
+				});
 			if (
 				runtime.runtimeVersion < RUNTIME_VERSION &&
 				(phase === "ready" || phase === "draining")
 			) {
-				recordEvent(events, `Updating the runtime to v${RUNTIME_VERSION}`);
-				setTimeout(
-					() =>
-						runTask(nodeId, null, async ({ driver }) => {
+				const decision = decide({
+					required: runtime.runtimeVersion < MIN_RUNTIME_VERSION,
+				});
+				if (decision.allowed) {
+					startUpdate(
+						`Updating the runtime to v${RUNTIME_VERSION}`,
+						decision.reason,
+						async ({ driver }) => {
 							await installRuntime(driver, async () => undefined);
-						}),
-					0,
-				);
+						},
+					);
+				}
 			} else if (phase === "ready" && node.enabled && runtime.host?.arch) {
 				const release = await desiredRelease(
 					node.pool,
 					runtime.host.arch,
 				).catch(() => null);
 				if (release && runtime.release !== release.version) {
-					recordEvent(events, `Installing actions/runner ${release.version}`);
-					setTimeout(
-						() =>
-							runTask(nodeId, null, async ({ node, driver }) => {
+					const { deadline } = runnerVersionStatus({
+						installed: runtime.release,
+						releases: knownRunnerReleases(),
+						pinned: node.pool.runnerVersion,
+						updating: true,
+						now,
+					});
+					const decision = decide({ deadline });
+					if (decision.allowed) {
+						startUpdate(
+							`Installing actions/runner ${release.version}`,
+							decision.reason,
+							async ({ node, driver }) => {
 								await installRelease(driver, release, async () => undefined);
 								await db
 									.update(githubRunnerNodes)
@@ -2450,11 +2647,19 @@ const actOnNode = async (
 											: node.applied,
 									})
 									.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-							}),
-						0,
-					);
+							},
+						);
+					}
+				} else if (release && requestedAt) {
+					// Asked to update, and nothing is left to update.
+					await db
+						.update(githubRunnerNodes)
+						.set({ updateState: null })
+						.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+					recordEvent(events, "Runner and runtime are up to date");
 				}
 			}
+			refreshOsReport(node, driver, probe.vm?.status === "Running");
 
 			// Kept out of the planning: a machine whose environment or limits
 			// cannot be written still runs, drains and cleans its disk.

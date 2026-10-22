@@ -71,6 +71,18 @@ export const latestRunnerRelease = (releases: RunnerReleaseInfo[]) =>
 		null,
 	);
 
+/** How a machine gets updates, as the version status explains it. */
+export interface RunnerUpdatePolicyView {
+	auto: boolean;
+	/** Description of the update window; null for any time. */
+	window: string | null;
+	/** Whether the window is open now. */
+	open: boolean;
+}
+
+/** Updated anyway this long before GitHub's deadline (see updates.ts). */
+const FORCED_BEFORE_MS = 3 * 24 * 60 * 60_000;
+
 export const runnerVersionStatus = (input: {
 	/** Release the machine runs, as it reports it. */
 	installed: string | null;
@@ -80,8 +92,13 @@ export const runnerVersionStatus = (input: {
 	/** Whether Dokploy installs updates on the machine now (enabled, ready). */
 	updating: boolean;
 	now: number;
+	/** The machine's update policy; left out means automatic, any time. */
+	policy?: RunnerUpdatePolicyView;
+	/** The last update Dokploy tried on the machine failed. */
+	updateError?: string | null;
 }): RunnerVersionStatus => {
 	const { installed, releases, pinned, updating, now } = input;
+	const policy = input.policy ?? { auto: true, window: null, open: true };
 	const latestRelease = latestRunnerRelease(releases);
 	const latest = latestRelease?.version ?? null;
 	if (!installed || !latestRelease) {
@@ -112,13 +129,20 @@ export const runnerVersionStatus = (input: {
 		...newer.map((release) => Date.parse(release.publishedAt)),
 	);
 	const deadline = firstNewer + RUNNER_UPDATE_DEADLINE_MS;
+	const forcedOn = day(deadline - FORCED_BEFORE_MS);
 	const pinnedBehind =
 		pinned !== null && compareVersions(pinned, latestRelease.version) < 0;
 	const fix = pinnedBehind
 		? `Change the runner version pinned in the pool settings (${pinned}) to ${latest}, or clear it to follow the latest release.`
-		: !updating
-			? `Dokploy installs ${latest} once the machine is enabled and ready.`
-			: `Dokploy installs ${latest} by itself: if it does not, see the machine's events and its last error.`;
+		: input.updateError
+			? `The last update failed (${input.updateError}): Dokploy tries again in 30 minutes, or use "Update now" in the machine menu.`
+			: !updating
+				? `Dokploy installs ${latest} once the machine is enabled and ready.`
+				: !policy.auto
+					? `Automatic updates are off: use "Update now" in the machine menu. Dokploy updates it anyway on ${forcedOn}, 3 days before GitHub's deadline.`
+					: policy.window && !policy.open
+						? `Dokploy installs ${latest} in the update window (${policy.window}), or on ${forcedOn} at the latest.`
+						: `Dokploy installs ${latest} by itself while no job runs: if it does not, see the machine's events and its last error.`;
 	const base = {
 		installed,
 		latest,
@@ -131,9 +155,16 @@ export const runnerVersionStatus = (input: {
 			message: `actions/runner ${installed} was not updated within 30 days of a newer release: GitHub no longer queues jobs on it since ${day(deadline)}. ${fix}`,
 		};
 	}
-	// Behind for more than a day: Dokploy should have caught up by now.
+	// Behind for more than a day while updates may run any time: Dokploy
+	// should have caught up by now. A window or updates turned off explain a
+	// delay; a failed update does not.
 	const stuck =
-		pinnedBehind || (updating && now - firstNewer > RUNNER_UPDATE_GRACE_MS);
+		pinnedBehind ||
+		Boolean(input.updateError) ||
+		(updating &&
+			policy.auto &&
+			!policy.window &&
+			now - firstNewer > RUNNER_UPDATE_GRACE_MS);
 	return {
 		...base,
 		state: stuck ? "outdated" : "pending",

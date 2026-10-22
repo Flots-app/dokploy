@@ -17,6 +17,7 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { parseEnvLines } from "../../utils/github-runners/env";
 import { MACHINE_NAME } from "../../utils/github-runners/setup-constants";
+import { updatePolicySchema } from "../../utils/github-runners/updates";
 import { organization } from "./account";
 import { github } from "./github";
 import { sshKeys } from "./ssh-key";
@@ -217,6 +218,57 @@ export interface GithubRunnerSetup {
 	keepAwake: boolean | null;
 }
 
+/** Hours Dokploy may install runner and runtime updates on its own. */
+export interface GithubRunnerUpdateWindow {
+	/** Days of the week, 0 for Sunday. */
+	days: number[];
+	/** "HH:MM" in the time zone below; an end before the start runs past midnight. */
+	start: string;
+	end: string;
+	/** IANA time zone, e.g. Europe/Paris. */
+	timeZone: string;
+}
+
+/** Whether Dokploy updates the actions/runner release and its runtime by itself. */
+export interface GithubRunnerUpdatePolicy {
+	auto: boolean;
+	/** null: any time, between jobs. */
+	window: GithubRunnerUpdateWindow | null;
+}
+
+export interface GithubRunnerUpdateState {
+	/** An operator asked to update now, whatever the policy. */
+	requestedAt?: string | null;
+	/** The last update Dokploy tried failed; cleared by the next success. */
+	error?: string | null;
+	errorAt?: string | null;
+}
+
+/** Operating system of a machine (or of a Mac's VM), as it reports it. */
+export interface GithubRunnerOsInfo {
+	/** os-release ID (ubuntu, debian…) or macos. */
+	id: string;
+	version: string;
+	build: string | null;
+	kernel: string;
+	/** Pending package or software updates; null when unknown. */
+	updates: number | null;
+	/** Security updates (Linux) or recommended ones (macOS) among them. */
+	security: number | null;
+	/** A reboot is needed to finish installing updates; null when unknown. */
+	reboot: boolean | null;
+	/** When the package lists were last refreshed (Linux). */
+	listsAt: string | null;
+}
+
+export interface GithubRunnerOsReport {
+	at: string;
+	host: GithubRunnerOsInfo | null;
+	/** Ubuntu inside the VM of a Mac. */
+	guest: GithubRunnerOsInfo | null;
+	error?: string;
+}
+
 /** CPU benchmark of a machine's runner budget, in work units per second. */
 export interface GithubRunnerBenchmark {
 	at: string;
@@ -304,6 +356,11 @@ export const githubRunnerPools = pgTable(
 			.default(["ubuntu-24.04"]),
 		routing: jsonb("routing").$type<GithubRunnerRouting | null>(),
 		placement: githubRunnerPlacement("placement").notNull().default("fastest"),
+		/** Runner and runtime updates; each machine may override it. */
+		updatePolicy: jsonb("updatePolicy")
+			.$type<GithubRunnerUpdatePolicy>()
+			.notNull()
+			.default({ auto: true, window: null }),
 		createdAt: text("createdAt")
 			.notNull()
 			.$defaultFn(() => new Date().toISOString()),
@@ -354,6 +411,13 @@ export const githubRunnerNodes = pgTable(
 		keepAwake: boolean("keepAwake").notNull().default(true),
 		/** What the setup script reported. */
 		setup: jsonb("setup").$type<GithubRunnerSetup | null>(),
+		/** Overrides the pool's update policy; null follows it. */
+		updatePolicy: jsonb(
+			"updatePolicy",
+		).$type<GithubRunnerUpdatePolicy | null>(),
+		updateState: jsonb("updateState").$type<GithubRunnerUpdateState | null>(),
+		/** Operating system and its pending updates, refreshed every few hours. */
+		osReport: jsonb("osReport").$type<GithubRunnerOsReport | null>(),
 		/** SHA256 fingerprint pinned on first contact; any other host key is refused. */
 		hostKeyFingerprint: text("hostKeyFingerprint"),
 		platform: githubRunnerPlatform("platform").notNull(),
@@ -700,6 +764,7 @@ const poolFields = z.object({
 		.default(null),
 	fallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
 	placement: z.enum(["fastest", "spread"]).default("fastest"),
+	updatePolicy: updatePolicySchema.default({ auto: true, window: null }),
 });
 
 const checkPoolTarget = (
@@ -890,6 +955,8 @@ export const apiUpdateGithubRunnerNode = z
 		githubRunnerNodeId: z.string().min(1),
 		description: z.string().trim().max(500).nullable(),
 		...budgetFields,
+		/** null follows the pool; left out keeps the current setting. */
+		updatePolicy: updatePolicySchema.nullable().optional(),
 		/** How running jobs are handled when the change needs a VM restart. */
 		mode: drainMode.default("wait"),
 	})

@@ -57,6 +57,9 @@ CREATE TABLE "github_runner_node" (
 	"sshKeyRotatedAt" text,
 	"keepAwake" boolean DEFAULT true NOT NULL,
 	"setup" jsonb,
+	"updatePolicy" jsonb,
+	"updateState" jsonb,
+	"osReport" jsonb,
 	"hostKeyFingerprint" text,
 	"platform" "githubRunnerPlatform" NOT NULL,
 	"vmName" text DEFAULT 'dokploy-runners' NOT NULL,
@@ -125,6 +128,7 @@ CREATE TABLE "github_runner_pool" (
 	"fallbackLabels" jsonb DEFAULT '["ubuntu-24.04"]'::jsonb NOT NULL,
 	"routing" jsonb,
 	"placement" "githubRunnerPlacement" DEFAULT 'fastest' NOT NULL,
+	"updatePolicy" jsonb DEFAULT '{"auto":true,"window":null}'::jsonb NOT NULL,
 	"createdAt" text NOT NULL,
 	CONSTRAINT "github_runner_pool_repository_scope" CHECK (("github_runner_pool"."scope" = 'repository') = ("github_runner_pool"."repository" IS NOT NULL))
 );

@@ -81,6 +81,15 @@ import {
 	macWriteBootScript,
 } from "@dokploy/server/utils/github-runners/macos";
 import {
+	fetchOsReleases,
+	linuxOsReportScript,
+	macOsReportScript,
+	type OsRelease,
+	osReleaseOf,
+	osStatus,
+	parseOsReport,
+} from "@dokploy/server/utils/github-runners/os";
+import {
 	nextMachine,
 	type PlacementMachine,
 	placeWaitingRunners,
@@ -144,6 +153,13 @@ import {
 	sharedNodeSession,
 	UnknownHostKeyError,
 } from "@dokploy/server/utils/github-runners/ssh";
+import {
+	describeUpdateWindow,
+	effectiveUpdatePolicy,
+	inUpdateWindow,
+	updateDecision,
+	updatePolicySchema,
+} from "@dokploy/server/utils/github-runners/updates";
 import {
 	compareVersions,
 	RUNNER_UPDATE_DEADLINE_MS,
@@ -994,6 +1010,8 @@ describe("reconcile planner", () => {
 const machineKey = generateMachineKey("m6");
 
 const scripts = () => ({
+	osLinux: linuxOsReportScript(),
+	osMac: macOsReportScript(),
 	setupMac: machineSetupScript({
 		platform: "macos",
 		machine: "m6",
@@ -3707,6 +3725,300 @@ describe("runner versions", () => {
 		).resolves.toEqual([{ version: "2.331.0", publishedAt: ago(0.5) }]);
 		expect(String(fetch.mock.calls[0]?.[0])).toContain(
 			"/repos/actions/runner/releases?per_page=30",
+		);
+	});
+});
+
+describe("update policy", () => {
+	// Tuesday 2026-10-20 01:30 in Paris (UTC+2 in summer time).
+	const tuesdayNight = new Date("2026-10-19T23:30:00Z");
+	const nightly = {
+		days: [1, 2, 3, 4, 5],
+		start: "01:00",
+		end: "04:00",
+		timeZone: "Europe/Paris",
+	};
+
+	it("opens the window in the window's own time zone", () => {
+		expect(inUpdateWindow(nightly, tuesdayNight)).toBe(true);
+		// Same instant, read in UTC: 23:30 on Monday, outside 01:00–04:00.
+		expect(inUpdateWindow({ ...nightly, timeZone: "UTC" }, tuesdayNight)).toBe(
+			false,
+		);
+		expect(inUpdateWindow(null, tuesdayNight)).toBe(true);
+	});
+
+	it("runs a window past midnight into the next day", () => {
+		const friday = { days: [5], start: "23:00", end: "02:00", timeZone: "UTC" };
+		expect(inUpdateWindow(friday, new Date("2026-10-23T23:30:00Z"))).toBe(true);
+		// Saturday 01:00 still belongs to Friday's window.
+		expect(inUpdateWindow(friday, new Date("2026-10-24T01:00:00Z"))).toBe(true);
+		expect(inUpdateWindow(friday, new Date("2026-10-24T02:00:00Z"))).toBe(
+			false,
+		);
+		// Thursday night is not part of it.
+		expect(inUpdateWindow(friday, new Date("2026-10-22T23:30:00Z"))).toBe(
+			false,
+		);
+	});
+
+	it("describes a window for people", () => {
+		expect(describeUpdateWindow(nightly)).toBe(
+			"Mon–Fri 01:00–04:00 (Europe/Paris)",
+		);
+		expect(describeUpdateWindow({ ...nightly, days: [0, 6] })).toBe(
+			"Sun, Sat 01:00–04:00 (Europe/Paris)",
+		);
+		expect(describeUpdateWindow(null)).toBe("any time");
+	});
+
+	it("lets a machine override its pool", () => {
+		const pool = { updatePolicy: { auto: true, window: null } };
+		expect(effectiveUpdatePolicy(pool, { updatePolicy: null })).toEqual(
+			pool.updatePolicy,
+		);
+		const own = { auto: false, window: null };
+		expect(effectiveUpdatePolicy(pool, { updatePolicy: own })).toBe(own);
+	});
+
+	it("decides when an update may run", () => {
+		const closed = { auto: true, window: { ...nightly, timeZone: "UTC" } };
+		const now = tuesdayNight;
+		const decide = (extra: Partial<Parameters<typeof updateDecision>[0]>) =>
+			updateDecision({ policy: closed, now, requested: false, ...extra });
+		expect(decide({})).toEqual({ allowed: false, reason: "outside-window" });
+		expect(decide({ policy: { auto: true, window: nightly } })).toEqual({
+			allowed: true,
+			reason: "window",
+		});
+		expect(decide({ policy: { auto: false, window: null } })).toEqual({
+			allowed: false,
+			reason: "off",
+		});
+		expect(decide({ policy: { auto: true, window: null } })).toEqual({
+			allowed: true,
+			reason: "anytime",
+		});
+		expect(decide({ requested: true })).toEqual({
+			allowed: true,
+			reason: "requested",
+		});
+		expect(decide({ required: true })).toEqual({
+			allowed: true,
+			reason: "required",
+		});
+		// GitHub stops queuing jobs in 2 days: updated outside the window.
+		expect(
+			decide({
+				deadline: new Date(now.getTime() + 2 * 24 * 60 * 60_000).toISOString(),
+			}),
+		).toEqual({ allowed: true, reason: "deadline" });
+		expect(
+			decide({
+				deadline: new Date(now.getTime() + 5 * 24 * 60 * 60_000).toISOString(),
+			}).allowed,
+		).toBe(false);
+		// A failed automatic update waits 30 minutes; "Update now" does not.
+		const failedAt = new Date(now.getTime() - 5 * 60_000).toISOString();
+		expect(decide({ policy: { auto: true, window: null }, failedAt })).toEqual({
+			allowed: false,
+			reason: "retry-later",
+		});
+		expect(decide({ failedAt, requested: true }).allowed).toBe(true);
+	});
+
+	it("validates a window before saving it", () => {
+		const parse = (window: unknown) =>
+			updatePolicySchema.safeParse({ auto: true, window }).success;
+		expect(parse(nightly)).toBe(true);
+		expect(parse(null)).toBe(true);
+		expect(parse({ ...nightly, timeZone: "Mars/Olympus" })).toBe(false);
+		expect(parse({ ...nightly, end: nightly.start })).toBe(false);
+		expect(parse({ ...nightly, days: [] })).toBe(false);
+		expect(parse({ ...nightly, days: [1, 1] })).toBe(false);
+		expect(parse({ ...nightly, start: "25:00" })).toBe(false);
+	});
+
+	it("tells when the runner update comes, under each policy", () => {
+		const now = Date.parse("2026-10-22T12:00:00Z");
+		const releases = [
+			{
+				version: "2.331.0",
+				publishedAt: new Date(now - 3 * 86_400_000).toISOString(),
+			},
+		];
+		const status = (
+			policy: Parameters<typeof runnerVersionStatus>[0]["policy"],
+			updateError: string | null = null,
+		) =>
+			runnerVersionStatus({
+				installed: "2.330.0",
+				releases,
+				pinned: null,
+				updating: true,
+				now,
+				policy,
+				updateError,
+			});
+		const off = status({ auto: false, window: null, open: false });
+		expect(off.state).toBe("pending");
+		expect(off.message).toMatch(/Automatic updates are off: use "Update now"/);
+		const windowed = status({
+			auto: true,
+			window: "Mon–Fri 01:00–04:00 (Europe/Paris)",
+			open: false,
+		});
+		// Three days behind is expected with a window: not flagged.
+		expect(windowed.state).toBe("pending");
+		expect(windowed.message).toMatch(/in the update window \(Mon–Fri/);
+		// Any time, three days behind: Dokploy should have updated it.
+		expect(status({ auto: true, window: null, open: true }).state).toBe(
+			"outdated",
+		);
+		const failed = status(
+			{ auto: true, window: "x", open: true },
+			"download failed",
+		);
+		expect(failed.state).toBe("outdated");
+		expect(failed.message).toMatch(
+			/The last update failed \(download failed\)/,
+		);
+	});
+});
+
+describe("operating system", () => {
+	const now = Date.parse("2026-10-22T12:00:00Z");
+	const releases: OsRelease[] = [
+		{ name: "24.04", isEol: false, eolFrom: "2029-05-31", latest: null },
+		{ name: "22.04", isEol: false, eolFrom: "2027-01-10", latest: null },
+		{ name: "20.04", isEol: true, eolFrom: "2025-05-31", latest: null },
+		{ name: "27", isEol: false, eolFrom: null, latest: "27.0.1" },
+	];
+	const linux = (extra = "") =>
+		parseOsReport(
+			[
+				"os id=ubuntu version=24.04 kernel=6.8.0-45-generic",
+				`updates pending=0 security=0 lists=${Math.floor((now - 3_600_000) / 1000)} reboot=no ${extra}`,
+			].join("\n"),
+		);
+
+	it("reads the reports of both scripts", () => {
+		expect(linux()).toMatchObject({
+			id: "ubuntu",
+			version: "24.04",
+			kernel: "6.8.0-45-generic",
+			updates: 0,
+			security: 0,
+			reboot: false,
+		});
+		expect(
+			parseOsReport(
+				"os id=macos version=27.0.1 build=26A434 kernel=27.0.0\nupdates pending= security= lists= reboot=",
+			),
+		).toMatchObject({
+			id: "macos",
+			build: "26A434",
+			updates: null,
+			reboot: null,
+		});
+		expect(parseOsReport("nothing useful")).toBeNull();
+	});
+
+	it("matches a version to its release line", () => {
+		expect(osReleaseOf("24.04", releases)?.eolFrom).toBe("2029-05-31");
+		expect(osReleaseOf("27.0.1", releases)?.name).toBe("27");
+		expect(osReleaseOf("9.99", releases)).toBeNull();
+	});
+
+	it("flags what needs the administrator", () => {
+		const status = (info: ReturnType<typeof linux>) =>
+			osStatus({ info, releases, now });
+		expect(status(linux())).toMatchObject({
+			state: "current",
+			label: "Ubuntu 24.04",
+			supportEnds: "2029-05-31",
+		});
+		const security = status({
+			...linux()!,
+			updates: 12,
+			security: 3,
+			reboot: true,
+		});
+		expect(security.state).toBe("outdated");
+		expect(security.message).toMatch(
+			/3 security updates waiting, a reboot is needed/,
+		);
+		expect(status({ ...linux()!, updates: 4, security: 0 }).state).toBe(
+			"updates",
+		);
+		expect(status({ ...linux()!, version: "20.04" })).toMatchObject({
+			state: "unsupported",
+		});
+		expect(status({ ...linux()!, version: "20.04" }).message).toMatch(
+			/no longer supported by its vendor since 2025-05-31/,
+		);
+		// Support ends within 90 days.
+		const ending = osStatus({
+			info: { ...linux()!, version: "22.04" },
+			releases,
+			now: Date.parse("2026-12-01T00:00:00Z"),
+		});
+		expect(ending.state).toBe("outdated");
+		expect(ending.message).toMatch(/Support ends on 2027-01-10/);
+		expect(status(null).state).toBe("unknown");
+	});
+
+	it("warns when the package lists are old", () => {
+		const stale = osStatus({
+			info: {
+				...linux()!,
+				updates: 2,
+				listsAt: new Date(now - 30 * 86_400_000).toISOString(),
+			},
+			releases,
+			now,
+		});
+		expect(stale.message).toMatch(/run sudo apt update/);
+	});
+
+	it("falls back on the latest point release of macOS", () => {
+		const mac = parseOsReport(
+			"os id=macos version=27.0.0 build=26A400 kernel=27.0.0\nupdates pending= security= lists= reboot=",
+		);
+		const status = osStatus({ info: mac, releases, now });
+		expect(status.state).toBe("outdated");
+		expect(status.message).toMatch(/macOS 27.0.1 is available/);
+	});
+
+	it("reads the support dates of endoflife.date", async () => {
+		const fetch = vi.fn(
+			async (_url: string) =>
+				new Response(
+					JSON.stringify({
+						result: {
+							releases: [
+								{
+									name: "24.04",
+									isEol: false,
+									eolFrom: "2029-05-31",
+									latest: { name: "24.04.3" },
+								},
+								{ isEol: true },
+							],
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+		await expect(
+			fetchOsReleases("ubuntu", {
+				fetch: fetch as unknown as typeof globalThis.fetch,
+			}),
+		).resolves.toEqual([
+			{ name: "24.04", isEol: false, eolFrom: "2029-05-31", latest: "24.04.3" },
+		]);
+		expect(String(fetch.mock.calls[0]?.[0])).toBe(
+			"https://endoflife.date/api/v1/products/ubuntu",
 		);
 	});
 });

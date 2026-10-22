@@ -2,6 +2,7 @@ import {
 	applyRunnerNodeConfig,
 	assertGitProviderAccess,
 	checkGithubRunnerMachine,
+	checkRunnerNodeOs,
 	cleanRunnerCaches,
 	completeGithubRunnerEnrollment,
 	createGithubRunnerNode,
@@ -24,6 +25,7 @@ import {
 	refreshRunnerCaches,
 	removeGithubRunnerPool,
 	removeRunnerNode,
+	requestGithubRunnerNodeUpdate,
 	resetGithubRunnerHostKey,
 	rotateRunnerNodeKey,
 	startGithubRunnerEnrollment,
@@ -381,10 +383,41 @@ export const githubRunnerRouter = createTRPCRouter({
 					maxRunners: node.maxRunners,
 					diskReserveGb: node.diskReserveGb,
 					diskCleanupGb: node.diskCleanupGb,
+					updatePolicy: node.updatePolicy,
 					mode: input.mode,
 				},
 			});
 			return { node, operation };
+		}),
+
+	/** Updates the runtime and the runner at the next tick, whatever the policy. */
+	updateMachineNow: update
+		.input(apiFindGithubRunnerNode)
+		.mutation(async ({ input, ctx }) => {
+			const node = await requestGithubRunnerNodeUpdate(
+				input.githubRunnerNodeId,
+				ctx.session.activeOrganizationId,
+			).catch(fail);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "githubRunner",
+				resourceId: node.githubRunnerNodeId,
+				resourceName: node.name,
+				metadata: { kind: "machine", operation: "update-now" },
+			});
+			return { requested: true };
+		}),
+
+	/** Reads the OS of a machine again at the next tick. */
+	checkMachineOs: update
+		.input(apiFindGithubRunnerNode)
+		.mutation(async ({ input, ctx }) => {
+			const node = await findGithubRunnerNode(
+				input.githubRunnerNodeId,
+				ctx.session.activeOrganizationId,
+			);
+			checkRunnerNodeOs(node.githubRunnerNodeId);
+			return { requested: true };
 		}),
 
 	disableMachine: update
