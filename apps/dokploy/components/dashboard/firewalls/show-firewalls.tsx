@@ -32,7 +32,7 @@ import { AttachTargetDialog, type FirewallTargetType } from "./attach-firewall";
 import { type FirewallRow, HandleFirewall } from "./handle-firewall";
 
 const PROTOCOLS: Record<FirewallRule["protocol"], string> = {
-	any: "TCP + UDP",
+	any: "All protocols",
 	tcp: "TCP",
 	udp: "UDP",
 	icmp: "ICMP",
@@ -374,7 +374,9 @@ export const ShowFirewalls = () => {
 						{firewalls?.length === 0 && (
 							<div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
 								No firewall yet. "Internet only" keeps the jobs of your runners
-								away from your LAN, your tailnet and your Dokploy server.
+								away from your LAN, your tailnet, and your Dokploy server when
+								it sits on a private address; add a rule denying "Dokploy
+								server" to keep them off its public address too.
 							</div>
 						)}
 						{firewalls?.map((firewall) => (

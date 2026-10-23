@@ -77,6 +77,24 @@ export const updateFirewall = async (
 	return firewall;
 };
 
+/**
+ * Whether the firewall applies to runner pools or machines: changing or
+ * deleting it then changes what their jobs may reach.
+ */
+export const firewallAppliesToRunners = async (
+	firewallId: string,
+	organizationId: string,
+) =>
+	Boolean(
+		await db.query.firewallAttachments.findFirst({
+			where: and(
+				eq(firewallAttachments.firewallId, firewallId),
+				eq(firewallAttachments.organizationId, organizationId),
+			),
+			columns: { firewallAttachmentId: true },
+		}),
+	);
+
 /** Resources lose the firewall with it: their machines remove its rules. */
 export const removeFirewall = async (
 	firewallId: string,

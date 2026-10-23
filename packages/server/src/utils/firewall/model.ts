@@ -48,6 +48,8 @@ export const NON_PUBLIC: AddressSet = {
 		"::/127",
 		"::ffff:0:0/96",
 		"100::/64",
+		// Local-use NAT64 (RFC 8215): it reaches the IPv4 hosts of the network.
+		"64:ff9b:1::/48",
 		"2001:db8::/32",
 		"fc00::/7",
 		"fe80::/10",
@@ -66,7 +68,7 @@ const PRIVATE: AddressSet = {
 		"224.0.0.0/4",
 		"255.255.255.255/32",
 	],
-	v6: ["fc00::/7", "fe80::/10", "ff00::/8"],
+	v6: ["64:ff9b:1::/48", "fc00::/7", "fe80::/10", "ff00::/8"],
 };
 
 const TAILNET: AddressSet = {

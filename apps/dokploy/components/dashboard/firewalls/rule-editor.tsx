@@ -138,7 +138,7 @@ const RuleRow = ({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="any">TCP + UDP</SelectItem>
+						<SelectItem value="any">All protocols</SelectItem>
 						<SelectItem value="tcp">TCP</SelectItem>
 						<SelectItem value="udp">UDP</SelectItem>
 						<SelectItem value="icmp">ICMP</SelectItem>
@@ -282,7 +282,7 @@ export const DirectionEditor = ({
 			</Button>
 			<p className="text-xs text-muted-foreground">
 				Rules are checked in order: the first one that matches decides. Loopback
-				and DNS always pass, so names still resolve.
+				and DNS (port 53, to any resolver) always pass, so names still resolve.
 			</p>
 		</div>
 	);

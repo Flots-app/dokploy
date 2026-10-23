@@ -3,6 +3,7 @@ import {
 	createFirewall,
 	detachFirewall,
 	findFirewall,
+	firewallAppliesToRunners,
 	IS_CLOUD,
 	listFirewalls,
 	removeFirewall,
@@ -44,6 +45,23 @@ const read = guard("read");
 const create = guard("create");
 const update = guard("update");
 const remove = guard("delete");
+
+/**
+ * Changing or deleting a firewall that runner pools or machines use changes
+ * what their jobs may reach, like attaching one: it needs the runner right too.
+ */
+const assertRunnerChange = async (
+	ctx: Parameters<typeof checkPermission>[0] & {
+		session: { activeOrganizationId: string };
+	},
+	firewallId: string,
+) => {
+	if (
+		await firewallAppliesToRunners(firewallId, ctx.session.activeOrganizationId)
+	) {
+		await checkPermission(ctx, { githubRunner: ["update"] });
+	}
+};
 
 const fail = (error: unknown): never => {
 	throw toClientError(error);
@@ -104,6 +122,7 @@ export const firewallRouter = createTRPCRouter({
 	}),
 
 	update: update.input(apiUpdateFirewall).mutation(async ({ input, ctx }) => {
+		await assertRunnerChange(ctx, input.firewallId);
 		const firewall = await updateFirewall(
 			input,
 			ctx.session.activeOrganizationId,
@@ -124,6 +143,7 @@ export const firewallRouter = createTRPCRouter({
 	}),
 
 	remove: remove.input(apiFindFirewall).mutation(async ({ input, ctx }) => {
+		await assertRunnerChange(ctx, input.firewallId);
 		const firewall = await removeFirewall(
 			input.firewallId,
 			ctx.session.activeOrganizationId,

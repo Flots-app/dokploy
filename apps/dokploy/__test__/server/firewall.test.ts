@@ -250,7 +250,9 @@ describe("pf ruleset", () => {
 			"pass out quick proto { tcp udp } from any to ! <dk3>",
 			"block return out quick proto { tcp udp } from any to any",
 		]);
-		expect(notes.join(" ")).toContain("ICMP rules do not apply on a Mac");
+		expect(notes.join(" ")).toContain(
+			"On a Mac, pf filters TCP and UDP only: ICMP (ping) is not filtered",
+		);
 	});
 });
 
@@ -705,5 +707,51 @@ describe("firewall review fixes", () => {
 			expect.arrayContaining(["224.0.0.0/4", "255.255.255.255/32"]),
 		);
 		expect(compiled.outbound.rules[0]?.addresses.v6).toContain("ff00::/8");
+	});
+});
+
+describe("firewall review infos", () => {
+	it("keeps local-use NAT64 out of the Internet, and in private networks", () => {
+		expect(NON_PUBLIC.v6).toContain("64:ff9b:1::/48");
+		// The well-known prefix reaches public IPv4 hosts: it stays the Internet.
+		expect(NON_PUBLIC.v6).not.toContain("64:ff9b::/96");
+		const compiled = compileFirewall(
+			firewall([
+				rule({ action: "deny", peer: { type: "object", object: "private" } }),
+			]),
+			context,
+		);
+		expect(compiled.outbound.rules[0]?.addresses.v6).toContain(
+			"64:ff9b:1::/48",
+		);
+	});
+
+	it("tells that DNS passes and that a Mac does not filter ICMP", () => {
+		const internetOnly = FIREWALL_TEMPLATES.find(
+			(item) => item.id === "internet-only",
+		);
+		expect(internetOnly?.description).toContain(
+			"DNS still reaches any resolver",
+		);
+		// Whatever the rules: the deny of last resort is TCP and UDP on a Mac.
+		const { notes } = pfRuleset(compileFirewall(firewall([rule()]), context));
+		expect(notes).toContain(
+			"On a Mac, pf filters TCP and UDP only: ICMP (ping) is not filtered, and ICMP rules do not apply.",
+		);
+	});
+
+	it("knows when a firewall applies to runners", async () => {
+		const { db } = await import("@dokploy/server/db");
+		const { firewallAppliesToRunners } = await import(
+			"@dokploy/server/services/firewall"
+		);
+		vi.mocked(db.query.firewallAttachments.findFirst).mockResolvedValueOnce({
+			firewallAttachmentId: "a",
+		} as never);
+		await expect(firewallAppliesToRunners("fw", "org")).resolves.toBe(true);
+		vi.mocked(db.query.firewallAttachments.findFirst).mockResolvedValueOnce(
+			undefined,
+		);
+		await expect(firewallAppliesToRunners("fw", "org")).resolves.toBe(false);
 	});
 });

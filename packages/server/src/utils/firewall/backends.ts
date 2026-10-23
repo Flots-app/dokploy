@@ -163,12 +163,8 @@ export const pfRuleset = (compiled: CompiledFirewall): Ruleset => {
 		"pass out quick on lo0 proto { tcp udp } from any to any",
 		"pass out quick proto { tcp udp } from any to any port 53",
 	];
-	let icmp = false;
 	for (const rule of compiled.outbound.rules) {
-		if (rule.protocol === "icmp") {
-			icmp = true;
-			continue;
-		}
+		if (rule.protocol === "icmp") continue;
 		const action =
 			rule.action === "allow" ? "pass out quick" : "block return out quick";
 		const protocol = rule.protocol === "any" ? "{ tcp udp }" : rule.protocol;
@@ -187,10 +183,11 @@ export const pfRuleset = (compiled: CompiledFirewall): Ruleset => {
 	if (compiled.outbound.policy === "deny") {
 		rules.push("block return out quick proto { tcp udp } from any to any");
 	}
-	if (icmp)
-		notes.push(
-			"ICMP rules do not apply on a Mac: pf filters TCP and UDP only.",
-		);
+	// The deny of last resort is TCP and UDP too: whatever the rules, ping
+	// and other ICMP traffic of the VM pass.
+	notes.push(
+		"On a Mac, pf filters TCP and UDP only: ICMP (ping) is not filtered, and ICMP rules do not apply.",
+	);
 	const body = [
 		...[...tables.entries()].map(
 			([key, name]) => `table <${name}> const { ${key.split(",").join(", ")} }`,

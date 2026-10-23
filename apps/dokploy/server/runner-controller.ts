@@ -6,7 +6,10 @@
  *
  *   node dist/runner-controller.mjs
  */
-import { startGithubRunnerController } from "@dokploy/server/utils/github-runners/controller";
+import {
+	startGithubRunnerController,
+	stopGithubRunnerController,
+} from "@dokploy/server/utils/github-runners/controller";
 import packageInfo from "../package.json";
 
 const start = async () => {
@@ -24,5 +27,16 @@ const start = async () => {
 		}
 	}
 };
+
+// A stopping container hands the lead over at once: the standby takes it at
+// its next heartbeat instead of waiting for the lease to expire.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+	process.once(signal, () => {
+		void Promise.race([
+			stopGithubRunnerController().catch(() => undefined),
+			new Promise((resolve) => setTimeout(resolve, 2_000)),
+		]).finally(() => process.exit(0));
+	});
+}
 
 void start();

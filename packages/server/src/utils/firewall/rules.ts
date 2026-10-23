@@ -119,7 +119,7 @@ export const FIREWALL_TEMPLATES: {
 		id: "internet-only",
 		name: "Internet only",
 		description:
-			"Outbound traffic reaches the public Internet and nothing else: no LAN, no tailnet, no Dokploy server behind a private address.",
+			"Outbound traffic reaches the public Internet and nothing else: no LAN, no tailnet, no Dokploy server behind a private address. DNS still reaches any resolver, so names resolve.",
 		inboundPolicy: "deny",
 		outboundPolicy: "deny",
 		rules: [
