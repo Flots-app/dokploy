@@ -90,3 +90,13 @@ export const settleNumber = (
 	const value = Math.max(min, Number(text));
 	return max === undefined ? value : Math.min(max, value);
 };
+
+/**
+ * The update policy a machine follows now, as the editor starts from it:
+ * every field, so saving another setting never drops one (OS updates).
+ */
+export const machineUpdatePolicy = (machine: RunnerMachine) => ({
+	auto: machine.updates.auto,
+	window: machine.updates.window,
+	osPatches: machine.updates.osPatches,
+});

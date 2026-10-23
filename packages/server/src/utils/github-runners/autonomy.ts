@@ -111,3 +111,23 @@ export const planSpares = (input: {
 const countAdds = (actions: SpareAction[], slot: number) =>
 	actions.filter((action) => action.type === "add" && action.slot === slot)
 		.length;
+
+/**
+ * What the machine may do on its own while no controller answers: arm itself
+ * only when the controller would start a job there now. A machine refused
+ * jobs (disk below the reserve, firewall not in place) keeps its reserve,
+ * but never arms itself with it: a Mac cannot check its host firewall from
+ * the VM.
+ */
+export const autonomySetting = (input: {
+	accepting: boolean;
+	admitted: boolean;
+	reserve: number;
+	maxRunners: number;
+	minFreeKib: number;
+	/** Hash of the Linux firewall rules, "host" on a Mac, "none" without one. */
+	firewall: string;
+}) =>
+	input.accepting && input.admitted && input.reserve > 0
+		? `on ${input.maxRunners} ${input.minFreeKib} ${input.firewall}`
+		: "off";

@@ -6,6 +6,7 @@ import type {
 } from "@dokploy/server/db/schema";
 import { runnerAlertConditions } from "@dokploy/server/utils/github-runners/alerts";
 import {
+	autonomySetting,
 	MAX_SPARES_PER_TICK,
 	planSpares,
 	SPARE_ROTATE_MS,
@@ -33,6 +34,10 @@ import {
 	updateWindowEnd,
 } from "@dokploy/server/utils/github-runners/updates";
 import { describe, expect, it } from "vitest";
+import {
+	machineUpdatePolicy,
+	type RunnerMachine,
+} from "@/components/dashboard/github-runners/format";
 
 const now = Date.parse("2026-10-22T08:00:00.000Z");
 const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
@@ -546,5 +551,136 @@ describe("OS updates", () => {
 				"Flots CI: rollout of actions/runner 2.332.0 paused",
 			],
 		]);
+	});
+});
+
+describe("review fixes", () => {
+	const plannerNode = {
+		enabled: true,
+		phase: "ready",
+		drain: null,
+		maxRunners: 2,
+		namePrefix: prefix,
+		labels: ["self-hosted", "Linux", "ARM64", "flots"],
+		runnerVersion: null,
+		admission: { ok: true },
+		maxArmsPerTick: 4,
+	};
+	const live = (slot: number, name: string) => ({
+		slot,
+		active: "active",
+		since: Math.floor(now / 1000) - 600,
+		runnerName: name,
+		job: null,
+	});
+
+	it("releases idle runners while the firewall is not in place", () => {
+		const idle = ghRunner(`${prefix}1-aa`, { id: 1, status: "online" });
+		const busy = ghRunner(`${prefix}2-bb`, {
+			id: 2,
+			status: "online",
+			busy: true,
+		});
+		const blocked = planNode({
+			now,
+			node: {
+				...plannerNode,
+				admission: { ok: false, reason: "firewall" },
+				stopIdle: 'Firewall "Internet only" not applied',
+			},
+			slots: [live(1, idle.name), live(2, busy.name)],
+			runners: [idle, busy],
+		});
+		expect(blocked.actions).toEqual([
+			{
+				type: "release",
+				slot: 1,
+				runnerId: 1,
+				reason: 'Firewall "Internet only" not applied',
+			},
+		]);
+		// A disk below the reserve only stops new runners.
+		const disk = planNode({
+			now,
+			node: { ...plannerNode, admission: { ok: false, reason: "disk" } },
+			slots: [live(1, idle.name), live(2, busy.name)],
+			runners: [idle, busy],
+		});
+		expect(disk.actions).toEqual([]);
+	});
+
+	it("never lets a machine refused jobs arm itself", () => {
+		const setting = (admitted: boolean, accepting = true) =>
+			autonomySetting({
+				accepting,
+				admitted,
+				reserve: 2,
+				maxRunners: 3,
+				minFreeKib: 1024,
+				firewall: "host",
+			});
+		expect(setting(true)).toBe("on 3 1024 host");
+		expect(setting(false)).toBe("off");
+		expect(setting(true, false)).toBe("off");
+	});
+
+	it("counts a machine draining for OS updates as updating, whatever its state", () => {
+		const draining = machine("m6", { drain: { reason: "patch" } });
+		expect(
+			gate({ kind: "os", target: "os", machines: [draining, machine("m4")] }),
+		).toEqual({ go: false, reason: "m6 is updating (1 machine at a time)" });
+		// Even after its update state was lost, and long after it started.
+		expect(
+			gate({
+				kind: "os",
+				target: "os",
+				machines: [
+					machine("m6", {
+						drain: { reason: "patch" },
+						updateState: {
+							inProgress: {
+								kind: "os",
+								target: "os",
+								startedAt: iso(-UPDATE_STALE_MS - MINUTE),
+							},
+						},
+					}),
+					machine("m4"),
+				],
+			}).go,
+		).toBe(false);
+		expect(
+			gate({
+				kind: "os",
+				target: "os",
+				machines: [
+					machine("m6", { drain: { reason: "disable" } }),
+					machine("m4"),
+				],
+			}).go,
+		).toBe(true);
+	});
+
+	it("keeps every field of a machine's update policy in its editor", () => {
+		const updates = {
+			inherited: false,
+			auto: true,
+			window: null,
+			description: "any time",
+			open: true,
+			requestedAt: null,
+			error: null,
+			inProgress: null,
+			osPatches: true,
+			patchedAt: null,
+			patchError: null,
+		};
+		expect(
+			machineUpdatePolicy({ updates } as unknown as RunnerMachine),
+		).toEqual({
+			auto: true,
+			window: null,
+			osPatches: true,
+		});
 	});
 });

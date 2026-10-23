@@ -58,7 +58,7 @@ import {
 	runnerAlertConditions,
 	syncRunnerAlerts,
 } from "./alerts";
-import { planSpares } from "./autonomy";
+import { autonomySetting, planSpares } from "./autonomy";
 import {
 	effectiveBudget,
 	formatBytes,
@@ -651,6 +651,29 @@ const releaseLease = (nodeId: string) => {
 		);
 };
 
+/**
+ * An operation started from a process that does not lead waits for the
+ * leader's tick to let the machine go: a tick holds it a few seconds.
+ */
+const LEASE_WAIT_MS = 2 * 60_000;
+
+const waitForLease = async (
+	nodeId: string,
+	log: (line: string) => Promise<void>,
+) => {
+	const deadline = Date.now() + LEASE_WAIT_MS;
+	let told = false;
+	for (;;) {
+		if (await acquireLease(nodeId, TASK_LEASE_MS)) return true;
+		if (Date.now() >= deadline) return false;
+		if (!told) {
+			told = true;
+			await log("Waiting for another Dokploy instance to let the machine go");
+		}
+		await new Promise((resolve) => setTimeout(resolve, 1_000));
+	}
+};
+
 /** Long tasks of a machine (provisioning, VM restart...). The tick skips the machine meanwhile. */
 const tasks = state.tasks;
 const ticking = state.ticking;
@@ -682,10 +705,13 @@ const runTask = (
 		await waitForTick(nodeId);
 		let session: NodeSession | null = null;
 		let keepalive: NodeJS.Timeout | null = null;
-		const leased = await acquireLease(nodeId, TASK_LEASE_MS);
+		const leased = await waitForLease(nodeId, log);
 		try {
-			if (!leased)
-				throw new Error("Another Dokploy instance is working on this machine");
+			if (!leased) {
+				throw new Error(
+					`Another Dokploy instance has been working on this machine for ${LEASE_WAIT_MS / 60_000} minutes: try again later`,
+				);
+			}
 			const node = await loadRunnerNode(nodeId);
 			session = await connect(node);
 			// It answers: the tick observes it again without waiting for a retry.
@@ -2843,17 +2869,6 @@ export const enforceFirewall = async (
 
 // ------------------------------------------------------------- rollouts
 
-const rolloutMachines = (pool: GithubRunnerPool) =>
-	db.query.githubRunnerNodes.findMany({
-		where: eq(githubRunnerNodes.githubRunnerPoolId, pool.githubRunnerPoolId),
-		columns: {
-			githubRunnerNodeId: true,
-			name: true,
-			enabled: true,
-			updateState: true,
-		},
-	});
-
 /**
  * Takes a place among the machines of the pool updated at the same time (and
  * the canary's role for a new release), or says why the machine waits. One
@@ -2882,6 +2897,7 @@ export const claimUpdate = (
 					name: true,
 					enabled: true,
 					updateState: true,
+					drain: true,
 				},
 			}),
 		]);
@@ -3289,7 +3305,10 @@ const maintainReserve = async (
 		runners: GithubRunner[] | null;
 		client: GithubRunnerClient;
 		labels: string[];
+		/** The machine takes jobs: it keeps its reserve. */
 		accepting: boolean;
+		/** The controller would start a job there now (disk, firewall). */
+		admitted: boolean;
 		maxRunners: number;
 		events: { at: string; message: string }[];
 	},
@@ -3329,10 +3348,14 @@ const maintainReserve = async (
 		node.platform === "macos"
 			? "host"
 			: (state.firewallExpected.get(nodeId) ?? "none");
-	const setting =
-		context.accepting && reserve > 0
-			? `on ${context.maxRunners} ${minFreeKib} ${firewall}`
-			: "off";
+	const setting = autonomySetting({
+		accepting: context.accepting,
+		admitted: context.admitted,
+		reserve,
+		maxRunners: context.maxRunners,
+		minFreeKib,
+		firewall,
+	});
 	const writeSetting = async () => {
 		if (state.autonomyApplied.get(nodeId) === setting) return;
 		await driver.guest(`${RUNNERCTL} autonomy ${setting}`, {
@@ -3672,6 +3695,7 @@ const actOnNode = async (
 				labels,
 				runnerVersion: runtime?.release ?? null,
 				admission,
+				stopIdle: blocked,
 				maxArmsPerTick: MAX_ARMS_PER_TICK,
 				waiting,
 			},
@@ -3712,6 +3736,7 @@ const actOnNode = async (
 					client,
 					labels,
 					accepting: node.enabled && phase === "ready" && !node.drain,
+					admitted: admission.ok,
 					maxRunners: resolveMaxRunners(
 						node.maxRunners,
 						node.platform,
@@ -4834,10 +4859,14 @@ const recoverOrphanedWork = async () => {
 				),
 			);
 	}
-	// An update counted against the pool, left by a process that stopped.
+	// An update counted against the pool, left by a process that stopped. A
+	// drain for OS updates holds no lease between ticks: its place stays.
 	await Promise.all(
 		free
-			.filter((node) => node.updateState?.inProgress)
+			.filter(
+				(node) =>
+					node.updateState?.inProgress && node.drain?.reason !== "patch",
+			)
 			.map((node) =>
 				db
 					.update(githubRunnerNodes)

@@ -30,6 +30,8 @@ export interface RolloutMachine {
 	name: string;
 	enabled: boolean;
 	updateState: GithubRunnerUpdateState | null;
+	/** A drain for OS updates holds its place until it ends, however long. */
+	drain?: { reason: string } | null;
 }
 
 export type RolloutGate =
@@ -47,12 +49,10 @@ export const updatingMachines = (
 	now: number,
 ) =>
 	machines.filter((machine) => {
+		if (machine.githubRunnerNodeId === selfId) return false;
+		if (machine.drain?.reason === "patch") return true;
 		const started = machine.updateState?.inProgress?.startedAt;
-		return (
-			machine.githubRunnerNodeId !== selfId &&
-			started !== undefined &&
-			now - Date.parse(started) < UPDATE_STALE_MS
-		);
+		return started !== undefined && now - Date.parse(started) < UPDATE_STALE_MS;
 	});
 
 /**

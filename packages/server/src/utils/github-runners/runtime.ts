@@ -177,8 +177,9 @@ cmd_spare_drop() {
 cmd_autonomy() {
 	case "\${1:-}" in
 	off)
+		# The reserve stays: the controller drops it (spare-drop) when the machine
+		# takes no job any more, and unregisters it from GitHub at the same time.
 		rm -f "$ETC/autonomy"
-		rm -rf "$SPARES"
 		echo "autonomy off"
 		;;
 	on)

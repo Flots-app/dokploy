@@ -20,7 +20,7 @@ import { Switch } from "@/components/ui/switch";
 import { api } from "@/utils/api";
 import { BudgetFields } from "./budget-fields";
 import { type BudgetValues, parseLabels } from "./budget-values";
-import { errorText, type RunnerMachine } from "./format";
+import { errorText, machineUpdatePolicy, type RunnerMachine } from "./format";
 import { RunningJobs } from "./machine-actions";
 import { UpdatePolicyFields } from "./update-policy";
 
@@ -114,9 +114,7 @@ const EditMachineForm = ({
 	// null follows the pool.
 	const [updatePolicy, setUpdatePolicy] =
 		useState<GithubRunnerUpdatePolicy | null>(() =>
-			machine.updates.inherited
-				? null
-				: { auto: machine.updates.auto, window: machine.updates.window },
+			machine.updates.inherited ? null : machineUpdatePolicy(machine),
 		);
 	const host = machine.observed?.host ?? null;
 	const restart = vmRestartFor(machine, budget);
@@ -190,14 +188,7 @@ const EditMachineForm = ({
 						id="machine-updates-inherit"
 						checked={updatePolicy === null}
 						onCheckedChange={(inherit) =>
-							setUpdatePolicy(
-								inherit
-									? null
-									: {
-											auto: machine.updates.auto,
-											window: machine.updates.window,
-										},
-							)
+							setUpdatePolicy(inherit ? null : machineUpdatePolicy(machine))
 						}
 					/>
 				</div>

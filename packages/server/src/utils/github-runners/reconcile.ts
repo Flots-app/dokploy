@@ -24,6 +24,12 @@ export interface PlannerNode {
 	/** Runner release installed on the machine, to recycle idle runners after an upgrade. */
 	runnerVersion: string | null;
 	admission: { ok: boolean; reason?: string };
+	/**
+	 * Why no job may start on the machine at all (its firewall is not in
+	 * place): idle runners leave too, not only new ones. A disk below the
+	 * reserve only stops new runners.
+	 */
+	stopIdle?: string | null;
 	maxArmsPerTick: number;
 	/**
 	 * Runners waiting for jobs on this machine (fastest-first placement across
@@ -184,7 +190,8 @@ export const planNode = (input: {
 		}
 
 		const stale = runner ? isStale(runner, node) : false;
-		const wanted = accepting && slot.slot <= node.maxRunners && !stale;
+		const wanted =
+			accepting && !node.stopIdle && slot.slot <= node.maxRunners && !stale;
 		if (!wanted) {
 			// Never interrupt a job here: an ephemeral runner exits after its job.
 			if (busy || slot.job?.completedAt) continue;
@@ -195,11 +202,13 @@ export const planNode = (input: {
 					runnerId: runner.id,
 					reason: stale
 						? "runner settings changed"
-						: node.drain
-							? "draining"
-							: !node.enabled
-								? "machine disabled"
-								: "above the concurrency limit",
+						: node.stopIdle
+							? node.stopIdle
+							: node.drain
+								? "draining"
+								: !node.enabled
+									? "machine disabled"
+									: "above the concurrency limit",
 				});
 			} else {
 				actions.push({
