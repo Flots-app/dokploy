@@ -186,6 +186,9 @@ echo "lima installed=$("$root/lima/bin/limactl" --version | awk '{print $NF}')"
 `;
 };
 
+/** Bumped when the boot script changes: machines get it written again. 2: waits for pf. */
+export const MAC_BOOT_SCRIPT_VERSION = 2;
+
 /**
  * Script the boot daemon of the setup script runs at every boot: it starts the
  * VM when it should run, even if Dokploy is not reachable yet.

@@ -102,6 +102,8 @@ export interface GithubRunnerAppliedConfig {
 	envHash: string;
 	/** macOS: the VM was created by Dokploy, so removing the machine may delete it. */
 	vmCreatedByDokploy?: boolean;
+	/** macOS: version of the boot script written (MAC_BOOT_SCRIPT_VERSION); 1 when absent. */
+	bootScript?: number;
 }
 
 export type GithubRunnerSlotState =
@@ -166,6 +168,8 @@ export interface GithubRunnerNodeObservation {
 	caches?: GithubRunnerCaches;
 	/** Latest controller actions on the machine, newest first. */
 	events?: { at: string; message: string }[];
+	/** "Retry now" on an unreachable machine, for the leading controller. */
+	retryRequestedAt?: string;
 	/** The reserve the machine arms itself with while no controller answers. */
 	autonomy?: {
 		/** Registrations wanted per slot. */
@@ -276,6 +280,8 @@ export interface GithubRunnerUpdateState {
 	} | null;
 	/** OS updates, when the update policy installs them. */
 	patchedAt?: string | null;
+	/** Last try, installed, failed or given up: the next one waits 12 hours. */
+	patchTriedAt?: string | null;
 	patchError?: string | null;
 	patchErrorAt?: string | null;
 }
@@ -330,6 +336,8 @@ export interface GithubRunnerOsReport {
 	/** Ubuntu inside the VM of a Mac. */
 	guest: GithubRunnerOsInfo | null;
 	error?: string;
+	/** "Check now": the leading controller reads it again at its next tick. */
+	requestedAt?: string;
 }
 
 /**

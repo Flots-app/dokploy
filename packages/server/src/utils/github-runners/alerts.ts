@@ -15,6 +15,7 @@ import {
 } from "@dokploy/server/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
 import { type OsRelease, osStatus } from "./os";
+import { effectiveUpdatePolicy } from "./updates";
 import { machineRunnerStatus, type RunnerReleaseInfo } from "./versions";
 
 export type RunnerAlertKind =
@@ -100,11 +101,14 @@ const machineConditions = (input: {
 	node: GithubRunnerNode;
 	now: number;
 	runnerReleases: RunnerReleaseInfo[];
-	osReleases: (id: string) => OsRelease[];
+	osReleases: (id: string) => OsRelease[] | null;
+	unknown: (subject: string) => void;
 }): RunnerAlertCondition[] => {
 	const { pool, node, now } = input;
 	if (settingUp(node)) return [];
 	const conditions: RunnerAlertCondition[] = [];
+	const unknown = (kind: RunnerAlertKind) =>
+		input.unknown(`${node.githubRunnerNodeId}:${kind}`);
 	const add = (
 		kind: RunnerAlertKind,
 		severity: GithubRunnerAlertSeverity,
@@ -171,16 +175,32 @@ const machineConditions = (input: {
 			`${updateError}. Dokploy tries again every 30 minutes; "Update now" in the machine menu tries at once.`,
 		);
 	}
+	// Lasts while Dokploy would still install them: turned off, or installed
+	// by hand, the failure no longer matters.
+	const patchable =
+		node.platform === "macos"
+			? (node.osReport?.guest ?? null)
+			: (node.osReport?.host ?? null);
 	if (node.enabled && node.updateState?.patchError) {
-		add(
-			"os-patch",
-			"warning",
-			`OS updates failed on ${name}`,
-			`${node.updateState.patchError}. Dokploy tries again in the next update window.`,
-		);
+		if (!patchable) unknown("os-patch");
+		else if (
+			effectiveUpdatePolicy(pool, node).osPatches &&
+			((patchable.updates ?? 0) > 0 || patchable.reboot === true)
+		) {
+			add(
+				"os-patch",
+				"warning",
+				`OS updates failed on ${name}`,
+				`${node.updateState.patchError}. Dokploy tries again in the next update window.`,
+			);
+		}
 	}
+	// A disabled machine is updated once enabled: nothing to tell until then.
 	const runner = machineRunnerStatus(pool, node, input.runnerReleases, now);
-	if (runner.state === "unsupported") {
+	if (!node.enabled) {
+		// No condition: an alert left open resolves.
+	} else if (!input.runnerReleases.length) unknown("runner-version");
+	else if (runner.state === "unsupported") {
 		add(
 			"runner-version",
 			"critical",
@@ -204,12 +224,14 @@ const machineConditions = (input: {
 		],
 	] as const;
 	for (const [kind, info, where] of systems) {
-		if (!info) continue;
-		const status = osStatus({
-			info,
-			releases: input.osReleases(info.id),
-			now,
-		});
+		// No report (VM stopped, report failed) or support dates not read yet:
+		// what was known holds.
+		const releases = info ? input.osReleases(info.id) : null;
+		if (!info || !releases) {
+			if (kind === "os-host" || node.platform === "macos") unknown(kind);
+			continue;
+		}
+		const status = osStatus({ info, releases, now });
 		if (status.state === "unsupported") {
 			add(
 				kind,
@@ -232,20 +254,35 @@ const machineConditions = (input: {
 	return conditions;
 };
 
-/** Conditions of a pool and of its machines, now. */
-export const runnerAlertConditions = (input: {
+export interface RunnerAlertInput {
 	pool: GithubRunnerPool;
 	nodes: GithubRunnerNode[];
 	now: number;
+	/** Known actions/runner releases; empty while not read yet. */
 	runnerReleases: RunnerReleaseInfo[];
-	osReleases: (id: string) => OsRelease[];
-	/** What GitHub said of the pool's personal access token, when it has one. */
+	/** Release lines of an OS product; null while not read yet. */
+	osReleases: (id: string) => OsRelease[] | null;
+	/** What GitHub said of the pool's personal access token; null while not asked yet. */
 	token: { valid: boolean; expiresAt: string | null } | null;
-}): RunnerAlertCondition[] => {
+}
+
+/**
+ * Conditions of a pool and of its machines now, and the subjects that cannot
+ * be told yet (a process that just took the lead has not read the releases,
+ * a stopped VM sends no OS report): their alerts stay as they are.
+ */
+export const runnerAlerts = (
+	input: RunnerAlertInput,
+): { conditions: RunnerAlertCondition[]; unknown: string[] } => {
 	const { pool, nodes, now } = input;
 	const poolId = pool.githubRunnerPoolId;
+	const unknown: string[] = [];
 	const conditions = nodes.flatMap((node) =>
-		machineConditions({ ...input, node }),
+		machineConditions({
+			...input,
+			node,
+			unknown: (subject) => unknown.push(subject),
+		}),
 	);
 	const add = (
 		kind: RunnerAlertKind,
@@ -264,7 +301,11 @@ export const runnerAlertConditions = (input: {
 			message,
 			delayMs,
 		});
-	const enabled = nodes.filter((node) => node.enabled && !settingUp(node));
+	// Planned OS updates take a machine out on purpose: they are not a lack of capacity.
+	const enabled = nodes.filter(
+		(node) =>
+			node.enabled && !settingUp(node) && node.drain?.reason !== "patch",
+	);
 	if (pool.routingVariable && pool.routing?.target === "fallback") {
 		add(
 			"fallback",
@@ -311,6 +352,7 @@ export const runnerAlertConditions = (input: {
 	}
 	const token = pool.authType === "token" ? input.token : null;
 	const expiresAt = parseTokenExpiration(token?.expiresAt ?? null);
+	if (pool.authType === "token" && !token) unknown.push(`${poolId}:token`);
 	if (token && !token.valid) {
 		add(
 			"token",
@@ -329,8 +371,12 @@ export const runnerAlertConditions = (input: {
 			);
 		}
 	}
-	return conditions;
+	return { conditions, unknown };
 };
+
+/** Conditions of a pool and of its machines, now. */
+export const runnerAlertConditions = (input: RunnerAlertInput) =>
+	runnerAlerts(input).conditions;
 
 export type RunnerNoticeEvent =
 	| "opened"
@@ -364,6 +410,8 @@ export const syncRunnerAlerts = async (input: {
 	pool: GithubRunnerPool;
 	nodes: GithubRunnerNode[];
 	conditions: RunnerAlertCondition[];
+	/** Subjects that cannot be told now: their open alerts stay as they are. */
+	unknown?: string[];
 	now: number;
 }): Promise<RunnerNotice[]> => {
 	const { pool, now } = input;
@@ -394,7 +442,10 @@ export const syncRunnerAlerts = async (input: {
 		),
 	});
 	const bySubject = new Map(open.map((row) => [row.subject, row]));
-	const wanted = new Set(input.conditions.map((item) => item.subject));
+	const wanted = new Set([
+		...input.conditions.map((item) => item.subject),
+		...(input.unknown ?? []),
+	]);
 	const text = (condition: RunnerAlertCondition) => ({
 		severity: condition.severity,
 		title: condition.title,

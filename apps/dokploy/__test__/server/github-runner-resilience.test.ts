@@ -4,7 +4,10 @@ import type {
 	GithubRunnerPool,
 	GithubRunnerRollout,
 } from "@dokploy/server/db/schema";
-import { runnerAlertConditions } from "@dokploy/server/utils/github-runners/alerts";
+import {
+	runnerAlertConditions,
+	runnerAlerts,
+} from "@dokploy/server/utils/github-runners/alerts";
 import {
 	autonomySetting,
 	MAX_SPARES_PER_TICK,
@@ -33,6 +36,7 @@ import {
 	updatePolicySchema,
 	updateWindowEnd,
 } from "@dokploy/server/utils/github-runners/updates";
+import { ntfyHeaderValue } from "@dokploy/server/utils/notifications/github-runners";
 import { describe, expect, it } from "vitest";
 import {
 	machineUpdatePolicy,
@@ -506,7 +510,7 @@ describe("OS updates", () => {
 			name: "Flots CI",
 			authType: "app",
 			runnerVersion: null,
-			updatePolicy: { auto: true, window: null },
+			updatePolicy: { auto: true, window: null, osPatches: true },
 			routingVariable: null,
 			routing: null,
 			fallbackLabels: ["ubuntu-24.04"],
@@ -526,7 +530,20 @@ describe("OS updates", () => {
 			lastSeenAt: iso(0),
 			updatePolicy: null,
 			updateState: { patchError: "apt-get failed", patchErrorAt: iso(0) },
-			osReport: null,
+			osReport: {
+				at: iso(0),
+				host: {
+					id: "ubuntu",
+					version: "24.04",
+					build: null,
+					kernel: "",
+					updates: 3,
+					security: 0,
+					reboot: false,
+					listsAt: iso(0),
+				},
+				guest: null,
+			},
 			firewall: null,
 			observed: {
 				at: iso(0),
@@ -681,6 +698,203 @@ describe("review fixes", () => {
 			auto: true,
 			window: null,
 			osPatches: true,
+		});
+	});
+});
+
+describe("review fixes, warnings", () => {
+	const pool = (overrides: Record<string, unknown> = {}) =>
+		({
+			githubRunnerPoolId: "pool",
+			name: "Flots CI",
+			authType: "app",
+			runnerVersion: null,
+			updatePolicy: { auto: true, window: null, osPatches: true },
+			routingVariable: null,
+			routing: null,
+			fallbackLabels: ["ubuntu-24.04"],
+			rollouts: {},
+			...overrides,
+		}) as unknown as GithubRunnerPool;
+	const ubuntu = (updates: number) => ({
+		id: "ubuntu",
+		version: "20.04",
+		build: null,
+		kernel: "",
+		updates,
+		security: 0,
+		reboot: false,
+		listsAt: iso(0),
+	});
+	const node = (overrides: Record<string, unknown> = {}) =>
+		({
+			githubRunnerNodeId: "m6",
+			githubRunnerPoolId: "pool",
+			name: "m6",
+			host: "m6",
+			platform: "linux",
+			enabled: true,
+			phase: "ready",
+			drain: null,
+			lastSeenAt: iso(0),
+			updatePolicy: null,
+			updateState: null,
+			osReport: { at: iso(0), host: ubuntu(0), guest: null },
+			firewall: null,
+			observed: {
+				at: iso(0),
+				reachable: true,
+				admission: { ok: true },
+				slots: [],
+				runtime: { version: 7, runnerVersion: "2.320.0" },
+			},
+			...overrides,
+		}) as unknown as GithubRunnerNode;
+	const oldRelease = [
+		{ version: "2.321.0", publishedAt: iso(-40 * 24 * 60 * MINUTE) },
+	];
+	const ended = [
+		{ name: "20.04", isEol: true, eolFrom: "2025-05-31", latest: null },
+	];
+	const alerts = (
+		nodes: GithubRunnerNode[],
+		overrides: Partial<Parameters<typeof runnerAlerts>[0]> = {},
+	) =>
+		runnerAlerts({
+			pool: pool(),
+			nodes,
+			now,
+			runnerReleases: oldRelease,
+			osReleases: () => ended,
+			token: null,
+			...overrides,
+		});
+	const subjects = (result: ReturnType<typeof runnerAlerts>) => ({
+		conditions: result.conditions.map((item) => item.subject),
+		unknown: result.unknown,
+	});
+
+	it("keeps what a process that just took the lead cannot tell yet", () => {
+		expect(subjects(alerts([node()]))).toEqual({
+			conditions: ["m6:runner-version", "m6:os-host"],
+			unknown: [],
+		});
+		// Releases, support dates and the token check not read yet.
+		expect(
+			subjects(
+				alerts([node()], {
+					pool: pool({ authType: "token" }),
+					runnerReleases: [],
+					osReleases: () => null,
+				}),
+			),
+		).toEqual({
+			conditions: [],
+			unknown: ["m6:runner-version", "m6:os-host", "pool:token"],
+		});
+		// No OS report (VM stopped, report failed): what was known holds.
+		expect(subjects(alerts([node({ osReport: null })])).unknown).toEqual([
+			"m6:os-host",
+		]);
+	});
+
+	it("leaves disabled machines alone about their runner", () => {
+		expect(
+			subjects(alerts([node({ enabled: false, phase: "stopped" })])),
+		).toEqual({ conditions: ["m6:os-host"], unknown: [] });
+	});
+
+	it("tells a failed OS update only while Dokploy would still install it", () => {
+		const failed = { patchError: "apt-get failed", patchErrorAt: iso(0) };
+		const withUpdates = {
+			at: iso(0),
+			host: { ...ubuntu(3), version: "24.04" },
+			guest: null,
+		};
+		const kinds = (...args: Parameters<typeof alerts>) =>
+			alerts(...args).conditions.map((item) => item.kind);
+		expect(
+			kinds([node({ updateState: failed, osReport: withUpdates })]),
+		).toContain("os-patch");
+		// Installed by hand, or OS updates turned off: nothing left to tell.
+		expect(
+			kinds([
+				node({
+					updateState: failed,
+					osReport: {
+						...withUpdates,
+						host: { ...withUpdates.host, updates: 0 },
+					},
+				}),
+			]),
+		).not.toContain("os-patch");
+		expect(
+			kinds([node({ updateState: failed, osReport: withUpdates })], {
+				pool: pool({ updatePolicy: { auto: true, window: null } }),
+			}),
+		).not.toContain("os-patch");
+	});
+
+	it("does not take planned OS updates for a lack of capacity", () => {
+		const patching = node({
+			phase: "draining",
+			drain: { reason: "patch", mode: "wait" },
+		});
+		expect(
+			alerts([patching]).conditions.map((item) => item.kind),
+		).not.toContain("no-capacity");
+		const stuck = node({
+			observed: {
+				at: iso(0),
+				reachable: false,
+				admission: { ok: true },
+				slots: [],
+			},
+		});
+		expect(alerts([stuck]).conditions.map((item) => item.kind)).toContain(
+			"no-capacity",
+		);
+	});
+
+	it("encodes ntfy headers that HTTP cannot carry", () => {
+		expect(ntfyHeaderValue("m6 is unreachable")).toBe("m6 is unreachable");
+		const encoded = ntfyHeaderValue("Flots – CI: no machine takes jobs 🚀");
+		expect(encoded).toMatch(/^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=$/);
+		expect(Buffer.from(encoded.slice(10, -2), "base64").toString("utf8")).toBe(
+			"Flots – CI: no machine takes jobs 🚀",
+		);
+		expect(() => new Headers({ "X-Title": encoded })).not.toThrow();
+	});
+
+	it("lets OS updates finish before another update on the machine", () => {
+		const patching = machine("m4", { drain: { reason: "patch" } });
+		for (const reason of ["requested", "required", "anytime"] as const) {
+			expect(
+				gate({
+					reason,
+					kind: "runtime",
+					target: "7",
+					machines: [machine("m6"), patching],
+				}),
+			).toEqual({ go: false, reason: "OS updates run on this machine first" });
+		}
+	});
+
+	it("keeps a failed rollout paused once its canary is disabled or removed", () => {
+		const failed = rollout({ failedAt: iso(-MINUTE), error: "x" });
+		expect(
+			gate({
+				rollout: failed,
+				machines: [machine("m6", { enabled: false }), machine("m4")],
+			}),
+		).toEqual({
+			go: false,
+			reason: "the rollout of 2.332.0 is paused: it failed on m6",
+		});
+		expect(gate({ rollout: { ...failed, canaryNodeId: "removed" } })).toEqual({
+			go: false,
+			reason:
+				"the rollout of 2.332.0 is paused: it failed on a removed machine",
 		});
 	});
 });

@@ -449,7 +449,7 @@ export const githubRunnerRouter = createTRPCRouter({
 				input.githubRunnerNodeId,
 				ctx.session.activeOrganizationId,
 			);
-			checkRunnerNodeOs(node.githubRunnerNodeId);
+			await checkRunnerNodeOs(node.githubRunnerNodeId);
 			return { requested: true };
 		}),
 

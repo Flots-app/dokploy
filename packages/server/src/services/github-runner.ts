@@ -734,7 +734,7 @@ export const requestGithubRunnerNodeUpdate = async (
 			},
 		})
 		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-	retryRunnerNodeNow(nodeId);
+	await retryRunnerNodeNow(nodeId);
 	return node;
 };
 
@@ -774,7 +774,7 @@ export const resetGithubRunnerHostKey = async (
 		.update(githubRunnerNodes)
 		.set({ hostKeyFingerprint: fingerprint })
 		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
-	retryRunnerNodeNow(nodeId);
+	await retryRunnerNodeNow(nodeId);
 };
 
 /** Everything the runners page shows, refreshed every few seconds. */

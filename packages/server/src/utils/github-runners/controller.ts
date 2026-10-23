@@ -53,11 +53,7 @@ import {
 	mapWithConcurrency,
 	sequentially,
 } from "../service-migration/concurrency";
-import {
-	type RunnerNotice,
-	runnerAlertConditions,
-	syncRunnerAlerts,
-} from "./alerts";
+import { type RunnerNotice, runnerAlerts, syncRunnerAlerts } from "./alerts";
 import { autonomySetting, planSpares } from "./autonomy";
 import {
 	effectiveBudget,
@@ -112,6 +108,7 @@ import {
 } from "./github-api";
 import {
 	LIMA_VERSION,
+	MAC_BOOT_SCRIPT_VERSION,
 	macCreateVmScript,
 	macDeleteVmScript,
 	macInstallLimaScript,
@@ -248,7 +245,13 @@ interface ControllerState {
 	/** Machines that did not answer: tried again in the background, not by the tick. */
 	reconnects: Map<
 		string,
-		{ failures: number; retryAt: number; probing: boolean }
+		{
+			failures: number;
+			retryAt: number;
+			probing: boolean;
+			/** Last "Retry now" acted on (epoch ms). */
+			requestSeen?: number;
+		}
 	>;
 	lastBenchmarkAt: Map<string, number>;
 	/** Free space seen by the last ticks, for the fill rate (VM disk on a Mac). */
@@ -1159,6 +1162,7 @@ const prepareMachine = async (
 		memoryBytes: applied?.memoryBytes ?? effective.memoryBytes,
 		envHash: environmentHash(node.pool),
 		vmCreatedByDokploy: node.platform === "macos" ? vmCreated : undefined,
+		bootScript: node.platform === "macos" ? MAC_BOOT_SCRIPT_VERSION : undefined,
 	} satisfies GithubRunnerAppliedConfig;
 };
 
@@ -1831,16 +1835,18 @@ const recordEvent = (
 
 const markUnreachable = async (node: GithubRunnerNode, error: unknown) => {
 	const message = error instanceof Error ? error.message : String(error);
+	// Merged in the database: a "Retry now" written meanwhile stays.
+	const fallback = { admission: { ok: false }, slots: [] };
+	const update = {
+		at: new Date().toISOString(),
+		reachable: false,
+		error: message,
+	};
 	await db
 		.update(githubRunnerNodes)
 		.set({
 			lastError: message,
-			observed: {
-				...(node.observed ?? { admission: { ok: false }, slots: [] }),
-				at: new Date().toISOString(),
-				reachable: false,
-				error: message,
-			},
+			observed: sql`coalesce(${githubRunnerNodes.observed}, ${JSON.stringify(fallback)}::jsonb) || ${JSON.stringify(update)}::jsonb`,
 		})
 		.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
 };
@@ -1862,6 +1868,12 @@ export const reconnectDelay = (failures: number) =>
 const retryUnreachable = (node: NodeWithRelations) => {
 	const nodeId = node.githubRunnerNodeId;
 	const backoff = state.reconnects.get(nodeId);
+	// "Retry now" may come from another process: it is read from the machine.
+	const requested = Date.parse(node.observed?.retryRequestedAt ?? "") || 0;
+	if (backoff && requested > (backoff.requestSeen ?? 0)) {
+		backoff.requestSeen = requested;
+		backoff.retryAt = 0;
+	}
 	if (!backoff || backoff.probing || Date.now() < backoff.retryAt) return;
 	backoff.probing = true;
 	void (async () => {
@@ -1883,9 +1895,16 @@ const retryUnreachable = (node: NodeWithRelations) => {
 };
 
 /** After the operator fixed a machine (its host key): tried at the next tick. */
-export const retryRunnerNodeNow = (nodeId: string) => {
+export const retryRunnerNodeNow = async (nodeId: string) => {
 	const backoff = state.reconnects.get(nodeId);
 	if (backoff) backoff.retryAt = 0;
+	// Read by the leading controller, which may run in another process.
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			observed: sql`jsonb_set(coalesce(${githubRunnerNodes.observed}, '{}'::jsonb), '{retryRequestedAt}', to_jsonb(${new Date().toISOString()}::text))`,
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 	requestTick();
 };
 
@@ -1917,6 +1936,8 @@ const observeNode = async (
 			failures: 1,
 			retryAt: Date.now() + reconnectDelay(1),
 			probing: false,
+			// A "Retry now" from before this failure is spent.
+			requestSeen: Date.parse(node.observed?.retryRequestedAt ?? "") || 0,
 		});
 		return null;
 	}
@@ -2631,6 +2652,18 @@ const refreshOsReleases = (product: string) => {
 		);
 };
 
+/**
+ * Release lines of an OS product, or null while they have not been read: an
+ * alert cannot tell then whether the OS is still supported. An OS that
+ * endoflife.date does not list has none to read.
+ */
+const osReleasesIfKnown = (id: string) => {
+	const product = osProduct(id);
+	if (!product) return [];
+	refreshOsReleases(product);
+	return state.osReleases.get(product)?.releases ?? null;
+};
+
 /** Release lines of an OS known to the controller, for the overview. */
 export const knownOsReleases = (id: string) => {
 	const product = osProduct(id);
@@ -2649,7 +2682,9 @@ const refreshOsReport = (
 ) => {
 	const nodeId = node.githubRunnerNodeId;
 	const last = state.osReportAt.get(nodeId) ?? 0;
-	if (Date.now() - last < OS_REPORT_EVERY_MS) return;
+	// "Check now" may come from another process: it is read from the machine.
+	const requested = Date.parse(node.osReport?.requestedAt ?? "") || 0;
+	if (Date.now() - last < OS_REPORT_EVERY_MS && last >= requested) return;
 	state.osReportAt.set(nodeId, Date.now());
 	void (async () => {
 		const report: GithubRunnerOsReport = {
@@ -2703,8 +2738,15 @@ const refreshOsReport = (
 };
 
 /** Asks for a new OS report of a machine at the next tick. */
-export const checkRunnerNodeOs = (nodeId: string) => {
+export const checkRunnerNodeOs = async (nodeId: string) => {
 	state.osReportAt.delete(nodeId);
+	// Read by the leading controller, which may run in another process.
+	await db
+		.update(githubRunnerNodes)
+		.set({
+			osReport: sql`coalesce(${githubRunnerNodes.osReport}, '{"at":"","host":null,"guest":null}'::jsonb) || jsonb_build_object('requestedAt', ${new Date().toISOString()}::text)`,
+		})
+		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 	requestTick();
 };
 
@@ -2796,6 +2838,13 @@ export const enforceFirewall = async (
 				? pfRuleset(compiled)
 				: nftablesRuleset(compiled);
 		state.firewallExpected.set(nodeId, ruleset.hash);
+		// A deny rule that cannot be written (no address known) would let its
+		// traffic through: no job until it can be.
+		const unenforced = compiled.skipped.find(
+			(item) =>
+				firewall.rules.find((rule) => rule.id === item.ruleId)?.action ===
+				"deny",
+		);
 		const applied = (appliedAt: string): GithubRunnerFirewallState => ({
 			firewallId: firewall.firewallId,
 			revision: firewall.revision,
@@ -2805,23 +2854,6 @@ export const enforceFirewall = async (
 			errorAt: null,
 		});
 		const current = node.firewall;
-		if (loaded === ruleset.hash) {
-			if (
-				current?.hash !== ruleset.hash ||
-				current.error ||
-				current.firewallId !== firewall.firewallId ||
-				current.revision !== firewall.revision
-			) {
-				await save(
-					applied(
-						current?.hash === ruleset.hash && current.appliedAt
-							? current.appliedAt
-							: new Date().toISOString(),
-					),
-				);
-			}
-			return null;
-		}
 		const fail = async (message: string) => {
 			if (current?.error !== message) {
 				await save({
@@ -2839,6 +2871,28 @@ export const enforceFirewall = async (
 			}
 			return `Firewall "${firewall.name}" not applied: ${message}`;
 		};
+		if (unenforced) {
+			return fail(
+				`a rule that denies traffic cannot be written: ${unenforced.reason}`,
+			);
+		}
+		if (loaded === ruleset.hash) {
+			if (
+				current?.hash !== ruleset.hash ||
+				current.error ||
+				current.firewallId !== firewall.firewallId ||
+				current.revision !== firewall.revision
+			) {
+				await save(
+					applied(
+						current?.hash === ruleset.hash && current.appliedAt
+							? current.appliedAt
+							: new Date().toISOString(),
+					),
+				);
+			}
+			return null;
+		}
 		if (node.platform === "macos" && probe.firewall?.helper !== "yes") {
 			return fail(
 				probe.firewall?.helper === "denied"
@@ -3185,6 +3239,8 @@ const endPatch = async (
 				...current,
 				inProgress: null,
 				patchedAt: outcome.installed ? at : (current.patchedAt ?? null),
+				// Installed, failed or given up: the next try waits PATCH_EVERY_MS.
+				patchTriedAt: at,
 				patchError: outcome.error,
 				patchErrorAt: outcome.error ? at : null,
 			},
@@ -3197,19 +3253,17 @@ const endPatch = async (
 		outcome.error ? "error" : outcome.installed ? "done" : "cancelled",
 		outcome.error ?? undefined,
 	);
+	// A failure is told by its alert ("OS updates failed"), which lasts.
+	if (outcome.error) return;
 	notify(node.pool, {
 		event: "info",
-		severity: outcome.error ? "warning" : "info",
-		title: outcome.error
-			? `OS updates failed on ${node.name}`
-			: outcome.installed
-				? `OS updates installed on ${node.name}`
-				: `OS updates postponed on ${node.name}`,
-		message:
-			outcome.error ??
-			(outcome.installed
-				? `${node.name} installed its OS updates and takes jobs again.`
-				: `Jobs still ran at the end of the update window: ${node.name} takes jobs again, and the updates wait for the next window.`),
+		severity: "info",
+		title: outcome.installed
+			? `OS updates installed on ${node.name}`
+			: `OS updates postponed on ${node.name}`,
+		message: outcome.installed
+			? `${node.name} installed its OS updates and takes jobs again.`
+			: `Jobs still ran when the update window closed: ${node.name} takes jobs again, and the updates wait for the next try.`,
 		pool: node.pool.name,
 		machine: node.name,
 		at: new Date(),
@@ -3522,7 +3576,9 @@ const actOnNode = async (
 				});
 			if (
 				runtime.runtimeVersion < RUNTIME_VERSION &&
-				(phase === "ready" || phase === "draining")
+				(phase === "ready" || phase === "draining") &&
+				// OS updates own the machine until they end.
+				node.drain?.reason !== "patch"
 			) {
 				const decision = decide({
 					required: runtime.runtimeVersion < MIN_RUNTIME_VERSION,
@@ -3598,7 +3654,12 @@ const actOnNode = async (
 				!node.updateState?.inProgress &&
 				pending &&
 				((pending.updates ?? 0) > 0 || pending.reboot === true) &&
-				now - Date.parse(node.updateState?.patchedAt ?? "1970-01-01") >
+				now -
+					Date.parse(
+						node.updateState?.patchTriedAt ??
+							node.updateState?.patchedAt ??
+							"1970-01-01",
+					) >
 					PATCH_EVERY_MS
 			) {
 				const decision = updateDecision({
@@ -3620,6 +3681,25 @@ const actOnNode = async (
 					lastError = `${what}: ${error instanceof Error ? error.message : String(error)}`;
 				}
 			};
+			// Macs set up before the boot script waited for pf get the new one.
+			if (
+				node.platform === "macos" &&
+				node.applied &&
+				(node.applied.bootScript ?? 1) < MAC_BOOT_SCRIPT_VERSION
+			) {
+				const applied = node.applied;
+				await maintain("Boot script not updated", async () => {
+					await driver.host(macWriteBootScript(node.vmName), {
+						timeoutMs: 30_000,
+						label: "Boot script",
+					});
+					node.applied = { ...applied, bootScript: MAC_BOOT_SCRIPT_VERSION };
+					recordEvent(
+						events,
+						"Boot script updated: after a reboot, the VM waits for the firewall of its jobs",
+					);
+				});
+			}
 			const envHash = environmentHash(node.pool);
 			if (node.applied && node.applied.envHash !== envHash) {
 				const applied = node.applied;
@@ -4660,18 +4740,19 @@ const evaluateAlerts = async () => {
 				(node) => node.githubRunnerPoolId === pool.githubRunnerPoolId,
 			);
 			try {
-				const conditions = runnerAlertConditions({
+				const { conditions, unknown } = runnerAlerts({
 					pool,
 					nodes: poolNodes,
 					now,
 					runnerReleases,
-					osReleases: knownOsReleases,
+					osReleases: osReleasesIfKnown,
 					token: state.tokenChecks.get(pool.githubRunnerPoolId)?.result ?? null,
 				});
 				const notices = await syncRunnerAlerts({
 					pool,
 					nodes: poolNodes,
 					conditions,
+					unknown,
 					now,
 				});
 				for (const notice of notices) notify(pool, notice);

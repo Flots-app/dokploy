@@ -8,10 +8,10 @@
  */
 import { createHash } from "node:crypto";
 import {
+	addressFamily,
 	type FirewallPeer,
 	type FirewallPolicy,
 	type FirewallRule,
-	ipFamily,
 	isAddress,
 	parsePorts,
 } from "./rules";
@@ -55,6 +55,7 @@ export const NON_PUBLIC: AddressSet = {
 	],
 };
 
+/** The LAN, VPNs and tailnet, with the broadcast and multicast of the LAN. */
 const PRIVATE: AddressSet = {
 	v4: [
 		"10.0.0.0/8",
@@ -62,8 +63,10 @@ const PRIVATE: AddressSet = {
 		"169.254.0.0/16",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
+		"224.0.0.0/4",
+		"255.255.255.255/32",
 	],
-	v6: ["fc00::/7", "fe80::/10"],
+	v6: ["fc00::/7", "fe80::/10", "ff00::/8"],
 };
 
 const TAILNET: AddressSet = {
@@ -106,11 +109,9 @@ export interface CompiledFirewall {
 	skipped: { ruleId: string; reason: string }[];
 }
 
-const familyOf = (value: string) => ipFamily(value.split("/")[0] ?? "");
-
 const split = (addresses: string[]): AddressSet => ({
-	v4: addresses.filter((item) => familyOf(item) === 4),
-	v6: addresses.filter((item) => familyOf(item) === 6),
+	v4: addresses.filter((item) => addressFamily(item) === 4),
+	v6: addresses.filter((item) => addressFamily(item) === 6),
 });
 
 /** The addresses of a peer; `dokploy` needs the addresses of this server. */

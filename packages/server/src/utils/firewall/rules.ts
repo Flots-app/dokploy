@@ -22,30 +22,16 @@ export const FIREWALL_OBJECT_LABELS: Record<FirewallObject, string> = {
 	any: "Anywhere",
 };
 
-const IPV4 =
-	/^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+// zod's validators refuse what nftables refuses too, such as "/08" prefixes.
+const IPV4 = z.union([z.ipv4(), z.cidrv4()]);
+const IPV6 = z.union([z.ipv6(), z.cidrv6()]);
 
-/** 4 or 6 for an IP address, 0 otherwise (works in Node.js and browsers). */
-export const ipFamily = (value: string): 0 | 4 | 6 => {
-	if (IPV4.test(value)) return 4;
-	if (!value.includes(":") || !/^[0-9a-fA-F:.]+$/.test(value)) return 0;
-	try {
-		new URL(`http://[${value}]`);
-		return 6;
-	} catch {
-		return 0;
-	}
-};
+/** 4 or 6 for an address or a network ("10.0.0.0/8", "fd00::1"), 0 otherwise. */
+export const addressFamily = (value: string): 0 | 4 | 6 =>
+	IPV4.safeParse(value).success ? 4 : IPV6.safeParse(value).success ? 6 : 0;
 
 /** "10.0.0.0/8", "192.168.1.10", "fd00::/8": an address or a network. */
-export const isAddress = (value: string) => {
-	const [address = "", prefix, extra] = value.split("/");
-	const family = ipFamily(address);
-	if (!family || extra !== undefined) return false;
-	if (prefix === undefined) return true;
-	if (!/^\d{1,3}$/.test(prefix)) return false;
-	return Number(prefix) <= (family === 4 ? 32 : 128);
-};
+export const isAddress = (value: string) => addressFamily(value) !== 0;
 
 /** "443", "80,443", "8000-9000": every port and range between 1 and 65535. */
 export const parsePorts = (value: string): [number, number][] | null => {

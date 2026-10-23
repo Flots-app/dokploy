@@ -71,6 +71,13 @@ export const rolloutGate = (input: {
 	now: number;
 }): RolloutGate => {
 	const { selfId, rollout } = input;
+	const self = input.machines.find(
+		(machine) => machine.githubRunnerNodeId === selfId,
+	);
+	// OS updates own the machine until they end, "Update now" included.
+	if (input.kind !== "os" && self?.drain?.reason === "patch") {
+		return { go: false, reason: "OS updates run on this machine first" };
+	}
 	if (input.reason === "requested") return { go: true, canary: false };
 	const busy = updatingMachines(input.machines, selfId, input.now);
 	if (busy.length >= Math.max(1, input.policy.maxUnavailable)) {
@@ -94,14 +101,16 @@ export const rolloutGate = (input: {
 	const canary = input.machines.find(
 		(machine) => machine.githubRunnerNodeId === rollout.canaryNodeId,
 	);
-	// The canary left or was disabled: another machine leads.
-	if (!canary?.enabled) return { go: true, canary: true };
+	// A failed release stays paused until an operator resumes the rollout,
+	// even once its canary is disabled or removed.
 	if (rollout.failedAt) {
 		return {
 			go: false,
-			reason: `the rollout of ${input.target} is paused: it failed on ${canary.name}`,
+			reason: `the rollout of ${input.target} is paused: it failed on ${canary?.name ?? "a removed machine"}`,
 		};
 	}
+	// The canary left or was disabled before it failed: another machine leads.
+	if (!canary?.enabled) return { go: true, canary: true };
 	if (!rollout.passedAt) {
 		return {
 			go: false,

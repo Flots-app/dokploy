@@ -63,6 +63,15 @@ export const runnerNoticeHeading = (notice: RunnerNotice) => {
 	}
 };
 
+/**
+ * HTTP headers carry Latin-1 only, and fetch refuses anything else: ntfy reads
+ * a title encoded as RFC 2047 (https://docs.ntfy.sh/publish/).
+ */
+export const ntfyHeaderValue = (text: string) =>
+	/^[\x20-\x7e]*$/.test(text)
+		? text
+		: `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
+
 const escapeHtml = (text: string) =>
 	text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -194,9 +203,9 @@ export const sendGithubRunnerNotifications = async (
 			sends.push(
 				sendNtfyNotification(
 					ntfy,
-					heading,
+					ntfyHeaderValue(heading),
 					style.ntfy,
-					`view, Open GitHub Runners, ${link}, clear=true;`,
+					ntfyHeaderValue(`view, Open GitHub Runners, ${link}, clear=true;`),
 					`${notice.message}\n\n${where} · ${date} UTC`,
 				),
 			);

@@ -87,30 +87,25 @@ const useAttach = () => {
 	return { save, pending: attach.isPending || detach.isPending };
 };
 
-/**
- * Picks the firewall of a runner pool or machine. A machine without one of
- * its own follows its pool's.
- */
-export const FirewallTargetDialog = ({
-	target,
-	currentId,
-	poolFirewallName,
-	open,
-	onOpenChange,
-}: {
+interface TargetProps {
 	target: { type: FirewallTargetType; id: string; name: string };
 	/** Its own firewall; for a machine, null follows the pool. */
 	currentId: string | null;
 	/** Machines only: the firewall of the pool, null for none. */
 	poolFirewallName?: string | null;
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-}) => {
-	const {
-		data: firewalls,
-		error,
-		isPending,
-	} = api.firewall.list.useQuery(undefined, { enabled: open });
+}
+
+/**
+ * Mounted at each opening, so the choice starts from the firewall the
+ * resource has now, not the one it had when the page loaded.
+ */
+const TargetPicker = ({
+	target,
+	currentId,
+	poolFirewallName,
+	onDone,
+}: TargetProps & { onDone: () => void }) => {
+	const { data: firewalls, error, isPending } = api.firewall.list.useQuery();
 	const [choice, setChoice] = useState(currentId ?? NONE);
 	const { save, pending } = useAttach();
 	const machine = target.type === "githubRunnerNode";
@@ -122,67 +117,87 @@ export const FirewallTargetDialog = ({
 		try {
 			await save(target, choice === NONE ? null : choice);
 			toast.success(`Firewall of ${target.name} saved`);
-			onOpenChange(false);
+			onDone();
 		} catch (cause) {
 			toast.error(errorText(cause, "The firewall could not be changed"));
 		}
 	};
 
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent>
-				<DialogHeader>
-					<DialogTitle>Firewall of {target.name}</DialogTitle>
-					<DialogDescription>
-						What the jobs of {machine ? "this machine" : "this pool"} may reach.
-						A machine takes no job until its firewall is in place.
-					</DialogDescription>
-				</DialogHeader>
-				{error ? (
-					<p className="text-sm text-destructive">
-						{errorText(error, "The firewalls could not be loaded")}
+		<>
+			{error ? (
+				<p className="text-sm text-destructive">
+					{errorText(error, "The firewalls could not be loaded")}
+				</p>
+			) : (
+				<div className="grid gap-2">
+					<Label htmlFor="firewall-choice">Firewall</Label>
+					<Select value={choice} onValueChange={setChoice}>
+						<SelectTrigger id="firewall-choice" disabled={isPending}>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value={NONE}>{noneLabel}</SelectItem>
+							{(firewalls ?? []).map((firewall) => (
+								<SelectItem
+									key={firewall.firewallId}
+									value={firewall.firewallId}
+								>
+									{firewall.name}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+					<p className="text-xs text-muted-foreground">
+						Create and edit firewalls on the{" "}
+						<Link href="/dashboard/firewalls" className="underline">
+							Firewalls
+						</Link>{" "}
+						page.
 					</p>
-				) : (
-					<div className="grid gap-2">
-						<Label htmlFor="firewall-choice">Firewall</Label>
-						<Select value={choice} onValueChange={setChoice}>
-							<SelectTrigger id="firewall-choice" disabled={isPending}>
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								<SelectItem value={NONE}>{noneLabel}</SelectItem>
-								{(firewalls ?? []).map((firewall) => (
-									<SelectItem
-										key={firewall.firewallId}
-										value={firewall.firewallId}
-									>
-										{firewall.name}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
-						<p className="text-xs text-muted-foreground">
-							Create and edit firewalls on the{" "}
-							<Link href="/dashboard/firewalls" className="underline">
-								Firewalls
-							</Link>{" "}
-							page.
-						</p>
-					</div>
-				)}
-				<DialogFooter>
-					<Button variant="outline" onClick={() => onOpenChange(false)}>
-						Cancel
-					</Button>
-					<Button onClick={submit} disabled={pending || Boolean(error)}>
-						{pending && <Loader2 className="size-4 animate-spin" />}
-						Save
-					</Button>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
+				</div>
+			)}
+			<DialogFooter>
+				<Button variant="outline" onClick={onDone}>
+					Cancel
+				</Button>
+				<Button onClick={submit} disabled={pending || Boolean(error)}>
+					{pending && <Loader2 className="size-4 animate-spin" />}
+					Save
+				</Button>
+			</DialogFooter>
+		</>
 	);
 };
+
+/**
+ * Picks the firewall of a runner pool or machine. A machine without one of
+ * its own follows its pool's.
+ */
+export const FirewallTargetDialog = ({
+	open,
+	onOpenChange,
+	...props
+}: TargetProps & {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+}) => (
+	<Dialog open={open} onOpenChange={onOpenChange}>
+		<DialogContent>
+			<DialogHeader>
+				<DialogTitle>Firewall of {props.target.name}</DialogTitle>
+				<DialogDescription>
+					What the jobs of{" "}
+					{props.target.type === "githubRunnerNode"
+						? "this machine"
+						: "this pool"}{" "}
+					may reach. A machine takes no job until its firewall is in place.
+				</DialogDescription>
+			</DialogHeader>
+			{open && <TargetPicker {...props} onDone={() => onOpenChange(false)} />}
+		</DialogContent>
+	</Dialog>
+);
 
 /** Attaches a firewall to a runner pool or machine, from the Firewalls page. */
 export const AttachTargetDialog = ({

@@ -44,6 +44,8 @@ STATE=/var/db/dokploy-firewall
 LOADED=/var/run/dokploy-firewall.hash
 # World-readable: the boot script of the VM waits for these rules before starting it.
 EXPECTED=/var/db/dokploy-firewall.expected
+# Far above the largest firewall the schema accepts (100 rules of 64 addresses).
+MAX_BYTES=1048576
 fail() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || fail "run it as root"
 
@@ -53,7 +55,7 @@ port='[0-9]{1,5}(:[0-9]{1,5})?'
 rule_re="^(pass|block return) out quick( on lo0)? proto (tcp|udp|\{ tcp udp \}) from any to (any|(! )?<dk[0-9]{1,3}>)( port ($port|\{( $port)+ \}))?$"
 
 validate() {
-	local count=0 line
+	local count=0 line expected actual
 	while IFS= read -r line || [ -n "$line" ]; do
 		count=$((count + 1))
 		[ "$count" -le 2000 ] || fail "too many lines"
@@ -66,6 +68,10 @@ validate() {
 		fail "line $count is not a rule Dokploy writes"
 	done <"$1"
 	[ "$count" -gt 1 ] || fail "no rule"
+	# The header carries the hash of the rules: a cut or changed file fails here.
+	expected=$(sed -n '1s/^# dokploy-firewall //p' "$1")
+	actual=$(printf '%s' "$(tail -n +2 "$1")" | shasum -a 256 | cut -c1-32)
+	[ "$actual" = "$expected" ] || fail "the rules do not match their hash (cut or changed)"
 }
 
 # Every rule is bound to the account: other traffic of the Mac is never matched.
@@ -120,7 +126,8 @@ apply)
 	install -d -m 700 "$STATE"
 	tmp=$(mktemp "$STATE/rules.XXXXXX")
 	trap 'rm -f "$tmp"' EXIT
-	head -c 262144 >"$tmp"
+	head -c $((MAX_BYTES + 1)) >"$tmp"
+	[ "$(wc -c <"$tmp")" -le "$MAX_BYTES" ] || fail "the rules are larger than $MAX_BYTES bytes"
 	validate "$tmp"
 	load "$tmp"
 	mv -f "$tmp" "$STATE/rules"

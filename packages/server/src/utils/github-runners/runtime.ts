@@ -135,12 +135,12 @@ read_jit() {
 		case "$key" in
 		.runner | .credentials | .credentials_rsaparams)
 			[[ "$value" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid $key"
-			install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0600 /dev/null "$dir/$key"
-			printf '%s' "$value" | base64 -d >"$dir/$key"
+			install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0600 /dev/null "$dir/$key" || die "could not write $key"
+			printf '%s' "$value" | base64 -d >"$dir/$key" || die "could not decode $key"
 			;;
 		name)
 			[[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid runner name"
-			printf '%s\n' "$value" >"$dir/.dokploy-runner-name"
+			printf '%s\n' "$value" >"$dir/.dokploy-runner-name" || die "could not write the runner name"
 			;;
 		'') ;;
 		*) die "unexpected input: $key" ;;
@@ -275,22 +275,24 @@ cmd_arm() {
 	[ -x "$release/run.sh" ] || die "runner release $release is incomplete"
 	dir="$ROOT/slots/$slot"
 	# Each slot runs its own copy, refreshed only when the release changes.
+	# Every step fails loudly: autoarm runs this inside an if, where set -e
+	# does not apply, and must keep its registration when a slot cannot start.
 	if [ "$(cat "$dir/.dokploy-release" 2>/dev/null || true)" != "$release" ]; then
 		rm -rf "$dir" "$dir.new"
-		cp -a "$release" "$dir.new"
-		echo "$release" >"$dir.new/.dokploy-release"
-		chown -R "$RUNNER_USER:$RUNNER_USER" "$dir.new"
-		mv "$dir.new" "$dir"
+		cp -a "$release" "$dir.new" || die "slot $slot: could not copy the runner release"
+		echo "$release" >"$dir.new/.dokploy-release" || die "slot $slot: could not write"
+		chown -R "$RUNNER_USER:$RUNNER_USER" "$dir.new" || die "slot $slot: could not chown"
+		mv "$dir.new" "$dir" || die "slot $slot: could not install the release"
 	fi
 	# Ephemeral: nothing of the previous job survives in the slot. Shared caches
 	# (tool cache, home, Docker images and build cache) are kept for speed.
 	rm -rf "$dir/_work" "$dir/_diag" "$dir/.runner" "$dir/.credentials" \
 		"$dir/.credentials_rsaparams" "$dir/.dokploy-runner-name" "$STATE/jobs/$slot"
-	install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$dir/_work"
+	install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$dir/_work" || die "slot $slot: could not create its workspace"
 	read_jit "$dir"
 	[ -s "$dir/.runner" ] && [ -s "$dir/.credentials" ] || die "incomplete JIT configuration"
 	systemctl reset-failed "$unit" >/dev/null 2>&1 || true
-	systemctl start --no-block "$unit"
+	systemctl start --no-block "$unit" || die "slot $slot did not start"
 	echo "armed slot=$slot"
 }
 

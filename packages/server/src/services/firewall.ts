@@ -160,19 +160,31 @@ export const detachFirewall = async (
 // ------------------------------------------------------------ Dokploy server
 
 const DOKPLOY_ADDRESSES_TTL_MS = 10 * 60_000;
+/** A failed lookup is tried again sooner, the last known addresses kept meanwhile. */
+const DOKPLOY_ADDRESSES_RETRY_MS = 60_000;
 const cache = globalThis as {
-	__dokployFirewallAddresses?: { at: number; addresses: string[] };
+	__dokployFirewallAddresses?: {
+		at: number;
+		addresses: string[];
+		failed?: boolean;
+	};
 };
 
 /**
  * Addresses of this Dokploy server, for the "Dokploy server" object: its
- * public IP and what its domain resolves to. Cached for a few minutes.
+ * public IP and what its domain resolves to. Cached for a few minutes. A
+ * lookup that fails keeps the last addresses known: a rule denying the
+ * Dokploy server must not lose them to a DNS hiccup.
  */
 export const dokployServerAddresses = async () => {
 	const known = cache.__dokployFirewallAddresses;
-	if (known && Date.now() - known.at < DOKPLOY_ADDRESSES_TTL_MS) {
+	const ttl = known?.failed
+		? DOKPLOY_ADDRESSES_RETRY_MS
+		: DOKPLOY_ADDRESSES_TTL_MS;
+	if (known && Date.now() - known.at < ttl) {
 		return known.addresses;
 	}
+	let failed = false;
 	const addresses = new Set<string>();
 	const settings = await getWebServerSettings().catch(() => null);
 	if (settings?.serverIp && isAddress(settings.serverIp)) {
@@ -183,12 +195,18 @@ export const dokployServerAddresses = async () => {
 		.catch(() => null);
 	if (host && isAddress(host)) addresses.add(host);
 	else if (host) {
-		for (const item of await lookup(host, { all: true }).catch(() => [])) {
-			addresses.add(item.address);
-		}
+		const found = await lookup(host, { all: true }).catch(() => null);
+		if (!found) failed = true;
+		for (const item of found ?? []) addresses.add(item.address);
 	}
-	const list = [...addresses].sort();
-	cache.__dokployFirewallAddresses = { at: Date.now(), addresses: list };
+	const list = failed
+		? [...new Set([...addresses, ...(known?.addresses ?? [])])].sort()
+		: [...addresses].sort();
+	cache.__dokployFirewallAddresses = {
+		at: Date.now(),
+		addresses: list,
+		failed,
+	};
 	return list;
 };
 

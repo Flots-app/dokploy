@@ -344,6 +344,19 @@ exit 0
 		).toContain("not a Dokploy firewall");
 	});
 
+	it("refuses rules that were cut or changed, and oversized input", () => {
+		const { text } = pfRuleset(sample());
+		const changed = text.replace("203.0.113.7", "203.0.113.8");
+		expect(changed).not.toBe(text);
+		const altered = run(["apply"], changed);
+		expect(altered.status).not.toBe(0);
+		expect(altered.stderr).toContain("do not match their hash");
+		const huge = `${text}${"pass out quick proto tcp from any to any port 443\n".repeat(25_000)}`;
+		const oversized = run(["apply"], huge);
+		expect(oversized.status).not.toBe(0);
+		expect(oversized.stderr).toContain("larger than 1048576 bytes");
+	});
+
 	it("loads the kept rules at boot and removes them on clear", () => {
 		const ruleset = pfRuleset(sample());
 		run(["apply"], ruleset.text);
@@ -587,6 +600,43 @@ describe("firewall enforcement by the runner controller", () => {
 		expect(events[0]?.message).toBe("Firewall removed");
 	});
 
+	it("keeps jobs away while a deny rule has no address to deny", async () => {
+		const { enforceFirewall } = await import(
+			"@dokploy/server/utils/github-runners/controller"
+		);
+		const noDokploy = {
+			...internetOnly,
+			firewallId: "no-dokploy",
+			name: "No Dokploy",
+			rules: [
+				rule({
+					id: "deny",
+					action: "deny",
+					peer: { type: "object", object: "dokploy" },
+				}),
+				rule(),
+			],
+		};
+		await attach([
+			{
+				githubRunnerPoolId: "pool",
+				githubRunnerNodeId: null,
+				firewall: noDokploy,
+			},
+		]);
+		const { calls, driver } = fakeDriver(() => "");
+		const blocked = await enforceFirewall(
+			node({ githubRunnerNodeId: "m8", name: "m8" }),
+			driver,
+			probe({ helper: "yes", loaded: null }),
+			[],
+		);
+		expect(blocked).toBe(
+			'Firewall "No Dokploy" not applied: a rule that denies traffic cannot be written: the addresses of the Dokploy server are not known',
+		);
+		expect(calls).toEqual([]);
+	});
+
 	it("follows the machine's own firewall over its pool's", async () => {
 		const { enforceFirewall } = await import(
 			"@dokploy/server/utils/github-runners/controller"
@@ -613,5 +663,47 @@ describe("firewall enforcement by the runner controller", () => {
 			),
 		).toBeNull();
 		expect(calls).toEqual([]);
+	});
+});
+
+describe("firewall review fixes", () => {
+	it("refuses addresses nftables would refuse", () => {
+		for (const value of ["10.0.0.0/08", "2001:db8::/032", "1.2.3.4/032"]) {
+			expect(isAddress(value), value).toBe(false);
+		}
+		expect(isAddress("2001:db8::/32")).toBe(true);
+	});
+
+	it("merges overlapping networks in nftables sets", () => {
+		const { text } = nftablesRuleset(
+			compileFirewall(
+				firewall([
+					rule({
+						action: "deny",
+						peer: {
+							type: "addresses",
+							addresses: ["192.168.1.0/24", "192.168.1.10"],
+						},
+					}),
+				]),
+				context,
+			),
+		);
+		expect(text).toContain(
+			"flags interval\n\t\tauto-merge\n\t\telements = { 192.168.1.0/24, 192.168.1.10 }",
+		);
+	});
+
+	it("counts the broadcast and multicast of the LAN as private networks", () => {
+		const compiled = compileFirewall(
+			firewall([
+				rule({ action: "deny", peer: { type: "object", object: "private" } }),
+			]),
+			context,
+		);
+		expect(compiled.outbound.rules[0]?.addresses.v4).toEqual(
+			expect.arrayContaining(["224.0.0.0/4", "255.255.255.255/32"]),
+		);
+		expect(compiled.outbound.rules[0]?.addresses.v6).toContain("ff00::/8");
 	});
 });

@@ -55,7 +55,7 @@ export const nftablesRuleset = (compiled: CompiledFirewall): Ruleset => {
 			const name = `${family}_${sets.size + 1}`;
 			set = {
 				name,
-				text: `\tset ${name} {\n\t\ttype ${family === "v4" ? "ipv4_addr" : "ipv6_addr"}\n\t\tflags interval\n\t\telements = { ${addresses.join(", ")} }\n\t}`,
+				text: `\tset ${name} {\n\t\ttype ${family === "v4" ? "ipv4_addr" : "ipv6_addr"}\n\t\tflags interval\n\t\tauto-merge\n\t\telements = { ${addresses.join(", ")} }\n\t}`,
 			};
 			sets.set(key, set);
 		}
