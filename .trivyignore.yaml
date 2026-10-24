@@ -11,76 +11,12 @@
 # purls match in the repository scan and in the image scan alike.
 
 vulnerabilities:
-  - id: CVE-2025-29927
-    purls:
-      - "pkg:npm/next@14.1.4"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 13.5.9, 14.2.25, 15.2.3, 12.3.5"
-  - id: CVE-2025-66630
-    purls:
-      - "pkg:golang/github.com/gofiber/fiber/v2@v2.52.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: github.com/gofiber/fiber/v2@v2.52.6 -> 2.52.11"
-  - id: CVE-2026-41242
-    purls:
-      - "pkg:npm/protobufjs@7.5.4"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: protobufjs@7.5.4 -> 8.0.1, 7.5.5"
-  - id: CVE-2026-47429
-    purls:
-      - "pkg:npm/vitest@4.0.18"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: vitest@4.0.18 -> 4.1.0, 3.2.6"
   - id: CVE-2026-59873
     purls:
-      - "pkg:npm/tar@6.2.1"
       - "pkg:npm/tar@7.4.3"
       - "pkg:npm/tar@7.5.2"
     expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: tar@6.2.1, 7.4.3 and 7.5.2 -> 7.5.19 (7.x are the copies bundled with the Node.js base image)"
-  - id: CVE-2026-75604
-    purls:
-      - "pkg:npm/next@14.1.4"
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 15.5.24, 16.3.3; next@16.2.6 -> 15.5.24, 16.3.3"
-  - id: CVE-2026-90711
-    purls:
-      - "pkg:npm/proxy-addr@2.0.7"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: proxy-addr@2.0.7 -> 2.0.8"
-  - id: CVE-2026-9277
-    purls:
-      - "pkg:npm/shell-quote@1.8.3"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: shell-quote@1.8.3 -> 1.8.4"
-  - id: GHSA-2464-fhr4-w9xw
-    purls:
-      - "pkg:npm/next@14.1.4"
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 15.5.28, 16.4.1; next@16.2.6 -> 15.5.28, 16.4.1"
-  - id: GHSA-2xp9-vwfh-vxw4
-    purls:
-      - "pkg:npm/next@14.1.4"
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 15.5.24, 16.3.3; next@16.2.6 -> 15.5.24, 16.3.3"
-  - id: GHSA-673q-mjm6-r5xr
-    purls:
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@16.2.6 -> 16.4.1"
-  - id: GHSA-cg2g-xh64-v4q7
-    purls:
-      - "pkg:npm/dompurify@3.4.10"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: dompurify@3.4.10 -> 3.4.17"
-  - id: GHSA-vcvr-r3jv-pc5j
-    purls:
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@16.2.6 -> 16.3.6"
+    statement: "Image baseline, upgrade required: tar@7.4.3 and 7.5.2 -> 7.5.19 (copies bundled with the Node.js base image)"
 
   # Image baseline: what the Dockerfile installs outside the lockfile. Each entry
   # goes away with a newer Docker, pack, Railpack, esbuild or base image.
