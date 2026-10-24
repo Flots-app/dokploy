@@ -37,7 +37,7 @@ import {
 	updateWindowEnd,
 } from "@dokploy/server/utils/github-runners/updates";
 import { ntfyHeaderValue } from "@dokploy/server/utils/notifications/github-runners";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	machineUpdatePolicy,
 	type RunnerMachine,
@@ -896,5 +896,204 @@ describe("review fixes, warnings", () => {
 			reason:
 				"the rollout of 2.332.0 is paused: it failed on a removed machine",
 		});
+	});
+});
+
+describe("review fixes, fourth review", () => {
+	const pool = {
+		githubRunnerPoolId: "pool",
+		name: "Flots CI",
+		authType: "app",
+		updatePolicy: { auto: true, window: null, osPatches: true },
+		routingVariable: null,
+		routing: null,
+	} as unknown as GithubRunnerPool;
+	const ubuntu = (overrides: Record<string, unknown> = {}) => ({
+		id: "ubuntu",
+		version: "24.04",
+		build: null,
+		kernel: "",
+		updates: 12,
+		security: 7,
+		reboot: false,
+		listsAt: iso(0),
+		...overrides,
+	});
+	const node = (overrides: Record<string, unknown> = {}) =>
+		({
+			githubRunnerNodeId: "lx1",
+			githubRunnerPoolId: "pool",
+			name: "lx1",
+			platform: "linux",
+			enabled: true,
+			phase: "ready",
+			drain: null,
+			updatePolicy: null,
+			updateState: null,
+			osReport: { at: iso(0), host: ubuntu(), guest: null },
+			observed: {
+				at: iso(0),
+				reachable: true,
+				admission: { ok: true },
+				slots: [],
+			},
+			...overrides,
+		}) as unknown as GithubRunnerNode;
+	const alerts = (
+		nodes: GithubRunnerNode[],
+		osReleases: (id: string) => [] | null,
+	) =>
+		runnerAlerts({
+			pool,
+			nodes,
+			now,
+			runnerReleases: [{ version: "2.330.0", publishedAt: iso(-MINUTE) }],
+			osReleases,
+			token: null,
+		});
+
+	it("tells the security updates a machine waits for without the support dates", () => {
+		const unknownDates = alerts([node()], () => null);
+		expect(unknownDates.conditions).toEqual([
+			expect.objectContaining({
+				subject: "lx1:os-host",
+				severity: "warning",
+				title: "OS updates needed on lx1",
+				atLeast: true,
+			}),
+		]);
+		expect(unknownDates.unknown).toEqual([]);
+		// Known dates: the same alert, which says all there is to say.
+		expect(alerts([node()], () => []).conditions[0]).not.toHaveProperty(
+			"atLeast",
+		);
+		// Nothing waits on the machine: only the dates could tell, so it holds.
+		const upToDate = alerts(
+			[
+				node({
+					osReport: {
+						at: iso(0),
+						host: ubuntu({ updates: 0, security: 0 }),
+						guest: null,
+					},
+				}),
+			],
+			() => null,
+		);
+		expect(upToDate).toEqual({ conditions: [], unknown: ["lx1:os-host"] });
+	});
+
+	it("leaves a worse alert as it is while only part of it can be told", async () => {
+		const { db } = await import("@dokploy/server/db");
+		const { syncRunnerAlerts } = await import(
+			"@dokploy/server/utils/github-runners/alerts"
+		);
+		const [condition] = alerts([node()], () => null).conditions;
+		if (!condition) throw new Error("no condition");
+		const unsupported = {
+			githubRunnerAlertId: "a1",
+			githubRunnerPoolId: "pool",
+			githubRunnerNodeId: "lx1",
+			subject: "lx1:os-host",
+			kind: "os-host",
+			severity: "critical",
+			title: "Unsupported OS on lx1",
+			message: "Ubuntu 24.04 is no longer supported by its vendor.",
+			openedAt: iso(-60 * MINUTE),
+			notifiedAt: iso(-60 * MINUTE),
+			resolvedAt: null,
+		};
+		const sync = async (item: typeof condition) => {
+			vi.mocked(db.query.githubRunnerAlerts.findMany).mockResolvedValueOnce([
+				unsupported,
+			] as never);
+			vi.mocked(db.update).mockClear();
+			const notices = await syncRunnerAlerts({
+				pool,
+				nodes: [node()],
+				conditions: [item],
+				now,
+			});
+			return { notices, updates: vi.mocked(db.update).mock.calls.length };
+		};
+		expect(await sync(condition)).toEqual({ notices: [], updates: 0 });
+		// Without the floor, the critical alert would be rewritten as a warning.
+		const { atLeast: _, ...plain } = condition;
+		expect(await sync(plain)).toEqual({ notices: [], updates: 1 });
+	});
+
+	it("goes on without support dates that could not be read for a day", async () => {
+		const { osReleasesIfKnown } = await import(
+			"@dokploy/server/utils/github-runners/controller"
+		);
+		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+		const HOUR = 60 * MINUTE;
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const fetch = vi.fn(async (): Promise<Response> => {
+			throw new Error("endoflife.date is not reachable");
+		});
+		vi.stubGlobal("fetch", fetch);
+		try {
+			vi.setSystemTime(now);
+			expect(osReleasesIfKnown("ubuntu")).toBeNull();
+			await flush();
+			vi.setSystemTime(now + 23 * HOUR);
+			expect(osReleasesIfKnown("ubuntu")).toBeNull();
+			await flush();
+			vi.setSystemTime(now + 24 * HOUR);
+			expect(osReleasesIfKnown("ubuntu")).toEqual([]);
+			await flush();
+			expect(fetch).toHaveBeenCalledTimes(3);
+			// Readable again: the dates are back at the next try.
+			fetch.mockImplementation(async () =>
+				Response.json({
+					result: {
+						releases: [{ name: "24.04", isEol: false, eolFrom: "2029-05-31" }],
+					},
+				}),
+			);
+			vi.setSystemTime(now + 25 * HOUR);
+			osReleasesIfKnown("ubuntu");
+			await flush();
+			expect(osReleasesIfKnown("ubuntu")).toEqual([
+				{ name: "24.04", isEol: false, eolFrom: "2029-05-31", latest: null },
+			]);
+		} finally {
+			vi.unstubAllGlobals();
+			vi.useRealTimers();
+		}
+	});
+
+	it("shows a failed OS update on the machine only while its alert lasts", async () => {
+		const { osPatchFailureLasts } = await import(
+			"@dokploy/server/utils/github-runners/alerts"
+		);
+		const failed = { updateState: { patchError: "apt-get failed" } };
+		expect(osPatchFailureLasts(pool, node(failed))).toBe(true);
+		expect(osPatchFailureLasts(pool, node())).toBe(false);
+		// OS updates turned off, or installed by hand.
+		expect(
+			osPatchFailureLasts(
+				{ ...pool, updatePolicy: { auto: true, window: null } },
+				node(failed),
+			),
+		).toBe(false);
+		expect(
+			osPatchFailureLasts(
+				pool,
+				node({
+					...failed,
+					osReport: {
+						at: iso(0),
+						host: ubuntu({ updates: 0, security: 0 }),
+						guest: null,
+					},
+				}),
+			),
+		).toBe(false);
+		// Not reported (a Mac whose VM is stopped): what was known holds.
+		expect(
+			osPatchFailureLasts(pool, node({ ...failed, osReport: null })),
+		).toBeNull();
 	});
 });

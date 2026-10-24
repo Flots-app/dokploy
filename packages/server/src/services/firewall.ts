@@ -191,8 +191,8 @@ const cache = globalThis as {
 /**
  * Addresses of this Dokploy server, for the "Dokploy server" object: its
  * public IP and what its domain resolves to. Cached for a few minutes. A
- * lookup that fails keeps the last addresses known: a rule denying the
- * Dokploy server must not lose them to a DNS hiccup.
+ * lookup that fails (settings, domain, DNS) keeps the last addresses known: a
+ * rule denying the Dokploy server must not lose them to a hiccup.
  */
 export const dokployServerAddresses = async () => {
 	const known = cache.__dokployFirewallAddresses;
@@ -203,18 +203,21 @@ export const dokployServerAddresses = async () => {
 		return known.addresses;
 	}
 	let failed = false;
+	const unknown = () => {
+		failed = true;
+		return null;
+	};
 	const addresses = new Set<string>();
-	const settings = await getWebServerSettings().catch(() => null);
+	const settings = await getWebServerSettings().catch(unknown);
 	if (settings?.serverIp && isAddress(settings.serverIp)) {
 		addresses.add(settings.serverIp);
 	}
 	const host = await getDokployUrl()
 		.then((url) => new URL(url).hostname)
-		.catch(() => null);
+		.catch(unknown);
 	if (host && isAddress(host)) addresses.add(host);
 	else if (host) {
-		const found = await lookup(host, { all: true }).catch(() => null);
-		if (!found) failed = true;
+		const found = await lookup(host, { all: true }).catch(unknown);
 		for (const item of found ?? []) addresses.add(item.address);
 	}
 	const list = failed

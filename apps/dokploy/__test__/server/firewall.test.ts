@@ -34,6 +34,12 @@ import {
 import { machineSetupScript } from "@dokploy/server/utils/github-runners/setup";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
+// The domain of the Dokploy server resolves without a network.
+vi.mock("node:dns/promises", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:dns/promises")>()),
+	lookup: vi.fn(async () => [{ address: "104.16.1.1", family: 4 }]),
+}));
+
 const rule = (overrides: Partial<FirewallRule> = {}): FirewallRule => ({
 	id: "r1",
 	direction: "outbound",
@@ -753,5 +759,50 @@ describe("firewall review infos", () => {
 			undefined,
 		);
 		await expect(firewallAppliesToRunners("fw", "org")).resolves.toBe(false);
+	});
+});
+
+describe("firewall review, fourth pass", () => {
+	it("keeps the Dokploy server's addresses when its settings cannot be read", async () => {
+		const { db } = await import("@dokploy/server/db");
+		const { dokployServerAddresses } = await import(
+			"@dokploy/server/services/firewall"
+		);
+		// Behind a CDN: the domain resolves to the CDN, the server IP is the origin.
+		const settings = {
+			host: "dokploy.example.com",
+			https: true,
+			serverIp: "203.0.113.10",
+		};
+		const cache = globalThis as {
+			__dokployFirewallAddresses?: { at: number; failed?: boolean };
+		};
+		const cached = () => cache.__dokployFirewallAddresses;
+		const findFirst = vi.mocked(db.query.webServerSettings.findFirst);
+		const both = ["104.16.1.1", "203.0.113.10"];
+		cache.__dokployFirewallAddresses = undefined;
+		findFirst
+			.mockResolvedValueOnce(settings as never)
+			.mockResolvedValueOnce(settings as never);
+		await expect(dokployServerAddresses()).resolves.toEqual(both);
+		const restarting = new Error("Connection terminated unexpectedly");
+		// The read for the server IP fails, then the one for the domain.
+		for (const failing of ["serverIp", "domain"]) {
+			const entry = cached();
+			if (!entry) throw new Error("not cached");
+			entry.at -= 11 * 60_000;
+			if (failing === "serverIp") {
+				findFirst
+					.mockRejectedValueOnce(restarting)
+					.mockResolvedValueOnce(settings as never);
+			} else {
+				findFirst
+					.mockResolvedValueOnce(settings as never)
+					.mockRejectedValueOnce(restarting);
+			}
+			await expect(dokployServerAddresses(), failing).resolves.toEqual(both);
+			// Tried again within a minute, not ten.
+			expect(cached()?.failed, failing).toBe(true);
+		}
 	});
 });

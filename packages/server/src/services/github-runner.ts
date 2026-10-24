@@ -19,6 +19,7 @@ import {
 	githubRunnerReroutes,
 	sshKeys,
 } from "@dokploy/server/db/schema";
+import { osPatchFailureLasts } from "@dokploy/server/utils/github-runners/alerts";
 import {
 	effectiveBudget,
 	resolveMaxRunners,
@@ -882,7 +883,11 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 						/** OS updates installed in the window (Linux, the VM of a Mac). */
 						osPatches: policy.osPatches === true,
 						patchedAt: node.updateState?.patchedAt ?? null,
-						patchError: node.updateState?.patchError ?? null,
+						/** The last failure of the OS updates, while it matters (as its alert). */
+						patchError:
+							osPatchFailureLasts(pool, node) === false
+								? null
+								: (node.updateState?.patchError ?? null),
 					},
 					/** Whether the actions/runner release it runs is still accepted. */
 					runnerUpdate: machineRunnerStatus(pool, node, releases, now),

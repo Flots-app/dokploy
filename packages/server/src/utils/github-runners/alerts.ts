@@ -46,6 +46,11 @@ export interface RunnerAlertCondition {
 	message: string;
 	/** Notified once the condition has lasted this long. */
 	delayMs: number;
+	/**
+	 * What can be told now is a floor: an open alert already worse stays as
+	 * it is (an OS whose support dates are not known may be unsupported too).
+	 */
+	atLeast?: boolean;
 }
 
 const MINUTE = 60_000;
@@ -96,6 +101,30 @@ export const parseTokenExpiration = (value: string | null) => {
 	return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
 };
 
+/**
+ * Whether the last failure of a machine's OS updates still matters: it lasts
+ * while Dokploy would still install them. Turned off, or installed by hand,
+ * it no longer does. null while the OS has not been reported (a stopped VM).
+ */
+export const osPatchFailureLasts = (
+	pool: Pick<GithubRunnerPool, "updatePolicy">,
+	node: Pick<
+		GithubRunnerNode,
+		"platform" | "osReport" | "updatePolicy" | "updateState"
+	>,
+): boolean | null => {
+	if (!node.updateState?.patchError) return false;
+	const patchable =
+		node.platform === "macos"
+			? (node.osReport?.guest ?? null)
+			: (node.osReport?.host ?? null);
+	if (!patchable) return null;
+	return (
+		effectiveUpdatePolicy(pool, node).osPatches === true &&
+		((patchable.updates ?? 0) > 0 || patchable.reboot === true)
+	);
+};
+
 const machineConditions = (input: {
 	pool: GithubRunnerPool;
 	node: GithubRunnerNode;
@@ -115,6 +144,7 @@ const machineConditions = (input: {
 		title: string,
 		message: string,
 		delayMs = 0,
+		atLeast = false,
 	) =>
 		conditions.push({
 			subject: `${node.githubRunnerNodeId}:${kind}`,
@@ -125,6 +155,7 @@ const machineConditions = (input: {
 			title,
 			message,
 			delayMs,
+			...(atLeast ? { atLeast } : {}),
 		});
 	const name = node.name;
 	if (node.phase === "error") {
@@ -175,25 +206,15 @@ const machineConditions = (input: {
 			`${updateError}. Dokploy tries again every 30 minutes; "Update now" in the machine menu tries at once.`,
 		);
 	}
-	// Lasts while Dokploy would still install them: turned off, or installed
-	// by hand, the failure no longer matters.
-	const patchable =
-		node.platform === "macos"
-			? (node.osReport?.guest ?? null)
-			: (node.osReport?.host ?? null);
-	if (node.enabled && node.updateState?.patchError) {
-		if (!patchable) unknown("os-patch");
-		else if (
-			effectiveUpdatePolicy(pool, node).osPatches &&
-			((patchable.updates ?? 0) > 0 || patchable.reboot === true)
-		) {
-			add(
-				"os-patch",
-				"warning",
-				`OS updates failed on ${name}`,
-				`${node.updateState.patchError}. Dokploy tries again in the next update window.`,
-			);
-		}
+	const patchFailure = node.enabled ? osPatchFailureLasts(pool, node) : false;
+	if (patchFailure === null) unknown("os-patch");
+	else if (patchFailure) {
+		add(
+			"os-patch",
+			"warning",
+			`OS updates failed on ${name}`,
+			`${node.updateState?.patchError}. Dokploy tries again in the next update window.`,
+		);
 	}
 	// A disabled machine is updated once enabled: nothing to tell until then.
 	const runner = machineRunnerStatus(pool, node, input.runnerReleases, now);
@@ -224,14 +245,16 @@ const machineConditions = (input: {
 		],
 	] as const;
 	for (const [kind, info, where] of systems) {
-		// No report (VM stopped, report failed) or support dates not read yet:
-		// what was known holds.
-		const releases = info ? input.osReleases(info.id) : null;
-		if (!info || !releases) {
+		// No report (VM stopped, report failed): what was known holds.
+		if (!info) {
 			if (kind === "os-host" || node.platform === "macos") unknown(kind);
 			continue;
 		}
-		const status = osStatus({ info, releases, now });
+		// Support dates not read yet: the updates the machine reports still
+		// tell, but not whether its release is supported, so an alert already
+		// worse (unsupported) holds, and so does one opened from the dates alone.
+		const releases = input.osReleases(info.id);
+		const status = osStatus({ info, releases: releases ?? [], now });
 		if (status.state === "unsupported") {
 			add(
 				kind,
@@ -248,8 +271,9 @@ const machineConditions = (input: {
 				`OS updates needed on ${name}${where}`,
 				status.message,
 				3 * DAY,
+				!releases,
 			);
-		}
+		} else if (!releases) unknown(kind);
 	}
 	return conditions;
 };
@@ -472,6 +496,14 @@ export const syncRunnerAlerts = async (input: {
 				.onConflictDoNothing()
 				.returning({ id: githubRunnerAlerts.githubRunnerAlertId });
 			return inserted.length && due ? notice("opened", condition) : null;
+		}
+		// Only part of the subject can be told now: a worse alert stays as it is.
+		if (
+			condition.atLeast &&
+			row.severity === "critical" &&
+			condition.severity === "warning"
+		) {
+			return null;
 		}
 		const where = eq(
 			githubRunnerAlerts.githubRunnerAlertId,
