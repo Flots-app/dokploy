@@ -272,7 +272,7 @@ describe("runner alerts", () => {
 		);
 		expect(alerts).toEqual([
 			expect.objectContaining({
-				subject: "m6:os-guest",
+				subject: "m6:os-guest-updates",
 				severity: "warning",
 				title: "OS updates needed on m6 (VM)",
 				delayMs: 3 * DAY,

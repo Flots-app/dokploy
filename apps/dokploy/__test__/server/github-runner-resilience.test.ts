@@ -14,7 +14,12 @@ import {
 	planSpares,
 	SPARE_ROTATE_MS,
 } from "@dokploy/server/utils/github-runners/autonomy";
-import type { GithubRunner } from "@dokploy/server/utils/github-runners/github-api";
+import {
+	createGithubRunnerClient,
+	type GithubRunner,
+	isPermanentGithubError,
+	rateLimitedFetch,
+} from "@dokploy/server/utils/github-runners/github-api";
 import {
 	osPatchScript,
 	parsePatchResult,
@@ -795,6 +800,7 @@ describe("review fixes, warnings", () => {
 		// No OS report (VM stopped, report failed): what was known holds.
 		expect(subjects(alerts([node({ osReport: null })])).unknown).toEqual([
 			"m6:os-host",
+			"m6:os-host-updates",
 		]);
 	});
 
@@ -953,43 +959,49 @@ describe("review fixes, fourth review", () => {
 		});
 
 	it("tells the security updates a machine waits for without the support dates", () => {
-		const unknownDates = alerts([node()], () => null);
-		expect(unknownDates.conditions).toEqual([
-			expect.objectContaining({
-				subject: "lx1:os-host",
-				severity: "warning",
-				title: "OS updates needed on lx1",
-				atLeast: true,
-			}),
-		]);
-		expect(unknownDates.unknown).toEqual([]);
-		// Known dates: the same alert, which says all there is to say.
-		expect(alerts([node()], () => []).conditions[0]).not.toHaveProperty(
-			"atLeast",
-		);
-		// Nothing waits on the machine: only the dates could tell, so it holds.
-		const upToDate = alerts(
-			[
-				node({
-					osReport: {
-						at: iso(0),
-						host: ubuntu({ updates: 0, security: 0 }),
-						guest: null,
-					},
-				}),
-			],
-			() => null,
-		);
-		expect(upToDate).toEqual({ conditions: [], unknown: ["lx1:os-host"] });
+		const updatesNeeded = expect.objectContaining({
+			subject: "lx1:os-host-updates",
+			severity: "warning",
+			title: "OS updates needed on lx1",
+			delayMs: 3 * 24 * 60 * MINUTE,
+		});
+		// Support dates not read: the updates still tell, the support holds.
+		expect(alerts([node()], () => null)).toEqual({
+			conditions: [updatesNeeded],
+			unknown: ["lx1:os-host"],
+		});
+		expect(alerts([node()], () => [])).toEqual({
+			conditions: [updatesNeeded],
+			unknown: [],
+		});
+		const upToDate = node({
+			osReport: {
+				at: iso(0),
+				host: ubuntu({ updates: 0, security: 0 }),
+				guest: null,
+			},
+		});
+		expect(alerts([upToDate], () => null)).toEqual({
+			conditions: [],
+			unknown: ["lx1:os-host"],
+		});
 	});
 
-	it("leaves a worse alert as it is while only part of it can be told", async () => {
+	it("keeps an unsupported OS alert open while the support dates are not known", async () => {
 		const { db } = await import("@dokploy/server/db");
 		const { syncRunnerAlerts } = await import(
 			"@dokploy/server/utils/github-runners/alerts"
 		);
-		const [condition] = alerts([node()], () => null).conditions;
-		if (!condition) throw new Error("no condition");
+		const ended = [
+			{ name: "20.04", isEol: true, eolFrom: "2025-05-31", latest: null },
+		];
+		const old = node({
+			osReport: {
+				at: iso(0),
+				host: ubuntu({ version: "20.04", updates: 0, security: 0 }),
+				guest: null,
+			},
+		});
 		const unsupported = {
 			githubRunnerAlertId: "a1",
 			githubRunnerPoolId: "pool",
@@ -998,70 +1010,80 @@ describe("review fixes, fourth review", () => {
 			kind: "os-host",
 			severity: "critical",
 			title: "Unsupported OS on lx1",
-			message: "Ubuntu 24.04 is no longer supported by its vendor.",
+			message:
+				"Ubuntu 20.04 is no longer supported by its vendor since 2025-05-31: it gets no security fixes. Upgrade to a supported release.",
 			openedAt: iso(-60 * MINUTE),
 			notifiedAt: iso(-60 * MINUTE),
 			resolvedAt: null,
 		};
-		const sync = async (item: typeof condition) => {
+		const sync = async (osReleases: (id: string) => typeof ended | null) => {
+			const result = runnerAlerts({
+				pool,
+				nodes: [old],
+				now,
+				runnerReleases: [{ version: "2.330.0", publishedAt: iso(-MINUTE) }],
+				osReleases,
+				token: null,
+			});
 			vi.mocked(db.query.githubRunnerAlerts.findMany).mockResolvedValueOnce([
 				unsupported,
 			] as never);
 			vi.mocked(db.update).mockClear();
 			const notices = await syncRunnerAlerts({
 				pool,
-				nodes: [node()],
-				conditions: [item],
+				nodes: [old],
+				conditions: result.conditions,
+				unknown: result.unknown,
 				now,
 			});
 			return { notices, updates: vi.mocked(db.update).mock.calls.length };
 		};
-		expect(await sync(condition)).toEqual({ notices: [], updates: 0 });
-		// Without the floor, the critical alert would be rewritten as a warning.
-		const { atLeast: _, ...plain } = condition;
-		expect(await sync(plain)).toEqual({ notices: [], updates: 1 });
+		// However long endoflife.date stays out of reach: nothing is resolved.
+		expect(await sync(() => null)).toEqual({ notices: [], updates: 0 });
+		expect(await sync(() => ended)).toEqual({ notices: [], updates: 0 });
+		expect(
+			runnerAlerts({
+				pool,
+				nodes: [old],
+				now,
+				runnerReleases: [{ version: "2.330.0", publishedAt: iso(-MINUTE) }],
+				osReleases: () => ended,
+				token: null,
+			}).conditions,
+		).toEqual([
+			expect.objectContaining({
+				subject: "lx1:os-host",
+				severity: "critical",
+				title: "Unsupported OS on lx1",
+			}),
+		]);
 	});
 
-	it("goes on without support dates that could not be read for a day", async () => {
-		const { osReleasesIfKnown } = await import(
-			"@dokploy/server/utils/github-runners/controller"
+	it("tells an upgrade due apart from the updates to install", async () => {
+		const { osStatus, osSupportNotice, osUpdatesNotice } = await import(
+			"@dokploy/server/utils/github-runners/os"
 		);
-		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-		const HOUR = 60 * MINUTE;
-		vi.useFakeTimers({ toFake: ["Date"] });
-		const fetch = vi.fn(async (): Promise<Response> => {
-			throw new Error("endoflife.date is not reachable");
+		const ending = [
+			{
+				name: "24.04",
+				isEol: false,
+				eolFrom: iso(30 * 24 * 60 * MINUTE),
+				latest: null,
+			},
+		];
+		const info = ubuntu();
+		const day = iso(30 * 24 * 60 * MINUTE).slice(0, 10);
+		expect(osSupportNotice({ info, releases: ending, now })).toEqual({
+			severity: "warning",
+			message: `Ubuntu 24.04: Support ends on ${day}. Plan the upgrade to a supported release.`,
 		});
-		vi.stubGlobal("fetch", fetch);
-		try {
-			vi.setSystemTime(now);
-			expect(osReleasesIfKnown("ubuntu")).toBeNull();
-			await flush();
-			vi.setSystemTime(now + 23 * HOUR);
-			expect(osReleasesIfKnown("ubuntu")).toBeNull();
-			await flush();
-			vi.setSystemTime(now + 24 * HOUR);
-			expect(osReleasesIfKnown("ubuntu")).toEqual([]);
-			await flush();
-			expect(fetch).toHaveBeenCalledTimes(3);
-			// Readable again: the dates are back at the next try.
-			fetch.mockImplementation(async () =>
-				Response.json({
-					result: {
-						releases: [{ name: "24.04", isEol: false, eolFrom: "2029-05-31" }],
-					},
-				}),
-			);
-			vi.setSystemTime(now + 25 * HOUR);
-			osReleasesIfKnown("ubuntu");
-			await flush();
-			expect(osReleasesIfKnown("ubuntu")).toEqual([
-				{ name: "24.04", isEol: false, eolFrom: "2029-05-31", latest: null },
-			]);
-		} finally {
-			vi.unstubAllGlobals();
-			vi.useRealTimers();
-		}
+		expect(osUpdatesNotice({ info, now })?.message).toBe(
+			"Ubuntu 24.04: 7 security updates waiting. Install them with sudo apt upgrade, then reboot if asked, while no job runs.",
+		);
+		// The machine card still reads both at once.
+		expect(osStatus({ info, releases: ending, now }).message).toBe(
+			`Ubuntu 24.04: Support ends on ${day}, 7 security updates waiting. Install them with sudo apt upgrade, then reboot if asked, while no job runs.`,
+		);
 	});
 
 	it("shows a failed OS update on the machine only while its alert lasts", async () => {
@@ -1095,5 +1117,143 @@ describe("review fixes, fourth review", () => {
 		expect(
 			osPatchFailureLasts(pool, node({ ...failed, osReport: null })),
 		).toBeNull();
+	});
+});
+
+describe("review fixes, fifth review", () => {
+	const HOUR = 60 * MINUTE;
+	const rateLimited = (headers: Record<string, string> = {}, status = 403) =>
+		new Response(
+			JSON.stringify({
+				message: "API rate limit exceeded for installation ID 1.",
+			}),
+			{ status, headers: { "content-type": "application/json", ...headers } },
+		);
+	const client = (fetch: typeof globalThis.fetch) =>
+		createGithubRunnerClient(
+			{
+				scope: "repository",
+				owner: "Flots-app",
+				repository: "flots",
+				runnerGroup: "Default",
+				apiUrl: "https://api.github.com",
+			},
+			{ type: "token", token: "test-token" },
+			{ fetch },
+		);
+	const quiet = () => vi.spyOn(console, "warn").mockImplementation(() => {});
+
+	it("sends nothing more until GitHub accepts requests again", async () => {
+		const warn = quiet();
+		const reset = Math.floor(Date.now() / 1000) + 3600;
+		const fetch = vi.fn(async () =>
+			rateLimited({
+				"x-ratelimit-remaining": "0",
+				"x-ratelimit-reset": String(reset),
+			}),
+		);
+		const github = client(fetch as unknown as typeof globalThis.fetch);
+		const until = new Date(reset * 1000).toISOString().slice(11, 16);
+		for (const _tick of [1, 2, 3]) {
+			const error = await github.listRunners().catch((cause) => cause);
+			// Not a permission to fix, and worth trying again later.
+			expect(error.message).toBe(
+				`GitHub rate limit reached (429): API rate limit exceeded for installation ID 1. Dokploy sends nothing more until ${until} UTC.`,
+			);
+			expect(isPermanentGithubError(error)).toBe(false);
+		}
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(warn).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+
+	it("waits as long as GitHub says, or longer and longer when it does not", async () => {
+		const warn = quiet();
+		let clock = now;
+		const answers: Response[] = [];
+		const fetch = vi.fn(async () => answers.shift() ?? Response.json([]));
+		const limited = rateLimitedFetch(
+			fetch as unknown as typeof globalThis.fetch,
+			"Flots-app",
+			() => clock,
+		);
+		const call = () => limited("https://api.github.com/x");
+		// retry-after (a secondary limit): that many seconds.
+		answers.push(rateLimited({ "retry-after": "30" }, 429));
+		expect((await call()).status).toBe(429);
+		clock += 29_000;
+		expect((await call()).status).toBe(429);
+		clock += 1_000;
+		expect((await call()).status).toBe(200);
+		// Nothing said, or a reset already past: one minute, then two.
+		answers.push(rateLimited());
+		await call();
+		clock += 59_000;
+		expect((await call()).headers.get("retry-after")).toBe("1");
+		clock += 1_000;
+		answers.push(
+			rateLimited({
+				"x-ratelimit-remaining": "0",
+				"x-ratelimit-reset": String(Math.floor((clock - HOUR) / 1000)),
+			}),
+		);
+		await call();
+		clock += 119_000;
+		expect((await call()).status).toBe(429);
+		clock += 1_000;
+		expect((await call()).status).toBe(200);
+		expect(fetch).toHaveBeenCalledTimes(5);
+		warn.mockRestore();
+	});
+
+	it("does not take an empty answer of endoflife.date for support dates", async () => {
+		const { knownOsReleases } = await import(
+			"@dokploy/server/utils/github-runners/controller"
+		);
+		const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const fetch = vi.fn(async () =>
+			Response.json({ result: { releases: [] } }),
+		);
+		vi.stubGlobal("fetch", fetch);
+		try {
+			vi.setSystemTime(now);
+			knownOsReleases("fedora");
+			await flush();
+			// Not kept for a day: read again at the next retry, an hour later.
+			vi.setSystemTime(now + 2 * HOUR);
+			knownOsReleases("fedora");
+			await flush();
+			expect(fetch).toHaveBeenCalledTimes(2);
+			expect(error).toHaveBeenCalledWith(
+				"GitHub runners: unable to read the fedora support dates",
+				"no release in the answer",
+			);
+		} finally {
+			vi.unstubAllGlobals();
+			vi.useRealTimers();
+			error.mockRestore();
+		}
+	});
+
+	it("leaves the other refusals to their own message", async () => {
+		const forbidden = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({ message: "Resource not accessible by integration" }),
+					{
+						status: 403,
+						headers: { "x-ratelimit-remaining": "4999" },
+					},
+				),
+		);
+		const github = client(forbidden as unknown as typeof globalThis.fetch);
+		for (const _try of [1, 2]) {
+			const error = await github.listRunners().catch((cause) => cause);
+			expect(error.message).toContain("The credentials need");
+		}
+		// No pause: a permission fixed is used at once.
+		expect(forbidden).toHaveBeenCalledTimes(2);
 	});
 });

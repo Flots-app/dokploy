@@ -187,15 +187,32 @@ const apiError = (error: unknown, path: string) => {
 	);
 };
 
-const describeFailure = (status: number, body: string, path: string) => {
-	let message = body.slice(0, 300);
+/** GitHub's own message in an error body, or the start of the body. */
+const failureMessage = (body: string) => {
 	try {
-		message = (JSON.parse(body) as { message?: string }).message ?? message;
+		return (
+			(JSON.parse(body) as { message?: string }).message ?? body.slice(0, 300)
+		);
 	} catch {
-		// Not JSON: keep the raw body.
+		return body.slice(0, 300);
 	}
+};
+
+/**
+ * A rate limit, primary or secondary: a 429, or a 403 whose message says so
+ * (the remaining quota header is 0 for the primary one).
+ */
+const isRateLimited = (status: number, message: string) =>
+	status === 429 || (status === 403 && /rate limit/i.test(message));
+
+const describeFailure = (status: number, body: string, path: string) => {
+	const message = failureMessage(body);
 	if (status === 401) {
 		return "GitHub rejected the credentials (401). Check the token or the GitHub App key.";
+	}
+	// Not a permission to fix: GitHub accepts requests again later.
+	if (isRateLimited(status, message)) {
+		return `GitHub rate limit reached (${status}): ${message}`;
 	}
 	if (status === 403 || status === 404) {
 		return `GitHub refused ${path} (${status}: ${message}). The credentials need the "Self-hosted runners: read and write" organization permission, or "Administration: read and write" on the repository.`;
@@ -209,9 +226,80 @@ const describeVariableFailure = (
 	body: string,
 	target: Pick<GithubRunnerTarget, "scope">,
 ) =>
-	status === 403 || status === 404
+	(status === 403 || status === 404) &&
+	!isRateLimited(status, failureMessage(body))
 		? `GitHub refused to write the routing variable (${status}). The credentials need "Variables: read and write" on the ${target.scope === "organization" ? "organization" : "repository"}.`
 		: describeFailure(status, body, "actions/variables");
+
+/** Wait after a rate limit when GitHub does not say how long (at least a minute). */
+const RATE_LIMIT_WAIT_MS = 60_000;
+/** The wait doubles while the limit lasts, up to this. */
+const RATE_LIMIT_MAX_WAIT_MS = 30 * 60_000;
+
+/**
+ * A fetch that honours GitHub's rate limits for one set of credentials: once
+ * GitHub answers that the limit is reached, nothing more is sent until it
+ * accepts requests again (retry-after, else x-ratelimit-reset when the quota
+ * is spent, else a minute that doubles while it lasts). Continuing to send
+ * "may result in the banning of your integration"
+ * (https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
+ * Meanwhile it answers 429 itself, so the custom requests and Octokit report
+ * the same error.
+ */
+export const rateLimitedFetch = (
+	fetcher: Fetch,
+	label: string,
+	now: () => number = Date.now,
+): Fetch => {
+	let pausedUntil = 0;
+	let strikes = 0;
+	let reason = "";
+	const refusal = () => {
+		const seconds = Math.max(1, Math.ceil((pausedUntil - now()) / 1000));
+		const until = new Date(pausedUntil).toISOString().slice(11, 16);
+		return new Response(
+			JSON.stringify({
+				message: `${reason ? `${reason} ` : ""}Dokploy sends nothing more until ${until} UTC.`,
+			}),
+			{
+				status: 429,
+				headers: {
+					"content-type": "application/json",
+					"retry-after": String(seconds),
+				},
+			},
+		);
+	};
+	return (async (input, init) => {
+		if (now() < pausedUntil) return refusal();
+		const response = await fetcher(input, init);
+		if (response.status !== 403 && response.status !== 429) {
+			strikes = 0;
+			return response;
+		}
+		const message = failureMessage(await response.clone().text());
+		const spent = response.headers.get("x-ratelimit-remaining") === "0";
+		if (!spent && !isRateLimited(response.status, message)) return response;
+		strikes++;
+		const retryAfter = Number(response.headers.get("retry-after"));
+		const reset = Number(response.headers.get("x-ratelimit-reset")) * 1000;
+		const told = retryAfter > 0 ? now() + retryAfter * 1000 : spent ? reset : 0;
+		// No wait given, or a reset already past (clock skew): back off.
+		pausedUntil =
+			told > now()
+				? told
+				: now() +
+					Math.min(
+						RATE_LIMIT_WAIT_MS * 2 ** (strikes - 1),
+						RATE_LIMIT_MAX_WAIT_MS,
+					);
+		reason = message;
+		console.warn(
+			`GitHub runners: GitHub rate limit reached for ${label} (${message}); no request until ${new Date(pausedUntil).toISOString()}`,
+		);
+		return refusal();
+	}) as Fetch;
+};
 
 const createAuthorization = (
 	auth: GithubRunnerAuth,
@@ -360,7 +448,11 @@ export const createGithubRunnerClient = (
 	auth: GithubRunnerAuth,
 	options: { fetch?: Fetch; timeoutMs?: number } = {},
 ): GithubRunnerClient => {
-	const fetcher = options.fetch ?? fetch;
+	// Every call of these credentials goes through it: Octokit, the app token too.
+	const fetcher = rateLimitedFetch(
+		options.fetch ?? fetch,
+		target.repository ? `${target.owner}/${target.repository}` : target.owner,
+	);
 	const authorization = createAuthorization(auth, target.apiUrl, fetcher);
 	const octokit = githubOctokit(target.apiUrl, {
 		fetch: fetcher,

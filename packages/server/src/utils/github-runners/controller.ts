@@ -272,8 +272,6 @@ interface ControllerState {
 	/** Support dates of each OS product (endoflife.date). */
 	osReleases: Map<string, { at: number; releases: OsRelease[] }>;
 	osReleasesTriedAt: Map<string, number>;
-	/** Since when the support dates of a product could not be read, if never read. */
-	osReleasesFailingSince: Map<string, number>;
 	/** What GitHub said of each pool's personal access token (by its hash). */
 	tokenChecks: Map<
 		string,
@@ -337,7 +335,6 @@ shared.__dokployGithubRunners ??= {
 	osReportAt: new Map(),
 	osReleases: new Map(),
 	osReleasesTriedAt: new Map(),
-	osReleasesFailingSince: new Map(),
 	tokenChecks: new Map(),
 	lastAlertsAt: 0,
 	firewalls: null,
@@ -361,7 +358,6 @@ state.runnerReleasesTriedAt ??= 0;
 state.osReportAt ??= new Map();
 state.osReleases ??= new Map();
 state.osReleasesTriedAt ??= new Map();
-state.osReleasesFailingSince ??= new Map();
 state.tokenChecks ??= new Map();
 state.lastAlertsAt ??= 0;
 state.firewalls ??= null;
@@ -2646,41 +2642,30 @@ const refreshOsReleases = (product: string) => {
 	state.osReleasesTriedAt.set(product, Date.now());
 	void fetchOsReleases(product)
 		.then((releases) => {
+			// A listed product without releases is an answer not understood (a
+			// changed format): taken as such, every support alert would resolve.
+			if (!releases.length) throw new Error("no release in the answer");
 			state.osReleases.set(product, { at: Date.now(), releases });
-			state.osReleasesFailingSince.delete(product);
 		})
-		.catch((error) => {
-			if (!state.osReleases.has(product)) {
-				state.osReleasesFailingSince.set(
-					product,
-					state.osReleasesFailingSince.get(product) ?? Date.now(),
-				);
-			}
+		.catch((error) =>
 			console.error(
 				`GitHub runners: unable to read the ${product} support dates`,
 				error instanceof Error ? error.message : error,
-			);
-		});
+			),
+		);
 };
 
 /**
  * Release lines of an OS product, or null while they have not been read: an
- * alert cannot tell then whether the OS is still supported. An OS that
- * endoflife.date does not list has none to read, and neither has one whose
- * dates could not be read for a day (no access to endoflife.date): its
- * alerts go on without them rather than hold forever.
+ * alert cannot tell then whether the release is still supported (the
+ * updates the machine reports do not need them). An OS that endoflife.date
+ * does not list has none to read.
  */
-export const osReleasesIfKnown = (id: string) => {
+const osReleasesIfKnown = (id: string) => {
 	const product = osProduct(id);
 	if (!product) return [];
 	refreshOsReleases(product);
-	const known = state.osReleases.get(product);
-	if (known) return known.releases;
-	const failingSince = state.osReleasesFailingSince.get(product);
-	return failingSince !== undefined &&
-		Date.now() - failingSince >= OS_RELEASES_TTL_MS
-		? []
-		: null;
+	return state.osReleases.get(product)?.releases ?? null;
 };
 
 /** Release lines of an OS known to the controller, for the overview. */

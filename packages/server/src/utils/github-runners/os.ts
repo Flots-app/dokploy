@@ -212,6 +212,111 @@ const capitalize = (text: string) =>
 	/^macOS\b/.test(text) ? text : text.charAt(0).toUpperCase() + text.slice(1);
 const plural = (value: number, word: string) =>
 	`${value} ${word}${value === 1 ? "" : "s"}`;
+const sentence = (label: string, problems: string[], end: string) =>
+	`${label}: ${[capitalize(problems[0] ?? ""), ...problems.slice(1)].join(", ")}. ${end}`;
+
+/**
+ * What can be said of an OS, by source: its release's support comes from the
+ * support dates (endoflife.date), the updates it waits for from the machine's
+ * own report. Alerts tell them apart: the dates may not be known yet.
+ */
+const osFacts = (
+	info: GithubRunnerOsInfo,
+	releases: OsRelease[],
+	now: number,
+) => {
+	const release = osReleaseOf(info.version, releases);
+	const supportEnds = release?.eolFrom ?? null;
+	const mac = info.id === "macos";
+	const endingSoon =
+		supportEnds !== null &&
+		Date.parse(supportEnds) - now <= OS_SUPPORT_WARNING_MS;
+	const newerMacOs =
+		mac &&
+		info.updates === null &&
+		release?.latest &&
+		compareVersions(info.version, release.latest) < 0
+			? release.latest
+			: null;
+	const updates: string[] = [];
+	if (info.security) {
+		updates.push(
+			mac
+				? `${plural(info.security, "recommended update")} waiting`
+				: `${plural(info.security, "security update")} waiting`,
+		);
+	}
+	if (info.reboot) updates.push("a reboot is needed to finish an update");
+	return {
+		label: osLabel(info),
+		mac,
+		supportEnds,
+		ended:
+			release?.isEol === true ||
+			(supportEnds !== null && now >= Date.parse(supportEnds)),
+		ending:
+			endingSoon && supportEnds ? `support ends on ${day(supportEnds)}` : null,
+		newer: newerMacOs ? `macOS ${newerMacOs} is available` : null,
+		updates,
+		fix: mac
+			? "Install them in System Settings › General › Software Update."
+			: "Install them with sudo apt upgrade, then reboot if asked, while no job runs.",
+		stale:
+			info.listsAt && now - Date.parse(info.listsAt) > STALE_LISTS_MS
+				? ` The package lists date from ${day(info.listsAt)}: run sudo apt update to see recent updates.`
+				: "",
+	};
+};
+
+const unsupportedMessage = (facts: ReturnType<typeof osFacts>) =>
+	`${facts.label} is no longer supported by its vendor${facts.supportEnds ? ` since ${day(facts.supportEnds)}` : ""}: it gets no security fixes. Upgrade to a supported release.`;
+
+/**
+ * The support of a release, from its support dates: unsupported (critical),
+ * or an upgrade due (support ending soon, a newer macOS). Null when nothing
+ * is to tell.
+ */
+export const osSupportNotice = (input: {
+	info: GithubRunnerOsInfo;
+	releases: OsRelease[];
+	now: number;
+}): { severity: "critical" | "warning"; message: string } | null => {
+	const facts = osFacts(input.info, input.releases, input.now);
+	if (facts.ended) {
+		return { severity: "critical", message: unsupportedMessage(facts) };
+	}
+	const support = [facts.ending, facts.newer].filter(
+		(item): item is string => item !== null,
+	);
+	if (!support.length) return null;
+	return {
+		severity: "warning",
+		message: sentence(
+			facts.label,
+			support,
+			facts.mac
+				? "Upgrade it in System Settings › General › Software Update."
+				: "Plan the upgrade to a supported release.",
+		),
+	};
+};
+
+/** The updates a system waits for (security, a reboot), from its own report. */
+export const osUpdatesNotice = (input: {
+	info: GithubRunnerOsInfo;
+	now: number;
+}): { message: string } | null => {
+	const facts = osFacts(input.info, [], input.now);
+	return facts.updates.length
+		? {
+				message: sentence(
+					facts.label,
+					facts.updates,
+					`${facts.fix}${facts.stale}`,
+				),
+			}
+		: null;
+};
 
 export const osStatus = (input: {
 	info: GithubRunnerOsInfo | null;
@@ -228,54 +333,26 @@ export const osStatus = (input: {
 			message: "The operating system has not been reported yet",
 		};
 	}
-	const label = osLabel(info);
-	const release = osReleaseOf(info.version, releases);
-	const supportEnds = release?.eolFrom ?? null;
-	const ended =
-		release?.isEol || (supportEnds !== null && now >= Date.parse(supportEnds));
-	const mac = info.id === "macos";
-	const fix = mac
-		? "Install them in System Settings › General › Software Update."
-		: "Install them with sudo apt upgrade, then reboot if asked, while no job runs.";
-	if (ended) {
+	const facts = osFacts(info, releases, now);
+	const { label, supportEnds, fix, stale } = facts;
+	if (facts.ended) {
 		return {
 			state: "unsupported",
 			label,
 			supportEnds,
-			message: `${label} is no longer supported by its vendor${supportEnds ? ` since ${day(supportEnds)}` : ""}: it gets no security fixes. Upgrade to a supported release.`,
+			message: unsupportedMessage(facts),
 		};
 	}
-	const problems: string[] = [];
-	if (supportEnds && Date.parse(supportEnds) - now <= OS_SUPPORT_WARNING_MS) {
-		problems.push(`support ends on ${day(supportEnds)}`);
-	}
-	if (info.security) {
-		problems.push(
-			mac
-				? `${plural(info.security, "recommended update")} waiting`
-				: `${plural(info.security, "security update")} waiting`,
-		);
-	}
-	if (info.reboot) problems.push("a reboot is needed to finish an update");
-	if (
-		mac &&
-		info.updates === null &&
-		release?.latest &&
-		compareVersions(info.version, release.latest) < 0
-	) {
-		problems.push(`macOS ${release.latest} is available`);
-	}
-	const stale =
-		info.listsAt && now - Date.parse(info.listsAt) > STALE_LISTS_MS
-			? ` The package lists date from ${day(info.listsAt)}: run sudo apt update to see recent updates.`
-			: "";
+	// Support ending first, a newer macOS last, as the machine card reads.
+	const problems = [facts.ending, ...facts.updates, facts.newer].filter(
+		(item): item is string => item !== null,
+	);
 	if (problems.length) {
-		const first = problems[0] ?? "";
 		return {
 			state: "outdated",
 			label,
 			supportEnds,
-			message: `${label}: ${[capitalize(first), ...problems.slice(1)].join(", ")}. ${fix}${stale}`,
+			message: sentence(label, problems, `${fix}${stale}`),
 		};
 	}
 	if (info.updates) {

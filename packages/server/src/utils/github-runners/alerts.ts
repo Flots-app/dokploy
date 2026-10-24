@@ -14,7 +14,7 @@ import {
 	githubRunnerAlerts,
 } from "@dokploy/server/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
-import { type OsRelease, osStatus } from "./os";
+import { type OsRelease, osSupportNotice, osUpdatesNotice } from "./os";
 import { effectiveUpdatePolicy } from "./updates";
 import { machineRunnerStatus, type RunnerReleaseInfo } from "./versions";
 
@@ -27,8 +27,12 @@ export type RunnerAlertKind =
 	| "os-patch"
 	| "rollout-runner"
 	| "rollout-runtime"
+	// The support of the OS release (support dates), and the updates it waits
+	// for (the machine's report): apart, as one may be known without the other.
 	| "os-host"
 	| "os-guest"
+	| "os-host-updates"
+	| "os-guest-updates"
 	| "firewall"
 	| "fallback"
 	| "routing"
@@ -46,11 +50,6 @@ export interface RunnerAlertCondition {
 	message: string;
 	/** Notified once the condition has lasted this long. */
 	delayMs: number;
-	/**
-	 * What can be told now is a floor: an open alert already worse stays as
-	 * it is (an OS whose support dates are not known may be unsupported too).
-	 */
-	atLeast?: boolean;
 }
 
 const MINUTE = 60_000;
@@ -144,7 +143,6 @@ const machineConditions = (input: {
 		title: string,
 		message: string,
 		delayMs = 0,
-		atLeast = false,
 	) =>
 		conditions.push({
 			subject: `${node.githubRunnerNodeId}:${kind}`,
@@ -155,7 +153,6 @@ const machineConditions = (input: {
 			title,
 			message,
 			delayMs,
-			...(atLeast ? { atLeast } : {}),
 		});
 	const name = node.name;
 	if (node.phase === "error") {
@@ -237,43 +234,55 @@ const machineConditions = (input: {
 		);
 	}
 	const systems = [
-		["os-host", node.osReport?.host ?? null, ""],
+		["os-host", "os-host-updates", node.osReport?.host ?? null, ""],
 		[
 			"os-guest",
+			"os-guest-updates",
 			node.platform === "macos" ? (node.osReport?.guest ?? null) : null,
 			" (VM)",
 		],
 	] as const;
-	for (const [kind, info, where] of systems) {
+	for (const [kind, updatesKind, info, where] of systems) {
 		// No report (VM stopped, report failed): what was known holds.
 		if (!info) {
-			if (kind === "os-host" || node.platform === "macos") unknown(kind);
+			if (kind === "os-host" || node.platform === "macos") {
+				unknown(kind);
+				unknown(updatesKind);
+			}
 			continue;
 		}
-		// Support dates not read yet: the updates the machine reports still
-		// tell, but not whether its release is supported, so an alert already
-		// worse (unsupported) holds, and so does one opened from the dates alone.
-		const releases = input.osReleases(info.id);
-		const status = osStatus({ info, releases: releases ?? [], now });
-		if (status.state === "unsupported") {
+		// The updates it waits for, from its own report. Security updates come
+		// out every week: worth a notification only when nobody installed them
+		// for a few days.
+		const updates = osUpdatesNotice({ info, now });
+		if (updates) {
 			add(
-				kind,
-				"critical",
-				`Unsupported OS on ${name}${where}`,
-				status.message,
-			);
-		} else if (status.state === "outdated") {
-			// Security updates come out every week: worth a notification only
-			// when nobody installed them for a few days.
-			add(
-				kind,
+				updatesKind,
 				"warning",
 				`OS updates needed on ${name}${where}`,
-				status.message,
+				updates.message,
 				3 * DAY,
-				!releases,
 			);
-		} else if (!releases) unknown(kind);
+		}
+		// The support of its release, from the support dates: what was known
+		// holds while they are not read (just after a start, endoflife.date
+		// out of reach), however long.
+		const releases = input.osReleases(info.id);
+		if (!releases) {
+			unknown(kind);
+			continue;
+		}
+		const support = osSupportNotice({ info, releases, now });
+		if (support) {
+			add(
+				kind,
+				support.severity,
+				support.severity === "critical"
+					? `Unsupported OS on ${name}${where}`
+					: `OS upgrade due on ${name}${where}`,
+				support.message,
+			);
+		}
 	}
 	return conditions;
 };
@@ -496,14 +505,6 @@ export const syncRunnerAlerts = async (input: {
 				.onConflictDoNothing()
 				.returning({ id: githubRunnerAlerts.githubRunnerAlertId });
 			return inserted.length && due ? notice("opened", condition) : null;
-		}
-		// Only part of the subject can be told now: a worse alert stays as it is.
-		if (
-			condition.atLeast &&
-			row.severity === "critical" &&
-			condition.severity === "warning"
-		) {
-			return null;
 		}
 		const where = eq(
 			githubRunnerAlerts.githubRunnerAlertId,
