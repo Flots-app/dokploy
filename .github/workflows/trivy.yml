@@ -191,18 +191,20 @@ jobs:
             --skip-check-update \
             --format json \
             --output "${RUNNER_TEMP}/image-licenses.json"
-          {
-            echo '### Trivy image: forbidden licenses'
-            echo '```'
-            trivy image "$image" \
-              --scanners license \
-              --severity CRITICAL \
-              --skip-db-update \
-              --skip-check-update \
-              --format table \
-              --quiet | head -c 20000
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          jq --raw-output '
+            [.Results[]? | (.Licenses // [])[]] as $all
+            | ($all | map(select(.Severity == "CRITICAL"))) as $forbidden
+            | ($all | map(select(.Severity == "HIGH"))) as $restricted
+            | ($forbidden
+                | map("- `\(.Name)` in `\(if (.PkgName // "") != "" then .PkgName else .FilePath end)`")
+                | unique) as $listed
+            | "### Trivy image: licenses",
+              "",
+              "\($forbidden | length) forbidden (CRITICAL) and \($restricted | length) restricted (HIGH) license findings. Reported, not enforced.",
+              "",
+              ($listed[0:40][]),
+              (if ($listed | length) > 40 then "- ... and \(($listed | length) - 40) more" else empty end)
+          ' "${RUNNER_TEMP}/image-licenses.json" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload to Code Scanning
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
