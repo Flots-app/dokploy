@@ -1,0 +1,36 @@
+# Trivy policy shared by CI (.github/workflows/trivy.yml) and local runs:
+#
+#   trivy fs --config trivy.yaml .
+#
+# What gets enforced is decided by .github/scripts/trivy_gate.py, not here.
+# Trivy only collects the findings, so the SARIF report keeps every
+# HIGH/CRITICAL result, including the ones that are not blocking yet.
+#
+# Policy:
+#   - secrets: always blocking
+#   - CRITICAL with a fix available: always blocking (dated exceptions live in
+#     .trivyignore.yaml and expire on their own)
+#   - HIGH with a fix available and HIGH misconfigurations: a change may not
+#     add new ones compared with its base branch
+severity:
+  - HIGH
+  - CRITICAL
+
+# Lockfiles, Dockerfiles and secrets across the whole repository. Licenses
+# are reported on the built image only: pnpm lockfiles carry no license data.
+#
+# No skip-dirs on purpose: they would also hide node_modules inside the image.
+# For a local run, add: --skip-dirs node_modules,.claude,.gstack
+scan:
+  scanners:
+    - vuln
+    - secret
+    - misconfig
+
+ignorefile: .trivyignore.yaml
+
+vulnerability:
+  # Unfixed findings stay in the report; the gate only blocks on fixable ones.
+  ignore-unfixed: false
+
+timeout: 15m
