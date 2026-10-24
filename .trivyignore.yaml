@@ -13,10 +13,11 @@
 vulnerabilities:
   - id: CVE-2026-59873
     purls:
+      - "pkg:npm/tar@6.2.1"
       - "pkg:npm/tar@7.4.3"
       - "pkg:npm/tar@7.5.2"
     expired_at: 2026-11-21
-    statement: "Image baseline, upgrade required: tar@7.4.3 and 7.5.2 -> 7.5.19 (copies bundled with the Node.js base image)"
+    statement: "Image baseline, upgrade required: tar@6.2.1, 7.4.3 and 7.5.2 -> 7.5.19. Copies bundled with npm in the Node.js base image (6.2.1, 7.4.3) and with the pnpm that corepack downloads (7.5.2), not with the lockfile"
 
   # Image baseline: what the Dockerfile installs outside the lockfile. Each entry
   # goes away with a newer Docker, pack, Railpack, esbuild or base image.
