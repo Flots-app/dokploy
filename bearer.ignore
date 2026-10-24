@@ -1,0 +1,3494 @@
+{
+  "009484d5891e777249ae538e141f062d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "01320ba6437701c18d282d66b21a8123_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "032580ee107b7939ce4d663ee6cd1e5e_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "03264b6717cca809d58db8e3c5e47983_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "035c812b22183ca64ef887eabc9eb647_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "04681205e6c4009c384ac32dbd4b6376_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "04681205e6c4009c384ac32dbd4b6376_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "04681205e6c4009c384ac32dbd4b6376_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "05de8b73602452ef15f2ccd0e44bbd80_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "05de8b73602452ef15f2ccd0e44bbd80_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "079ddac230b7a18741a62a417f518845_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "080867d9d5bd452426de322ff66a1ac8_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0909495950c867b79bab12add21d568d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0909495950c867b79bab12add21d568d_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0c6a1572726c0a43f3585ff5d5b70cda_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0d423c84cd6278fba16bb9d95e984e0d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0d70e61cac2c036844ea7ca2d6cf716a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0d70e61cac2c036844ea7ca2d6cf716a_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0d70e61cac2c036844ea7ca2d6cf716a_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0def2cde51f1c7a22af5d8f9b2ded199_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0f2a8d2e82c28e7ce86d4f49321a6e20_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "0f2a8d2e82c28e7ce86d4f49321a6e20_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "13f13cd971ff9b86d3239cda9e03c8c1_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "13f13cd971ff9b86d3239cda9e03c8c1_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "13f13cd971ff9b86d3239cda9e03c8c1_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "13f13cd971ff9b86d3239cda9e03c8c1_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "13f13cd971ff9b86d3239cda9e03c8c1_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "13f13cd971ff9b86d3239cda9e03c8c1_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "13f13cd971ff9b86d3239cda9e03c8c1_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "142a224c470b2edbffa9f94cedef3c6d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1527006904b9422f7db1fbd4d113ac2d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1527006904b9422f7db1fbd4d113ac2d_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16021debd2953f503c783427cde426bd_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1629d025d5eda2ef52c3cb30c4b9213f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1629d025d5eda2ef52c3cb30c4b9213f_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1629d025d5eda2ef52c3cb30c4b9213f_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1629d025d5eda2ef52c3cb30c4b9213f_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1629d025d5eda2ef52c3cb30c4b9213f_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16d0dff532726a2d95a8c1c67c9cd089_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "16d0dff532726a2d95a8c1c67c9cd089_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "185cd7e6a7f413d64057f1392cb46a4f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "196b943c11332e862f3702e72516e4aa_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "196b943c11332e862f3702e72516e4aa_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "196b943c11332e862f3702e72516e4aa_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "19e38a36cecae2f552a4ee3b743a6271_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "19e38a36cecae2f552a4ee3b743a6271_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_11": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_12": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1b024c96002478f5bc28e074248cd035_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1e6a3fd70e654ab8265e78886128d9e6_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1e6a3fd70e654ab8265e78886128d9e6_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "1f194f768306860bf017e65ea30ec9e0_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2025968efb6196211cc2cb51dd81298e_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2040747f0ee2cfafe02f1c103ad0c9e4_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2040747f0ee2cfafe02f1c103ad0c9e4_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "21039ff0dc20128ee3a5ec567ce2261d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "24cf6fe3b5faa57a3fe2bc16da167637_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "24cf6fe3b5faa57a3fe2bc16da167637_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "252db300b0bd55583b895bd3ff76d537_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "253263943233c75415a85048c5e94164_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "276640610686d3a3c13b26b41fb5a04b_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "28fad7ce0da8f0d0ce8ce98e53c689a0_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "28fad7ce0da8f0d0ce8ce98e53c689a0_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "28fad7ce0da8f0d0ce8ce98e53c689a0_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "28fad7ce0da8f0d0ce8ce98e53c689a0_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "28fad7ce0da8f0d0ce8ce98e53c689a0_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "28fad7ce0da8f0d0ce8ce98e53c689a0_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "28fad7ce0da8f0d0ce8ce98e53c689a0_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "295a084d38590ba97ea18966f1ce53d8_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "29a12efa9fa7efbe3912311e97b7a3a7_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2b023a1dc1ae61e3fe2dc22e023f8f05_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2b4ccd6adb0147d1bed7d2ddfb8db3f3_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2b4ccd6adb0147d1bed7d2ddfb8db3f3_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2b4ccd6adb0147d1bed7d2ddfb8db3f3_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2bacb1e5b1f74f8ac614a19da5977e43_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2c5b849accfe0a502ded669722a82513_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2c5b849accfe0a502ded669722a82513_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2cab91e67bd879c0cd2246e7d0e0792f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2cd10154303f26fb3258f4198f301447_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2d32390cb235aecc3528ffe953c0c147_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2ea45399deea267acf6ec8fe0119c216_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2ea45399deea267acf6ec8fe0119c216_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2ea45399deea267acf6ec8fe0119c216_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2ea45399deea267acf6ec8fe0119c216_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2ea45399deea267acf6ec8fe0119c216_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2ea45399deea267acf6ec8fe0119c216_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2ea45399deea267acf6ec8fe0119c216_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2f8fc010f12f99f99274fe3b099d322d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3387ff8ef226c7d31eb2e3bcdbc1ad54_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "34d23c968e5ce43a0f68d3341d137a47_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "34d23c968e5ce43a0f68d3341d137a47_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "36b648d9bd59a5001b5702b0ab5d4565_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "36b648d9bd59a5001b5702b0ab5d4565_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "36b648d9bd59a5001b5702b0ab5d4565_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "370a902718cac3a021f99a2dfcbc18a7_0": {
+    "author": "baseline",
+    "comment": "Slack webhook placeholder (T00000000/B00000000/XXXX), not a webhook.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "376caf6f4695ca59840a1132dd83f77c_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "380c8d373eb3f11de681ef43ee89ab6f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "380c8d373eb3f11de681ef43ee89ab6f_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "380c8d373eb3f11de681ef43ee89ab6f_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3a24ed3e98fa99f13b395a142204a043_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3a24ed3e98fa99f13b395a142204a043_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3a24ed3e98fa99f13b395a142204a043_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3ae4d5ce1d137ad18deafea3e6af219b_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3ae4d5ce1d137ad18deafea3e6af219b_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3b21219931fd94ef04a5798577500433_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3b5e9f4a81673d3641eb9c37a5cc7425_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3b5e9f4a81673d3641eb9c37a5cc7425_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "3cef938b831a9b91fc7849ac807536c6_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4106fbae0a6b29386f6c469b34c4f444_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4106fbae0a6b29386f6c469b34c4f444_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4541447b25fa3a3e2bac27440a39dae5_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4541447b25fa3a3e2bac27440a39dae5_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4541447b25fa3a3e2bac27440a39dae5_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "457fd258d745cb25bf63903563aa9f61_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "457fd258d745cb25bf63903563aa9f61_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "457fd258d745cb25bf63903563aa9f61_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4643d4cf3b10f80fe99c42d06f0465ca_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "479ec9043a1fc90498e11c184839e751_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "479ec9043a1fc90498e11c184839e751_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "479ec9043a1fc90498e11c184839e751_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "479ec9043a1fc90498e11c184839e751_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "48399854f6f62297831b9d422cef9341_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "490e5e76da3ade2b21e39977d1fe3764_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "49607ac0fed9d94679543b35c9b70c7c_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4c8b9dd8ae4c8eba0570a7d4692c0b1f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4c8b9dd8ae4c8eba0570a7d4692c0b1f_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4c8b9dd8ae4c8eba0570a7d4692c0b1f_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4c8b9dd8ae4c8eba0570a7d4692c0b1f_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4e0bae865b7f8b068c184412439c9a8e_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4ecb50087ddbc5d7a9715411cf11a6ae_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "51bfda7e526a5ab86db5ade6b12837b2_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "55b4a1ac17849f394b16b9b95e2aab52_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "55b4a1ac17849f394b16b9b95e2aab52_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "55b4a1ac17849f394b16b9b95e2aab52_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "55b4a1ac17849f394b16b9b95e2aab52_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "55b4a1ac17849f394b16b9b95e2aab52_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "56194ad877fd356aaf847a27c06f9e7e_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5673f6616150f1f052d3c018440f9426_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "57608f97e1e83bcc0cbad88cfb2496a7_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "57c32dc4d3e15f056cd2a4ed8a31278f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5b5b160f9ae28ddc0e0c6ef060b04bda_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8e056da11dc2f173498285d77ef8c7_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8e056da11dc2f173498285d77ef8c7_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8e056da11dc2f173498285d77ef8c7_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8e056da11dc2f173498285d77ef8c7_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8e056da11dc2f173498285d77ef8c7_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8e056da11dc2f173498285d77ef8c7_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8f780cd17c8f2243c2387027ddea02_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8f780cd17c8f2243c2387027ddea02_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8f780cd17c8f2243c2387027ddea02_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "5f8f780cd17c8f2243c2387027ddea02_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6151b0d4747d2fed2c8a911a87c10536_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "61aa99d69bfe8eb82049895aec17c7d3_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "61aa99d69bfe8eb82049895aec17c7d3_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "61aa99d69bfe8eb82049895aec17c7d3_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "61dc2f18405da02ba12913b3a0b47297_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "653d0ebc84348a81ad35fc80062d8b03_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "653d0ebc84348a81ad35fc80062d8b03_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6569be877387e3a566bcf84702a9cb9f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6569be877387e3a566bcf84702a9cb9f_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "65cbb23367ab7b7bf7bd28ace9dd80ed_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "65cbb23367ab7b7bf7bd28ace9dd80ed_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "65ded1987faaed5d524eadb0a2e94fb3_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "65ded1987faaed5d524eadb0a2e94fb3_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "66dfa8878b804bc3be54960c6b2a10e2_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "69764d9dd025af3aa489240035caf3e1_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "69764d9dd025af3aa489240035caf3e1_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "69764d9dd025af3aa489240035caf3e1_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6b0fdf3cc13ba1d206c80494428b55e7_0": {
+    "author": "baseline",
+    "comment": "esbuild entry point name (reset-password, migrate-auth-secret), not a secret.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6b0fdf3cc13ba1d206c80494428b55e7_1": {
+    "author": "baseline",
+    "comment": "esbuild entry point name (reset-password, migrate-auth-secret), not a secret.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6b25d168e356691f163fe7bf4d52abfc_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6b89a2979167a7449e8c9a8d1237e81a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6d94df2fc90a00f2f6541acc26c2fdc5_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6f5224bffe34fc4297a20513320beb2a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6ff3f631ed01577598e8e7f9de27f300_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "6ff775b2fc5cc6ef95b45a090cc1b8b7_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "71916f5eea5ddd03ae274ce5be4dc418_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "71916f5eea5ddd03ae274ce5be4dc418_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7400844cd5fd262a322d5627f3f96695_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "74502b5968e9ca5d854184611e49c267_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "74502b5968e9ca5d854184611e49c267_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "75a2ca9365c2b42d08309d1acbf744a3_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7603010c51c03fc9a8125e636f8bb411_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "77da1f15d787654057fd311b787f6783_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7aa786bac08033018b8beca6346437eb_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7aa786bac08033018b8beca6346437eb_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7aa786bac08033018b8beca6346437eb_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7aa786bac08033018b8beca6346437eb_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7aa786bac08033018b8beca6346437eb_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7aa786bac08033018b8beca6346437eb_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7adbf499f02eeccaab7bb16f403be639_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7adbf499f02eeccaab7bb16f403be639_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7bedf37d4ad7933381e68a3de6806263_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7d1068b9afe6fcfe50013a7751cdf5be_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7ed57e6f4d439c9fb2bd493a024bc67f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7ed57e6f4d439c9fb2bd493a024bc67f_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "7ed57e6f4d439c9fb2bd493a024bc67f_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "800f4cf45a18e3d42494f4239d2df294_0": {
+    "author": "baseline",
+    "comment": "PEM header used as a form placeholder, not a key.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "811dde87843b0efdb3fc71fab1a182f6_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "81d77cbef3b3af9efd676d121712c5d1_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8233aebc3f7702fa1d6909559711d291_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "84461b247c38a67046b12ca34cf1d9d0_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "85df3d08ceaec88bd70217e351f389e7_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "85df3d08ceaec88bd70217e351f389e7_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "85df3d08ceaec88bd70217e351f389e7_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "85df3d08ceaec88bd70217e351f389e7_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "85df3d08ceaec88bd70217e351f389e7_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "85df3d08ceaec88bd70217e351f389e7_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "86157400bc422da3a16df14a6340b040_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8b590c667415ded4d7746633373fb45a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8b590c667415ded4d7746633373fb45a_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8b590c667415ded4d7746633373fb45a_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8b590c667415ded4d7746633373fb45a_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8b590c667415ded4d7746633373fb45a_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8bc83725b9ff8e605154b11f235ea0b0_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8ceb40df1a0761cdf3438c68afe114e6_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_11": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_12": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_13": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_14": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_15": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_16": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_17": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "8eaa672abde5cf85735a0a5f604f32c6_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "905f93716c180c6c69a7fb58e55737fe_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "905f93716c180c6c69a7fb58e55737fe_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "905f93716c180c6c69a7fb58e55737fe_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "905f93716c180c6c69a7fb58e55737fe_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "905f93716c180c6c69a7fb58e55737fe_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "905f93716c180c6c69a7fb58e55737fe_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "91f1d38e4e087ee89c59ab93ddfb4e9f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "938bc2f06afdcbe78979c7bbfbd5eb1e_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "93a17e259a6adee104a0318cbd7a6454_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "93b48b0365167e2b87203afb849eecf6_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9442f3796774ac2c2f919086cf369709_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9493f61b58f46512c7fd620b1d8b1687_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9493f61b58f46512c7fd620b1d8b1687_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9493f61b58f46512c7fd620b1d8b1687_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9493f61b58f46512c7fd620b1d8b1687_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "95c137931a666cd892c532f00e74a0f8_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "96546e9e02793d22f05222a9de126c6f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "97cc59d6464a4372dad845df9d6f6486_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "980480afc1a37d2d7f95bf0ce4964cbc_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "980480afc1a37d2d7f95bf0ce4964cbc_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "980480afc1a37d2d7f95bf0ce4964cbc_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9aecaa3208d73ccacce9a09f4e060912_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9aecaa3208d73ccacce9a09f4e060912_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9aecaa3208d73ccacce9a09f4e060912_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c6742e19e88d1649bd8fb7efe3ccdb3_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9c753ef942ac8a0ed8a0f994974ede53_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9dcbf01334715c4409da1c15091d498b_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9e135fa3f14a4cfa818993092d87e32d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9eddab07fc7652f937062cf5e1cf327c_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9ff2caed44a3c58bb6ecf74d900b24bb_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a065883b3d022790cb68117812e49f1d_0": {
+    "author": "baseline",
+    "comment": "Regular expression that validates a pasted private key, not a key.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a065883b3d022790cb68117812e49f1d_1": {
+    "author": "baseline",
+    "comment": "Regular expression that validates a pasted private key, not a key.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a14d17a8a1553da2ff9199574ef8de62_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a463819e302c043022c6949311905edd_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a6e913535118a1638266b7f43227f902_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a6e913535118a1638266b7f43227f902_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a6e913535118a1638266b7f43227f902_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a741dc214575112b291d93252b4bc2e8_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a74f9233e4da62f8f4ba86a9435c4e72_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a82b2ae343754af17e9a4a01f20889b5_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a82b2ae343754af17e9a4a01f20889b5_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a82b2ae343754af17e9a4a01f20889b5_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a93f0dc13d90930a0aaa8f521aff48e3_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a93f0dc13d90930a0aaa8f521aff48e3_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a93f0dc13d90930a0aaa8f521aff48e3_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a9b47e7e2e7bbbf4ab218155595d4515_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "aa21d86c1233f225eb7ee656c8f5b4d9_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "aa21d86c1233f225eb7ee656c8f5b4d9_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "aa21d86c1233f225eb7ee656c8f5b4d9_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "adaeb442739c618425bfc40b7b9a61fb_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "afe5864c050f30be8cc8df09cd4c18fb_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "afe5864c050f30be8cc8df09cd4c18fb_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "afe5864c050f30be8cc8df09cd4c18fb_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "afe5864c050f30be8cc8df09cd4c18fb_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "afe5864c050f30be8cc8df09cd4c18fb_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b057bcb0b39b8b66836eebf0a11f1fdf_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b057bcb0b39b8b66836eebf0a11f1fdf_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b12774712fae875da306faa15b11aaa3_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b1e13db56bcdac4b9d4972a71d1d4009_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b1e13db56bcdac4b9d4972a71d1d4009_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b1e13db56bcdac4b9d4972a71d1d4009_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b32490aa0c7642c86f08af94d00a9dd1_0": {
+    "author": "baseline",
+    "comment": "Sample text shown as a placeholder in the certificate form, not a key.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b3f5fd6e097c1850abc92dcc294bae29_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "b6c1a8227931dda9d885a3c2712eb52e_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ba4999e7b2284ffc95c086b7b093f6f9_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ba4999e7b2284ffc95c086b7b093f6f9_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ba701bf5d91fbfe9cbb12140c5e3af4b_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ba701bf5d91fbfe9cbb12140c5e3af4b_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc39c467e47f80b16628a554048e1e9a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc39c467e47f80b16628a554048e1e9a_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bc85e818966c638222054d3ae039a69a_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_11": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_12": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_13": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_14": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_15": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_16": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_17": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_18": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bd5b4e83fa79f492d7d1676efb8f1985_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "be2a4b47648b5c01eb098428106e5514_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "be3db29b9a816ff01c5ce6b8746e7cd8_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bf4e74ce1e46c460b5d71021c4822234_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_11": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_12": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_13": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_14": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_15": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_16": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_17": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_18": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_19": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_20": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_21": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_22": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_23": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_24": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_25": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "bfcaa9912565e1a353b9cd8fcc0fe928_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c0b1b2cbd24bd7be6e82c4273cf5d51a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c12b611afe9751fd077d9f3ee0928e54_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c12b611afe9751fd077d9f3ee0928e54_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c1367ca5fd8762c11828a703dad8e285_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c184aa40a404ad7420388a207113e26f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c184aa40a404ad7420388a207113e26f_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c184aa40a404ad7420388a207113e26f_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c24458ce1a4822075c6a92f35951d6bb_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c564201c4c09d469a2dce038a8832328_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c564201c4c09d469a2dce038a8832328_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c712053b55d7fbb268932894bccea2fe_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c8ba0baca4e77514e0c59418e614256a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c96ac315535b2f012f83fcec3e371e22_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c96ac315535b2f012f83fcec3e371e22_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c96ac315535b2f012f83fcec3e371e22_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c96ac315535b2f012f83fcec3e371e22_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c9ed9925fdfa3864f832284d790a8064_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "c9ed9925fdfa3864f832284d790a8064_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "cae2a583cf5b5b011ebab42aa6e4a326_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "cae2a583cf5b5b011ebab42aa6e4a326_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "cae2a583cf5b5b011ebab42aa6e4a326_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d09f066bab6cf36a91f0b987b2f43155_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d1d886c6076bfe15fa369f99925bb24c_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d2495d212078641fc82354c2fa580219_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d2495d212078641fc82354c2fa580219_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d2495d212078641fc82354c2fa580219_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d2495d212078641fc82354c2fa580219_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_11": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_12": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_13": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_14": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d319ce3891f61f4f7ad72d8bc849755f_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d3e8304cb1779efd81cf417d8154aa10_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d6883da7610d868da076a40aafcff44b_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d6883da7610d868da076a40aafcff44b_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d703447156892f4b5e84047a3bf4a3af_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d738e7988f01d3c587549a4a61d22765_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d849e256fc2275fe7ab1f5f6f091f1b1_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d91c683532327d5273631abee7b14e54_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d91c683532327d5273631abee7b14e54_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d91c683532327d5273631abee7b14e54_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d91c683532327d5273631abee7b14e54_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "db279a7b58a966a2944d976448947b5c_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "dc3e084043a4471b3c7456a38f992086_0": {
+    "author": "baseline",
+    "comment": "Regular expression that validates a pasted private key, not a key.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "dc3e084043a4471b3c7456a38f992086_1": {
+    "author": "baseline",
+    "comment": "Regular expression that validates a pasted private key, not a key.",
+    "false_positive": true,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de2ab655daac1ba799a5f841a01cfb6a_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "de3e911775c257266ba501e2287b52bf_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "df1df945a2e532c83b46e6080a35d09d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "df79f6ab6d2b654f555566409db9a27c_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e13ba23cbf0c0ff77b32669bed24f961_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e22a3cea247f875232f72acf677c4ff1_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e29852339760934cac87211ddb74ff68_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e38086bd8034518c30ce46197a62ec39_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e3d13abfd5d28bce6fc8aaa14a4dcb69_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e3d13abfd5d28bce6fc8aaa14a4dcb69_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e3d13abfd5d28bce6fc8aaa14a4dcb69_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e6a2c99200afd96b9957561e8f81559b_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e730d57183c386e6419b75fa92a9b804_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e73ba54ba0e324672cb2695159758af6_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e74e8fef2bfc9ac8557e572380407d84_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e81270da47586f52e008422de2878f1c_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "e9623ffc47c82be0f9b91650b3846d90_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ea19775debf8cd8322e00974342db608_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ebaf2d980ea13d9cc400db0c3a07d566_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ebaf2d980ea13d9cc400db0c3a07d566_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ebaf2d980ea13d9cc400db0c3a07d566_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_10": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_11": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_12": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_13": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_14": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_15": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_4": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_5": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_6": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_7": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_8": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee36389f719ed7014ea3abdb784cb0f8_9": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ee3bc180548c4fc4b1f67f6a7720fe76_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "efcbdfdab6cf40a59f21dd8002e947e5_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f0495c6731df9af00c650151566aa2de_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f0495c6731df9af00c650151566aa2de_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f0495c6731df9af00c650151566aa2de_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f0495c6731df9af00c650151566aa2de_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f2792c029d77fe755ea8fa91cb4dc4ea_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f2792c029d77fe755ea8fa91cb4dc4ea_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f2792c029d77fe755ea8fa91cb4dc4ea_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f2792c029d77fe755ea8fa91cb4dc4ea_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f47c3932ce41caa0176d9052eab4bdb2_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f6bd9a3d7bf9c2f543d3d131e144868d_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f6de5af5a7d429199a1b6a27eae33e52_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f898392ac065be3f942adf224f1e226f_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "f97ee315989b23dd2a65015b5bef9a85_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fa9dcf1138091fd7853c8581fcb46cf9_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "faa74f94143677297d9824fe99bd6cf1_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "faa74f94143677297d9824fe99bd6cf1_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fae7c28b154640122c817dfd9d3fd6cb_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fae7c28b154640122c817dfd9d3fd6cb_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fae7c28b154640122c817dfd9d3fd6cb_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fae7c28b154640122c817dfd9d3fd6cb_3": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fb70bbd7e404269d17bf8f4d946cada2_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fb9c8560747a204d2f55c1986b728e72_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fb9c8560747a204d2f55c1986b728e72_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fb9c8560747a204d2f55c1986b728e72_2": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fde9892656b636f6ad62c66b66172799_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fe635b4d14480b3a82b88facca84e905_0": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fe635b4d14480b3a82b88facca84e905_1": {
+    "author": "baseline",
+    "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
+    "false_positive": false,
+    "ignored_at": "2026-10-24T05:37:23Z"
+  }
+}

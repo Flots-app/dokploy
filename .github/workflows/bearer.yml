@@ -1,0 +1,121 @@
+# Bearer scans the whole repository with its SAST and secrets scanners, every
+# severity, test files included. Policy, in short:
+#   - a finding that bearer.ignore does not list always fails the run;
+#   - an exception in bearer.ignore that matches nothing any more fails it too,
+#     so a fix deletes its exception and the accepted debt can only shrink;
+#   - Code Scanning only receives the findings that block.
+# The decision is made by .github/scripts/bearer_gate.py; bearer.yml holds the
+# scanner settings and bearer.ignore the explained exceptions.
+#
+# To reproduce a run locally, scan an export of the commit like CI does:
+#   dir=$(mktemp -d) && git archive HEAD | tar -x -C "$dir" && (cd "$dir" && bearer scan .)
+#
+# To accept a finding on purpose, with a reason a reviewer can challenge (the
+# gate rejects an exception without an author, a comment and a date):
+#   bearer ignore add <fingerprint> --comment "<why>"
+name: Bearer
+
+on:
+  pull_request:
+    branches: [main, canary]
+  push:
+    branches: [main, canary]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "enforce applies bearer.ignore, strict fails on every finding, accepted ones included"
+        type: choice
+        options:
+          - enforce
+          - strict
+        default: enforce
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bearer:
+    name: Bearer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      BEARER_GATE_MODE: ${{ inputs.mode || 'enforce' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install checksum-verified Bearer
+        run: bash .github/scripts/install-bearer.sh
+
+      - name: Test the Bearer gate
+        run: python3 -B .github/scripts/test_bearer_gate.py
+
+      - name: Scan the repository
+        run: |
+          set -euo pipefail
+
+          # Scan an export of the commit, not the checkout: inside a git
+          # checkout Bearer drops a finding of pages/api/[...trpc].ts that it
+          # reports on the same files outside of one, and an export holds
+          # exactly what is tracked.
+          scan_dir="${RUNNER_TEMP}/bearer-tree"
+          mkdir -p "$scan_dir"
+          git archive HEAD | tar --extract --directory "$scan_dir"
+
+          # The scan applies no exception: the gate needs to see every finding
+          # to tell a fixed one from an accepted one. Findings do not fail this
+          # step, errors of Bearer itself do.
+          echo '{}' > "${RUNNER_TEMP}/no-exceptions.ignore"
+          cd "$scan_dir"
+          bearer scan . \
+            --config-file bearer.yml \
+            --ignore-file "${RUNNER_TEMP}/no-exceptions.ignore" \
+            --format sarif \
+            --output "${RUNNER_TEMP}/bearer.sarif" \
+            --exit-code 0 \
+            --force \
+            --hide-progress-bar \
+            --no-color
+
+      - name: Enforce the Bearer policy
+        id: gate
+        run: |
+          set -euo pipefail
+          python3 -B .github/scripts/bearer_gate.py \
+            --sarif "${RUNNER_TEMP}/bearer.sarif" \
+            --baseline bearer.ignore \
+            --blocking-sarif "${RUNNER_TEMP}/bearer-blocking.sarif" \
+            --mode "$BEARER_GATE_MODE" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      # The reports are kept whether the gate passed or not, but not when the
+      # scan itself broke: there is nothing to keep then.
+      - name: Upload to Code Scanning
+        if: >-
+          ${{ !cancelled() && steps.gate.conclusion != 'skipped'
+          && env.BEARER_GATE_MODE == 'enforce'
+          && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/bearer-blocking.sarif
+          category: bearer
+
+      - name: Keep the reports
+        if: ${{ !cancelled() && steps.gate.conclusion != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bearer
+          path: |
+            ${{ runner.temp }}/bearer.sarif
+            ${{ runner.temp }}/bearer-blocking.sarif
+          retention-days: 30
