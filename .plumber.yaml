@@ -58,6 +58,7 @@ github:
         - '*trufflehog*'
         - '*gitleaks*'
         - '*osv-scanner*'
+        - '*trivy*'
         - '*-sast'
         - '*-sast-*'
         - '*-scan'
