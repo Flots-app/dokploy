@@ -3,7 +3,7 @@ module github.com/mauriciogm/dokploy/apps/monitoring
 go 1.20
 
 require (
-	github.com/gofiber/fiber/v2 v2.52.6
+	github.com/gofiber/fiber/v2 v2.52.11
 	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/shirou/gopsutil/v3 v3.24.5

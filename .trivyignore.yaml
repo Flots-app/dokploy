@@ -1,84 +1,19 @@
 # Trivy exceptions. Every entry needs a statement; vulnerabilities also need an
-# expiry so the exception cannot outlive the debt it tracks.
-#
-# Baseline recorded when Trivy was adopted (2026-10-24): CRITICAL findings that
-# already shipped. They stop being ignored on the expiry date, which turns the
-# scheduled Trivy run red until the dependency is upgraded. Do not extend an
+# expiry so the exception cannot outlive the debt it tracks. Do not extend an
 # expiry without a linked tracking issue; upgrade the dependency instead.
 #
 # Scope every vulnerability entry with `purls` (package and exact version): an
 # unscoped ID would also hide the same advisory in a package where it is new.
 # purls match in the repository scan and in the image scan alike.
-
-vulnerabilities:
-  - id: CVE-2025-29927
-    purls:
-      - "pkg:npm/next@14.1.4"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 13.5.9, 14.2.25, 15.2.3, 12.3.5"
-  - id: CVE-2025-66630
-    purls:
-      - "pkg:golang/github.com/gofiber/fiber/v2@v2.52.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: github.com/gofiber/fiber/v2@v2.52.6 -> 2.52.11"
-  - id: CVE-2026-41242
-    purls:
-      - "pkg:npm/protobufjs@7.5.4"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: protobufjs@7.5.4 -> 8.0.1, 7.5.5"
-  - id: CVE-2026-47429
-    purls:
-      - "pkg:npm/vitest@4.0.18"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: vitest@4.0.18 -> 4.1.0, 3.2.6"
-  - id: CVE-2026-59873
-    purls:
-      - "pkg:npm/tar@6.2.1"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: tar@6.2.1 -> 7.5.19"
-  - id: CVE-2026-75604
-    purls:
-      - "pkg:npm/next@14.1.4"
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 15.5.24, 16.3.3; next@16.2.6 -> 15.5.24, 16.3.3"
-  - id: CVE-2026-90711
-    purls:
-      - "pkg:npm/proxy-addr@2.0.7"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: proxy-addr@2.0.7 -> 2.0.8"
-  - id: CVE-2026-9277
-    purls:
-      - "pkg:npm/shell-quote@1.8.3"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: shell-quote@1.8.3 -> 1.8.4"
-  - id: GHSA-2464-fhr4-w9xw
-    purls:
-      - "pkg:npm/next@14.1.4"
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 15.5.28, 16.4.1; next@16.2.6 -> 15.5.28, 16.4.1"
-  - id: GHSA-2xp9-vwfh-vxw4
-    purls:
-      - "pkg:npm/next@14.1.4"
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@14.1.4 -> 15.5.24, 16.3.3; next@16.2.6 -> 15.5.24, 16.3.3"
-  - id: GHSA-673q-mjm6-r5xr
-    purls:
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@16.2.6 -> 16.4.1"
-  - id: GHSA-cg2g-xh64-v4q7
-    purls:
-      - "pkg:npm/dompurify@3.4.10"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: dompurify@3.4.10 -> 3.4.17"
-  - id: GHSA-vcvr-r3jv-pc5j
-    purls:
-      - "pkg:npm/next@16.2.6"
-    expired_at: 2026-11-21
-    statement: "Adoption baseline, upgrade required: next@16.2.6 -> 16.3.6"
+#
+# No vulnerability is ignored at the moment. An entry looks like:
+#
+# vulnerabilities:
+#   - id: CVE-2026-00000
+#     purls:
+#       - "pkg:npm/example@1.2.3"
+#     expired_at: 2026-12-31
+#     statement: "Why it is accepted, and what upgrade removes it"
 
 secrets:
   - id: private-key
