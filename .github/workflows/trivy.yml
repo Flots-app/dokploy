@@ -56,8 +56,6 @@ jobs:
           persist-credentials: false
 
       - name: Install checksum-verified Trivy
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/install-trivy.sh
 
       - name: Test the Trivy gate
@@ -170,8 +168,6 @@ jobs:
             RELEASE_TAG=latest
 
       - name: Install checksum-verified Trivy
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/install-trivy.sh
 
       - name: Scan the image

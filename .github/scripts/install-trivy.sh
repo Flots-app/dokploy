@@ -5,13 +5,19 @@
 # scanner that guards the pipeline is fetched the way ci.yml fetches Nixpacks:
 #
 #   1. the tarball must match a SHA-256 committed in this file,
-#   2. the tarball must match the signed attestation of the immutable release.
+#   2. that SHA-256 was taken from the checksums file of the immutable release,
+#      after checking the file against the release attestation.
+#
+# The attestation is checked when the pin is written, not on every run:
+# `gh release verify-asset` calls the GitHub API, and the aquasecurity
+# organization's IP allow list rejects calls made from GitHub-hosted runners.
 #
 # To upgrade, change TRIVY_VERSION and both checksums together:
 #   gh release download "v<version>" --repo aquasecurity/trivy \
-#     --pattern 'trivy_*_checksums.txt' -O - | grep -E 'Linux-(64bit|ARM64)\.tar\.gz$'
-#
-# Requires GH_TOKEN for `gh release verify-asset`.
+#     --pattern 'trivy_<version>_checksums.txt'
+#   gh release verify-asset "v<version>" trivy_<version>_checksums.txt \
+#     --repo aquasecurity/trivy
+#   grep -E 'Linux-(64bit|ARM64)\.tar\.gz$' trivy_<version>_checksums.txt
 set -euo pipefail
 
 TRIVY_VERSION="0.76.1"
@@ -43,7 +49,6 @@ curl --fail --silent --show-error --location \
   "https://github.com/${TRIVY_REPOSITORY}/releases/download/v${TRIVY_VERSION}/${asset}"
 
 printf '%s  %s\n' "$expected_sha256" "$archive" | sha256sum --check -
-gh release verify-asset "v${TRIVY_VERSION}" "$archive" --repo "$TRIVY_REPOSITORY"
 
 mkdir -p "$install_dir"
 tar --extract --gzip --file "$archive" --directory "$install_dir" trivy
