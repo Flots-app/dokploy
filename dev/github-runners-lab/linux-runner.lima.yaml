@@ -1,0 +1,27 @@
+minimumLimaVersion: 2.0.0
+
+# A plain Ubuntu machine, as a "Linux VM" runner node would be: Dokploy installs
+# Docker, the runner runtime and the resource budget itself.
+base:
+  - template:_images/ubuntu-lts
+
+cpus: 2
+memory: 3GiB
+disk: 20GiB
+
+user:
+  name: dokploy
+
+ssh:
+  localPort: 22231
+  loadDotSSHPubKeys: false
+  forwardAgent: false
+
+mounts: []
+
+containerd:
+  system: false
+  user: false
+
+message: |
+  Linux runner machine ready. Dokploy reaches it at 127.0.0.1:22231 as user dokploy.

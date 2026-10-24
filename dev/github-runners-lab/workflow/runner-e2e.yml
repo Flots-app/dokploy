@@ -1,0 +1,52 @@
+name: Runner E2E
+
+# Copy to .github/workflows/ of a throwaway repository whose runners are a
+# Dokploy pool labelled dokploy-e2e. Never target real CI labels.
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: How long each job burns CPU
+        default: "60"
+      indexes:
+        description: JSON array, one job per item
+        default: "[1]"
+      machine:
+        description: Extra label, e.g. dokploy-<machine> to pin a machine
+        default: dokploy-e2e
+
+jobs:
+  probe:
+    name: probe ${{ matrix.index }}
+    strategy:
+      fail-fast: false
+      matrix:
+        index: ${{ fromJSON(inputs.indexes) }}
+    runs-on: [self-hosted, dokploy-e2e, "${{ inputs.machine }}"]
+    timeout-minutes: 30
+    steps:
+      - name: Machine and budget
+        run: |
+          echo "runner=$RUNNER_NAME slot=${DOKPLOY_RUNNER_SLOT:-?}"
+          uname -a
+          echo "nproc=$(nproc)"
+          free -m
+          df -h /
+          echo "cgroup=$(cat /proc/self/cgroup)"
+          slice="/sys/fs/cgroup$(systemctl show -p ControlGroup --value dokploy-runners.slice)"
+          echo "cpu.max=$(cat "$slice/cpu.max")"
+          echo "cpuset=$(cat "$slice/cpuset.cpus.effective" 2>/dev/null || echo all)"
+          echo "memory.max=$(cat "$slice/memory.max")"
+          echo "tool_cache=$RUNNER_TOOL_CACHE home=$HOME"
+          test -z "$(ls -A "$GITHUB_WORKSPACE" 2>/dev/null)" && echo "workspace is clean"
+      - name: Job containers share the budget
+        run: |
+          docker run --rm alpine:3.20 sh -c 'echo "container nproc=$(nproc)"; cat /proc/self/cgroup'
+      - name: Burn CPU
+        run: |
+          end=$((SECONDS + ${{ inputs.seconds }}))
+          for _ in $(seq "$(nproc)"); do
+            (while [ "$SECONDS" -lt "$end" ]; do :; done) &
+          done
+          wait
+          echo "done after ${{ inputs.seconds }}s"

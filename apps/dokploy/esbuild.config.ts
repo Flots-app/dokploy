@@ -24,6 +24,7 @@ try {
 		.build({
 			entryPoints: {
 				server: "server/server.ts",
+				"runner-controller": "server/runner-controller.ts",
 				migration: "migration.ts",
 				"wait-for-postgres": "wait-for-postgres.ts",
 				"reset-password": "reset-password.ts",

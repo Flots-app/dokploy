@@ -13,6 +13,7 @@ import {
 	initVolumeBackupsCronJobs,
 	sendDokployRestartNotifications,
 	setupDirectories,
+	startGithubRunnerController,
 } from "@dokploy/server";
 import { config } from "dotenv";
 import next from "next";
@@ -70,6 +71,12 @@ void app.prepare().then(async () => {
 		}
 		await initEnterpriseBackupCronJobs();
 		await initInterruptedServiceMigrations();
+		if (!IS_CLOUD) {
+			await startGithubRunnerController({
+				kind: "dokploy",
+				version: packageInfo.version,
+			});
+		}
 
 		if (!IS_CLOUD) {
 			console.log("Starting Deployment Worker");
