@@ -53,6 +53,7 @@ github:
     securityJobsMustNotBeWeakened:
       enabled: true
       securityJobPatterns:
+        - '*bearer*'
         - '*codeql*'
         - '*dependency-review*'
         - '*trufflehog*'
