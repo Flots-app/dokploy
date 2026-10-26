@@ -29,7 +29,7 @@ vi.mock("@dokploy/server/utils/github-runners/ssh", async (importOriginal) => {
 		await importOriginal<
 			typeof import("@dokploy/server/utils/github-runners/ssh")
 		>();
-	const session = (connection: { name: string }) => ({
+	const fakeSession = (connection: { name: string }) => ({
 		fingerprint: "SHA256:test",
 		run: async (script: string, options?: { label?: string }) => {
 			const machine = machines[connection.name];
@@ -43,9 +43,9 @@ vi.mock("@dokploy/server/utils/github-runners/ssh", async (importOriginal) => {
 	return {
 		...original,
 		sharedNodeSession: async (connection: { name: string }) =>
-			session(connection),
+			fakeSession(connection),
 		openNodeSession: async (connection: { name: string }) =>
-			session(connection),
+			fakeSession(connection),
 		closeSharedSessions: () => undefined,
 	};
 });

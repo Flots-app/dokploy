@@ -511,7 +511,7 @@ describe("GitHub runner API", () => {
 		const fetcher = async () =>
 			json(200, {
 				tag_name: "v2.329.0",
-				body: `<!-- BEGIN SHA linux-x64 -->${"b".repeat(64)}<!-- END SHA linux-x64 -->`,
+				body: `<!-- BEGIN SHA osx-arm64 -->${"c".repeat(64)}<!-- END SHA osx-arm64 -->\n<!-- BEGIN SHA linux-x64 -->${"b".repeat(64)}<!-- END SHA linux-x64 -->`,
 				assets: [
 					{
 						name: "actions-runner-linux-arm64-2.329.0.tar.gz",

@@ -3,9 +3,11 @@ import {
 	firewallRuleSchema,
 } from "@dokploy/server/utils/firewall/rules";
 
+/** 12 hex characters: getRandomValues also exists on plain HTTP, randomUUID does not. */
 export const newRuleId = () =>
-	globalThis.crypto?.randomUUID?.().slice(0, 12) ??
-	Math.random().toString(36).slice(2, 14);
+	Array.from(globalThis.crypto.getRandomValues(new Uint8Array(6)), (byte) =>
+		byte.toString(16).padStart(2, "0"),
+	).join("");
 
 /** The first problem of a rule, for the row that shows it. */
 export const ruleError = (rule: FirewallRule) => {

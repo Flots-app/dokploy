@@ -226,7 +226,7 @@ const PrivateKeyField = ({
 						placeholder={
 							pool?.hasAppPrivateKey
 								? "Unchanged"
-								: "-----BEGIN RSA PRIVATE KEY-----"
+								: "The .pem file GitHub generated for the App"
 						}
 						{...field}
 					/>

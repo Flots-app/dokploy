@@ -5,6 +5,7 @@ import { getDokployUrl } from "@dokploy/server/services/admin";
 import type { RunnerNotice } from "@dokploy/server/utils/github-runners/alerts";
 import { render } from "@react-email/components";
 import { and, eq } from "drizzle-orm";
+import escapeHtml from "lodash/escape.js";
 import {
 	sendCustomNotification,
 	sendDiscordNotification,
@@ -71,9 +72,6 @@ export const ntfyHeaderValue = (text: string) =>
 	/^[\x20-\x7e]*$/.test(text)
 		? text
 		: `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
-
-const escapeHtml = (text: string) =>
-	text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /**
  * Sends a GitHub Runners notice to every notification of the organization

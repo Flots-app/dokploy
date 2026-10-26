@@ -1004,11 +1004,11 @@ export const resolveRunnerRelease = async (
 	// Older releases only list their checksums in the notes.
 	const sha256 =
 		assetSha256(asset) ??
-		release.body?.match(
-			new RegExp(
-				`<!-- BEGIN SHA ${platform} -->([a-f0-9]{64})<!-- END SHA ${platform} -->`,
+		[
+			...(release.body ?? "").matchAll(
+				/<!-- BEGIN SHA ([\w-]+) -->([a-f0-9]{64})<!-- END SHA \1 -->/g,
 			),
-		)?.[1];
+		].find((match) => match[1] === platform)?.[2];
 	if (!sha256) {
 		throw new Error(
 			`actions/runner ${resolved} publishes no SHA-256 for ${platform}`,
