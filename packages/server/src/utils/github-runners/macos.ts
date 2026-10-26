@@ -69,7 +69,8 @@ echo "vm status=$status cpus=$cpus memory_bytes=$memory disk_bytes=$disk type=$t
 ${
 	withGuest
 		? `if [ "$status" = Running ]; then
-	limactl shell --workdir / "$name" sudo -n ${statusCommand} 2>&1 | sed 's/^/guest: /' || echo "guest: error"
+	# pipefail: a status that fails half-way must not pass for a complete one.
+	( set -o pipefail; limactl shell --workdir / "$name" sudo -n ${statusCommand} 2>&1 | sed 's/^/guest: /' ) || echo "guest: statusfail code=$?"
 fi`
 		: ""
 }

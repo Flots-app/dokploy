@@ -293,7 +293,13 @@ export const planNode = (input: {
 		}
 	}
 
-	if (node.drain && live.length === 0) {
+	// A job GitHub still sees on a runner of the machine keeps it from being
+	// drained, whatever the machine reported (a status cut short).
+	if (
+		node.drain &&
+		live.length === 0 &&
+		!runners.some((runner) => runner.busy && runner.status === "online")
+	) {
 		actions.push({ type: "drained" });
 	}
 

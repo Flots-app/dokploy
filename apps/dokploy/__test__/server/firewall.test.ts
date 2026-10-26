@@ -8,7 +8,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apiCreateFirewall } from "@dokploy/server/db/schema";
+import {
+	apiCreateFirewall,
+	apiUpdateFirewall,
+} from "@dokploy/server/db/schema";
 import {
 	NFT_UID_PLACEHOLDER,
 	nftablesRuleset,
@@ -21,6 +24,7 @@ import {
 	NON_PUBLIC,
 } from "@dokploy/server/utils/firewall/model";
 import {
+	canonicalAddress,
 	FIREWALL_TEMPLATES,
 	type FirewallRule,
 	isAddress,
@@ -804,5 +808,136 @@ describe("firewall review, fourth pass", () => {
 			// Tried again within a minute, not ten.
 			expect(cached()?.failed, failing).toBe(true);
 		}
+	});
+});
+
+describe("firewall review, sixth pass", () => {
+	it("loads the mixed IPv6 notation in the canonical form nftables accepts", () => {
+		// RFC 4291 lets an IPv6 address end with an IPv4 one; nft 1.0.9 refuses
+		// all of these but the last, so the Linux machines took no job.
+		const addresses = [
+			"64:ff9b::192.0.2.33",
+			"64:ff9b::192.0.2.0/120",
+			"2001:DB8::10.1.2.3",
+			"::ffff:10.0.0.1",
+		];
+		expect(addresses.every(isAddress)).toBe(true);
+		const compiled = compileFirewall(
+			firewall([
+				rule({ action: "deny", peer: { type: "addresses", addresses } }),
+			]),
+			{ dokployAddresses: [] },
+		);
+		const canonical =
+			"64:ff9b::c000:221, 64:ff9b::c000:200/120, 2001:db8::a01:203, ::ffff:a00:1";
+		expect(nftablesRuleset(compiled).text).toContain(
+			`elements = { ${canonical} }`,
+		);
+		expect(pfRuleset(compiled).text).toContain(`{ ${canonical} }`);
+		expect(canonicalAddress("10.0.0.0/8")).toBe("10.0.0.0/8");
+	});
+
+	describe("updates", () => {
+		const stored = {
+			firewallId: "fw",
+			organizationId: "org",
+			name: "CI egress",
+			description: null,
+			inboundPolicy: "deny",
+			outboundPolicy: "deny",
+			rules: [rule({ action: "deny", id: "deny-db" }), rule()],
+			revision: 4,
+		};
+		const recordSets = async (returned: unknown[] | null = null) => {
+			const { db } = await import("@dokploy/server/db");
+			const original = vi.mocked(db.update).getMockImplementation();
+			const sets: { values: Record<string, unknown>; where: unknown }[] = [];
+			vi.mocked(db.update).mockImplementation(() => {
+				const entry = {
+					values: {} as Record<string, unknown>,
+					where: null as unknown,
+				};
+				const query = {
+					set: (values: Record<string, unknown>) => {
+						entry.values = values;
+						return query;
+					},
+					where: (where: unknown) => {
+						entry.where = where;
+						sets.push(entry);
+						return query;
+					},
+					returning: async () => returned ?? [{ ...stored, ...entry.values }],
+				};
+				return query as never;
+			});
+			vi.mocked(db.query.firewalls.findFirst).mockResolvedValue(
+				stored as never,
+			);
+			return {
+				sets,
+				restore: () => {
+					vi.mocked(db.update).mockImplementation(original as never);
+					vi.mocked(db.query.firewalls.findFirst).mockReset();
+				},
+			};
+		};
+
+		it("keeps what a partial update leaves out", async () => {
+			const { updateFirewall } = await import(
+				"@dokploy/server/services/firewall"
+			);
+			// A rename through the API or MCP, without the rules.
+			const input = apiUpdateFirewall.parse({
+				firewallId: "fw",
+				name: "CI egress v2",
+			});
+			expect(input).toEqual({ firewallId: "fw", name: "CI egress v2" });
+			const { sets, restore } = await recordSets();
+			try {
+				await updateFirewall(input, "org");
+			} finally {
+				restore();
+			}
+			expect(Object.keys(sets[0]?.values ?? {}).sort()).toEqual([
+				"name",
+				"revision",
+				"updatedAt",
+			]);
+		});
+
+		it("refuses a change made from an older revision", async () => {
+			const { updateFirewall } = await import(
+				"@dokploy/server/services/firewall"
+			);
+			const { sets, restore } = await recordSets([]);
+			try {
+				// The editor opened revision 3; someone saved revision 4 since.
+				await expect(
+					updateFirewall(
+						apiUpdateFirewall.parse({
+							firewallId: "fw",
+							revision: 3,
+							description: "Only GitHub",
+						}),
+						"org",
+					),
+				).rejects.toMatchObject({ code: "CONFLICT" });
+				expect(sets).toHaveLength(0);
+				// Same revision, but another save lands first: no row is updated.
+				await expect(
+					updateFirewall(
+						apiUpdateFirewall.parse({
+							firewallId: "fw",
+							revision: 4,
+							description: "Only GitHub",
+						}),
+						"org",
+					),
+				).rejects.toMatchObject({ code: "CONFLICT" });
+			} finally {
+				restore();
+			}
+		});
 	});
 });

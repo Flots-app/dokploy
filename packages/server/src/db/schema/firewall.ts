@@ -132,26 +132,47 @@ export const firewallTargetSchema = z.object({
 });
 export type FirewallTarget = z.infer<typeof firewallTargetSchema>;
 
-const firewallFields = z
+const firewallFields = {
+	name: z.string().trim().min(1).max(64),
+	description: z.string().trim().max(500).nullable(),
+	inboundPolicy: firewallPolicySchema,
+	outboundPolicy: firewallPolicySchema,
+	rules: firewallRulesSchema,
+};
+
+const uniqueRuleIds = {
+	check: (value: { rules?: { id: string }[] }) =>
+		!value.rules ||
+		new Set(value.rules.map((rule) => rule.id)).size === value.rules.length,
+	params: { path: ["rules"], message: "Each rule needs its own id" },
+};
+
+export const apiCreateFirewall = z
 	.object({
-		name: z.string().trim().min(1).max(64),
-		description: z.string().trim().max(500).nullable().default(null),
-		inboundPolicy: firewallPolicySchema.default("allow"),
-		outboundPolicy: firewallPolicySchema.default("allow"),
-		rules: firewallRulesSchema.default([]),
+		...firewallFields,
+		description: firewallFields.description.default(null),
+		inboundPolicy: firewallFields.inboundPolicy.default("allow"),
+		outboundPolicy: firewallFields.outboundPolicy.default("allow"),
+		rules: firewallFields.rules.default([]),
 	})
-	.refine(
-		(value) =>
-			new Set(value.rules.map((rule) => rule.id)).size === value.rules.length,
-		{ path: ["rules"], message: "Each rule needs its own id" },
-	);
+	.refine(uniqueRuleIds.check, uniqueRuleIds.params);
 
-export const apiCreateFirewall = firewallFields;
-
-export const apiUpdateFirewall = z.intersection(
-	firewallFields,
-	z.object({ firewallId: z.string().min(1) }),
-);
+/**
+ * A field left out keeps its value: a rename through the API never drops the
+ * rules. With `revision`, the change is refused when the firewall changed
+ * since that revision, so two editors never silently undo each other.
+ */
+export const apiUpdateFirewall = z
+	.object({
+		firewallId: z.string().min(1),
+		revision: z.number().int().min(0).optional(),
+		name: firewallFields.name.optional(),
+		description: firewallFields.description.optional(),
+		inboundPolicy: firewallFields.inboundPolicy.optional(),
+		outboundPolicy: firewallFields.outboundPolicy.optional(),
+		rules: firewallFields.rules.optional(),
+	})
+	.refine(uniqueRuleIds.check, uniqueRuleIds.params);
 
 export const apiFindFirewall = z.object({ firewallId: z.string().min(1) });
 

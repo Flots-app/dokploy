@@ -705,11 +705,14 @@ const runTask = (
 	if (tasks.has(nodeId)) return false;
 	const log = (line: string) => appendOperationLog(operationId, line);
 	const promise = (async () => {
-		await waitForTick(nodeId);
 		let session: NodeSession | null = null;
 		let keepalive: NodeJS.Timeout | null = null;
-		const leased = await waitForLease(nodeId, log);
+		let leased = false;
 		try {
+			// Inside the try: a database failure here still reaches onError, so
+			// the caller never takes a task that did not run for a success.
+			await waitForTick(nodeId);
+			leased = await waitForLease(nodeId, log);
 			if (!leased) {
 				throw new Error(
 					`Another Dokploy instance has been working on this machine for ${LEASE_WAIT_MS / 60_000} minutes: try again later`,
@@ -734,7 +737,8 @@ const runTask = (
 			await task({ node, driver, session, log });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			await log(`Error: ${message}`);
+			// The database may be what failed: the log must not hide the error.
+			await log(`Error: ${message}`).catch(() => undefined);
 			if (onError) await onError(error);
 			else {
 				await finishOperation(operationId, "error", message);
@@ -1929,8 +1933,6 @@ const observeNode = async (
 		return { node, session, driver, probe };
 	} catch (error) {
 		session?.close();
-		await markUnreachable(node, error);
-		await releaseLease(nodeId);
 		unreachable.add(nodeId);
 		state.reconnects.set(nodeId, {
 			failures: 1,
@@ -1939,6 +1941,18 @@ const observeNode = async (
 			// A "Retry now" from before this failure is spent.
 			requestSeen: Date.parse(node.observed?.retryRequestedAt ?? "") || 0,
 		});
+		// The lease goes whatever the database answers: a lease kept here would
+		// keep the next leader off the machine.
+		try {
+			await markUnreachable(node, error);
+		} catch (writeError) {
+			console.error(
+				`GitHub runners: unable to record that ${node.name} is unreachable`,
+				writeError,
+			);
+		} finally {
+			await releaseLease(nodeId).catch(() => undefined);
+		}
 		return null;
 	}
 };
@@ -3415,7 +3429,12 @@ const maintainReserve = async (
 		firewall,
 	});
 	const writeSetting = async () => {
-		if (state.autonomyApplied.get(nodeId) === setting) return;
+		// What the machine follows, when its runtime tells: a reinstall wipes it,
+		// and another leader may have written something else since. Older
+		// runtimes are only compared with what this process wrote.
+		const current =
+			runtime.autonomySetting ?? state.autonomyApplied.get(nodeId);
+		if (current === setting) return;
 		await driver.guest(`${RUNNERCTL} autonomy ${setting}`, {
 			label: "Autonomy",
 			timeoutMs: 60_000,
@@ -3517,6 +3536,8 @@ const actOnNode = async (
 			} else if (!runtime && probe.runtimeError) {
 				lastError = `Runtime does not answer: ${probe.runtimeError}`;
 			}
+		} else if (!runtime && probe.runtimeError) {
+			lastError = `Runtime does not answer: ${probe.runtimeError}`;
 		}
 
 		const host = probe.host;
@@ -3833,10 +3854,12 @@ const actOnNode = async (
 				});
 			}
 		}
-		// A stopped VM runs nothing; a running VM whose runtime does not answer
-		// may still run jobs, so it is never taken for drained.
+		// A stopped VM runs nothing. A runtime that does not answer (a running
+		// VM, a status that failed half-way) may still run jobs: no slot seen is
+		// then no proof, and the machine is never taken for drained.
 		drained =
-			plan.actions.some((action) => action.type === "drained") ||
+			(!probe.runtimeError &&
+				plan.actions.some((action) => action.type === "drained")) ||
 			(Boolean(node.drain) &&
 				node.platform === "macos" &&
 				probe.vm !== null &&
@@ -4461,6 +4484,7 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
 	}
 	let failure: unknown = null;
 	let saved = false;
+	let rotated = false;
 	const started = runTask(
 		nodeId,
 		null,
@@ -4503,6 +4527,7 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
 				closeSharedSessions(node);
 			}
 			pushEvent(nodeId, "SSH key rotated: the previous key no longer logs in");
+			rotated = true;
 		},
 		async (error) => {
 			const message = error instanceof Error ? error.message : String(error);
@@ -4526,6 +4551,13 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
 	}
 	await state.tasks.get(nodeId);
 	if (failure) throw failure;
+	// The operator replaces a key they may think compromised: anything short of
+	// a finished rotation is a failure, whatever stopped the task.
+	if (!rotated) {
+		throw new Error(
+			`The SSH key rotation of ${node.name} did not run, the previous key still works: try again`,
+		);
+	}
 };
 
 /**
@@ -4585,12 +4617,22 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 	if (!pool) return;
 	for (const node of nodes) ticking.add(node.githubRunnerNodeId);
 	const observations: Observation[] = [];
+	// Observed machines whose session and lease nothing has taken over yet:
+	// released in the finally whatever fails in between.
+	const unhandled = new Set<Observation>();
 	try {
-		observations.push(
-			...(await Promise.all(nodes.map(observeNode))).filter(
-				(item): item is Observation => item !== null,
-			),
-		);
+		const observed = await Promise.allSettled(nodes.map(observeNode));
+		observed.forEach((result, index) => {
+			if (result.status === "rejected") {
+				console.error(
+					`GitHub runner observation failed for ${nodes[index]?.name}`,
+					result.reason,
+				);
+			} else if (result.value) {
+				observations.push(result.value);
+				unhandled.add(result.value);
+			}
+		});
 		const lost = nodes.filter((node) =>
 			unreachable.has(node.githubRunnerNodeId),
 		);
@@ -4607,7 +4649,14 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 			listError = `GitHub: ${error instanceof Error ? error.message : String(error)}`;
 		}
 		if (runners) {
-			for (const node of lost) await detectLostJobs(node, runners);
+			for (const node of lost) {
+				await detectLostJobs(node, runners).catch((error) =>
+					console.error(
+						`GitHub runners: unable to check the jobs of ${node.name}`,
+						error,
+					),
+				);
+			}
 		}
 		// Where runners wait across the pool: only where a new job runs fastest.
 		const waiting = placeWaitingRunners(
@@ -4618,6 +4667,7 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 		);
 		await Promise.all(
 			observations.map(async (observation) => {
+				unhandled.delete(observation);
 				const id = observation.node.githubRunnerNodeId;
 				let drained = false;
 				try {
@@ -4641,6 +4691,12 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 			}),
 		);
 	} finally {
+		for (const observation of unhandled) {
+			observation.session.close();
+			await releaseLease(observation.node.githubRunnerNodeId).catch(
+				() => undefined,
+			);
+		}
 		for (const node of nodes) ticking.delete(node.githubRunnerNodeId);
 	}
 };
@@ -4795,7 +4851,14 @@ const tickGithubRunners = async () => {
 			list.push(node);
 			byPool.set(node.githubRunnerPoolId, list);
 		}
-		await Promise.all([...byPool.values()].map(tickPool));
+		// Every pool ends before the tick does: a tick ending early would let the
+		// next one work on machines a pool still holds.
+		const ticked = await Promise.allSettled([...byPool.values()].map(tickPool));
+		for (const result of ticked) {
+			if (result.status === "rejected") {
+				console.error("GitHub runner pool tick failed", result.reason);
+			}
+		}
 		await routePools();
 		const pools = new Map(
 			nodes.map((node) => [node.githubRunnerPoolId, node.pool]),
@@ -5008,6 +5071,8 @@ const heartbeat = async () => {
 		console.log(`GitHub runner controller: leading (${OWNER})`);
 		state.leader = true;
 		state.lastOrphanCheck = 0;
+		// Another leader may have changed what machines follow meanwhile.
+		state.autonomyApplied.clear();
 		requestTick();
 	} else if (!leading && state.leader) {
 		console.log(`GitHub runner controller: standing by (${OWNER})`);

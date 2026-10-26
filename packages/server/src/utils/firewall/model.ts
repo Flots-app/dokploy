@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import {
 	addressFamily,
+	canonicalAddress,
 	type FirewallPeer,
 	type FirewallPolicy,
 	type FirewallRule,
@@ -113,7 +114,9 @@ export interface CompiledFirewall {
 
 const split = (addresses: string[]): AddressSet => ({
 	v4: addresses.filter((item) => addressFamily(item) === 4),
-	v6: addresses.filter((item) => addressFamily(item) === 6),
+	v6: addresses
+		.filter((item) => addressFamily(item) === 6)
+		.map(canonicalAddress),
 });
 
 /** The addresses of a peer; `dokploy` needs the addresses of this server. */

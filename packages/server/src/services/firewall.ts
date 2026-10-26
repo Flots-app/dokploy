@@ -62,8 +62,14 @@ export const updateFirewall = async (
 	input: z.infer<typeof apiUpdateFirewall>,
 	organizationId: string,
 ) => {
-	const { firewallId, ...fields } = input;
-	await findFirewall(firewallId, organizationId);
+	const { firewallId, revision, ...fields } = input;
+	const stored = await findFirewall(firewallId, organizationId);
+	const changed = () =>
+		new TRPCError({
+			code: "CONFLICT",
+			message: `Firewall ${stored.name} changed since it was opened: reopen it to see its current rules, then make the change again`,
+		});
+	if (revision !== undefined && revision !== stored.revision) throw changed();
 	const [firewall] = await db
 		.update(firewalls)
 		.set({
@@ -71,9 +77,15 @@ export const updateFirewall = async (
 			revision: sql`${firewalls.revision} + 1`,
 			updatedAt: new Date().toISOString(),
 		})
-		.where(eq(firewalls.firewallId, firewallId))
+		.where(
+			and(
+				eq(firewalls.firewallId, firewallId),
+				revision === undefined ? undefined : eq(firewalls.revision, revision),
+			),
+		)
 		.returning();
-	if (!firewall) throw notFound("Firewall");
+	if (!firewall)
+		throw revision === undefined ? notFound("Firewall") : changed();
 	return firewall;
 };
 

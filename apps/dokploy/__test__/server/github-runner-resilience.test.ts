@@ -1,4 +1,13 @@
 import { spawnSync } from "node:child_process";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	GithubRunnerNode,
 	GithubRunnerPool,
@@ -14,6 +23,7 @@ import {
 	planSpares,
 	SPARE_ROTATE_MS,
 } from "@dokploy/server/utils/github-runners/autonomy";
+import { createNodeDriver } from "@dokploy/server/utils/github-runners/driver";
 import {
 	createGithubRunnerClient,
 	type GithubRunner,
@@ -1255,5 +1265,161 @@ describe("review fixes, fifth review", () => {
 		}
 		// No pause: a permission fixed is used at once.
 		expect(forbidden).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("review fixes, sixth review", () => {
+	const runner = (name: string, busy: boolean, status: "online" | "offline") =>
+		({
+			id: 7,
+			name,
+			status,
+			busy,
+			labels: ["self-hosted", "ci"],
+			customLabels: ["ci"],
+			version: "2.330.0",
+		}) as GithubRunner;
+	const draining = (runners: GithubRunner[]) =>
+		planNode({
+			now,
+			node: {
+				enabled: false,
+				phase: "draining",
+				drain: {
+					mode: "wait",
+					reason: "remove",
+					requestedAt: iso(-MINUTE),
+					deadline: null,
+					operationId: "op-remove",
+				},
+				maxRunners: 2,
+				namePrefix: "dkp-m6-",
+				labels: ["ci"],
+				runnerVersion: "2.330.0",
+				admission: { ok: true },
+				maxArmsPerTick: 2,
+			},
+			slots: [],
+			runners,
+		}).actions;
+
+	it("never takes a machine GitHub sees running a job for drained", () => {
+		expect(draining([runner("dkp-m6-1-ab12cd", true, "online")])).toEqual([]);
+		// A runner stopped mid-job goes offline: the drain ends.
+		expect(draining([runner("dkp-m6-1-ab12cd", true, "offline")])).toEqual([
+			{ type: "drained" },
+		]);
+	});
+
+	/** A runtime whose status stops half-way, like `set -e` after a failed command. */
+	const brokenRunnerctl = (dir: string) => {
+		const path = join(dir, "runnerctl");
+		writeFileSync(
+			path,
+			'#!/bin/bash\necho "runtime version=7"\necho "host cpus=4 memory_kib=8388608 available_kib=4194304 arch=x86_64 load=0.10"\necho "systemctl: Failed to list units: Connection timed out" >&2\nexit 1\n',
+		);
+		chmodSync(path, 0o755);
+		return path;
+	};
+
+	it("takes a Linux status that failed half-way for a runtime that does not answer", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "runner-probe-"));
+		try {
+			const runnerctl = brokenRunnerctl(dir);
+			// The probe command as the driver sends it, run for real with bash.
+			const session = {
+				run: async (command: string) => {
+					const result = spawnSync(
+						"bash",
+						[
+							"-c",
+							command.replaceAll(
+								"/opt/dokploy-runners/bin/runnerctl",
+								runnerctl,
+							),
+						],
+						{ encoding: "utf8" },
+					);
+					return {
+						stdout: result.stdout,
+						stderr: result.stderr,
+						exitCode: result.status,
+					};
+				},
+			};
+			const probe = await createNodeDriver(session as never, {
+				platform: "linux",
+				vmName: "dokploy-runners",
+				username: "root",
+			}).probe();
+			expect(probe.runtime).toBeNull();
+			expect(probe.runtimeError).toBe(
+				"runnerctl status failed (exit 1): systemctl: Failed to list units: Connection timed out",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("takes a Mac whose VM runs but whose runtime fails or stays silent for an error", async () => {
+		const home = mkdtempSync(join(tmpdir(), "runner-mac-probe-"));
+		const probeWith = async (shell: string) => {
+			const bin = join(home, ".dokploy", "lima", "bin");
+			mkdirSync(bin, { recursive: true });
+			writeFileSync(
+				join(bin, "limactl"),
+				`#!/bin/bash\ncase "$1" in\n--version) echo "limactl version 2.2.1" ;;\nlist) echo "Running|4|8589934592|68719476736|vz" ;;\nshell) ${shell} ;;\nesac\n`,
+			);
+			chmodSync(join(bin, "limactl"), 0o755);
+			const session = {
+				run: async (script: string) => {
+					const result = spawnSync("/bin/bash", ["-s"], {
+						input: script,
+						encoding: "utf8",
+						env: { ...process.env, HOME: home, LIMA_HOME: home },
+					});
+					return {
+						stdout: result.stdout,
+						stderr: result.stderr,
+						exitCode: result.status,
+					};
+				},
+			};
+			return createNodeDriver(session as never, {
+				platform: "macos",
+				vmName: "dokploy-runners",
+				username: "ci",
+			}).probe();
+		};
+		try {
+			const failed = await probeWith(
+				'echo "runtime version=7"; echo "host cpus=4 memory_kib=8388608 arch=aarch64"; exit 1',
+			);
+			expect(failed.vm?.status).toBe("Running");
+			expect(failed.runtime).toBeNull();
+			expect(failed.runtimeError).toContain("statusfail code=1");
+			const silent = await probeWith("exit 0");
+			expect(silent.runtime).toBeNull();
+			expect(silent.runtimeError).toBe("the VM did not answer");
+			const answering = await probeWith(
+				'echo "runtime version=7"; echo "host cpus=4 memory_kib=8388608 arch=aarch64"',
+			);
+			expect(answering.runtime?.runtimeVersion).toBe(7);
+			expect(answering.runtimeError).toBeNull();
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	it("reads the autonomy setting a v8 runtime follows", () => {
+		const setting = (line: string) =>
+			parseRuntimeStatus(parseRecords(`runtime version=8\n${line}`))
+				.autonomySetting;
+		expect(
+			setting("autonomyset max_runners=2 min_free_kib=10485760 firewall=host"),
+		).toBe("on 2 10485760 host");
+		expect(setting("autonomyset state=off")).toBe("off");
+		// A runtime older than v8 does not tell.
+		expect(setting("")).toBeNull();
 	});
 });

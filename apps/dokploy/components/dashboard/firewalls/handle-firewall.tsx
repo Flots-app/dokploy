@@ -107,7 +107,11 @@ const FirewallForm = ({
 		};
 		try {
 			if (firewall) {
-				await update.mutateAsync({ ...input, firewallId: firewall.firewallId });
+				await update.mutateAsync({
+					...input,
+					firewallId: firewall.firewallId,
+					revision: firewall.revision,
+				});
 			} else {
 				await create.mutateAsync(input);
 			}

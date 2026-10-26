@@ -6,12 +6,13 @@
  */
 import { parseEnvLines } from "./env";
 
-export const RUNTIME_VERSION = 7;
+export const RUNTIME_VERSION = 8;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
  * v6 changed the disk cleanup records, so it is required. v7 adds the
  * reserve a machine arms itself with while no controller answers: optional.
+ * v8 reports the autonomy setting it follows: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 
@@ -125,6 +126,12 @@ cmd_status() {
 	done
 	if [ -s "$STATE/autonomy.log" ]; then
 		echo "autonomy armed=$(wc -l <"$STATE/autonomy.log") last=$(tail -n 1 "$STATE/autonomy.log" | cut -d' ' -f1)"
+	fi
+	# What autoarm follows: the controller compares it with what it wants.
+	if [ -f "$ETC/autonomy" ]; then
+		echo "autonomyset $(cat "$ETC/autonomy" 2>/dev/null || true)"
+	else
+		echo "autonomyset state=off"
 	fi
 }
 

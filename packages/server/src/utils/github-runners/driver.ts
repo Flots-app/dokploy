@@ -98,7 +98,12 @@ export const createNodeDriver = (
 					limaVersion: status.limaVersion,
 					githubReachable: status.githubReachable,
 					runtime: status.guest,
-					runtimeError: status.guestError,
+					// Limactl answers something whenever the VM runs: silence is an error.
+					runtimeError:
+						status.guestError ??
+						(status.vm.status === "Running" && !status.guest
+							? "the VM did not answer"
+							: null),
 					firewall: parseFirewallStatus(stdout),
 				};
 			},
@@ -116,15 +121,19 @@ export const createNodeDriver = (
 			}),
 		host: session.run,
 		probe: async () => {
-			const { stdout } = await session.run(
-				`${sudo}${statusCommand}; ${sudo}${linuxFirewallStatus}`,
+			// The exit code of the status is the firewall status's otherwise: a
+			// status that failed half-way would pass for a machine running nothing.
+			const { stdout, stderr } = await session.run(
+				`${sudo}${statusCommand} || echo "statusfail code=$?"; ${sudo}${linuxFirewallStatus}`,
 				{
 					label: "Probe",
 					timeoutMs: 60_000,
 					input: "",
 				},
 			);
-			const runtime = parseRuntimeStatus(parseRecords(stdout));
+			const records = parseRecords(stdout);
+			const runtime = parseRuntimeStatus(records);
+			const failed = records.find((record) => record.kind === "statusfail");
 			return {
 				platform: "linux",
 				host:
@@ -150,8 +159,10 @@ export const createNodeDriver = (
 				vm: null,
 				limaVersion: null,
 				githubReachable: null,
-				runtime: runtime.runtimeVersion > 0 ? runtime : null,
-				runtimeError: null,
+				runtime: !failed && runtime.runtimeVersion > 0 ? runtime : null,
+				runtimeError: failed
+					? `runnerctl status failed (exit ${failed.fields.code ?? "unknown"})${stderr.trim() ? `: ${stderr.trim().split("\n").slice(-1)[0]?.slice(0, 200)}` : ""}`
+					: null,
 				firewall: parseFirewallStatus(stdout),
 			};
 		},

@@ -33,6 +33,22 @@ export const addressFamily = (value: string): 0 | 4 | 6 =>
 /** "10.0.0.0/8", "192.168.1.10", "fd00::/8": an address or a network. */
 export const isAddress = (value: string) => addressFamily(value) !== 0;
 
+/**
+ * An IPv6 address or network in its canonical text (RFC 5952), as the
+ * machines load it: nftables refuses the mixed notation of RFC 4291 that zod
+ * accepts, such as 64:ff9b::192.0.2.33. Anything else is returned as it is.
+ */
+export const canonicalAddress = (value: string) => {
+	if (addressFamily(value) !== 6) return value;
+	const [address, prefix] = value.split("/");
+	try {
+		const host = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+		return prefix === undefined ? host : `${host}/${prefix}`;
+	} catch {
+		return value;
+	}
+};
+
 /** "443", "80,443", "8000-9000": every port and range between 1 and 65535. */
 export const parsePorts = (value: string): [number, number][] | null => {
 	const ranges: [number, number][] = [];

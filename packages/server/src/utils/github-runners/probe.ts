@@ -89,6 +89,11 @@ export interface RuntimeStatus {
 	spares: { slot: number; name: string; createdAt: number }[];
 	/** Slots the machine armed on its own: how many, and the last time (epoch seconds). */
 	autonomy: { armed: number; last: number } | null;
+	/**
+	 * What autoarm follows, as `runnerctl autonomy` takes it ("on 2 1024 host",
+	 * "off"); null from a runtime older than v8, which does not tell.
+	 */
+	autonomySetting: string | null;
 }
 
 const epochToIso = (value: string | undefined) => {
@@ -203,6 +208,15 @@ export const parseRuntimeStatus = (records: ProbeRecord[]): RuntimeStatus => {
 			const last = int(record.last);
 			return armed && last ? { armed, last } : null;
 		})(),
+		autonomySetting: (() => {
+			const record = records.find((item) => item.kind === "autonomyset");
+			if (!record) return null;
+			if (record.fields.state === "off") return "off";
+			const { max_runners, min_free_kib, firewall } = record.fields;
+			return int(max_runners) !== null && int(min_free_kib) !== null && firewall
+				? `on ${int(max_runners)} ${int(min_free_kib)} ${firewall}`
+				: null;
+		})(),
 	};
 };
 
@@ -250,7 +264,10 @@ export const parseMacStatus = (output: string): MacStatus => {
 		.filter((line) => line.startsWith("guest: "))
 		.map((line) => line.slice("guest: ".length));
 	const guestRecords = parseRecords(guestLines.join("\n"));
-	const hasGuest = guestRecords.some((record) => record.kind === "runtime");
+	// A status that stopped half-way may miss the slots that run: an error.
+	const hasGuest =
+		guestRecords.some((record) => record.kind === "runtime") &&
+		!guestRecords.some((record) => record.kind === "statusfail");
 	const memoryBytes = int(host.memory_bytes);
 	const totalKib = int(disk.total_kib);
 	const freeKib = int(disk.free_kib);
