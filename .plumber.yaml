@@ -53,11 +53,13 @@ github:
     securityJobsMustNotBeWeakened:
       enabled: true
       securityJobPatterns:
+        - '*bearer*'
         - '*codeql*'
         - '*dependency-review*'
         - '*trufflehog*'
         - '*gitleaks*'
         - '*osv-scanner*'
+        - '*trivy*'
         - '*-sast'
         - '*-sast-*'
         - '*-scan'

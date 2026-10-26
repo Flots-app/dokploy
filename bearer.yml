@@ -1,0 +1,21 @@
+# Bearer CLI settings shared by CI (.github/workflows/bearer.yml) and local runs:
+#
+#   bearer scan .
+#
+# What blocks is decided by .github/scripts/bearer_gate.py: any finding that
+# bearer.ignore does not list. These settings only make the scan as wide as it
+# can be, and make a local run see what CI sees.
+disable-version-check: true
+
+report:
+  severity: critical,high,medium,low,warning
+  fail-on-severity: critical,high,medium,low,warning
+
+scan:
+  # The secrets scanner is off by default.
+  scanner:
+    - sast
+    - secrets
+  # Test files are scanned too: a credential committed in a fixture is still
+  # a committed credential.
+  skip-test: false
