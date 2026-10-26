@@ -6,13 +6,14 @@
  */
 import { parseEnvLines } from "./env";
 
-export const RUNTIME_VERSION = 8;
+export const RUNTIME_VERSION = 9;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
  * v6 changed the disk cleanup records, so it is required. v7 adds the
  * reserve a machine arms itself with while no controller answers: optional.
- * v8 reports the autonomy setting it follows: optional.
+ * v8 reports the autonomy setting it follows: optional. v9 also removes the
+ * least recently used named Docker volumes: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 
@@ -392,9 +393,10 @@ cmd_install_release() {
 # runs low the least recently used ones are removed until the target is free.
 #   1. waste, at no speed cost: stopped containers, dangling images and build
 #      cache, unused anonymous volumes, workspaces of stopped slots;
-#   2. caches unused for 30, 7 and 3 days, then for 25 hours: Docker images and
-#      build cache, tool cache versions, caches in the runner home. A running job
-#      has used what it needs within 24 hours (relatime), so it keeps them;
+#   2. caches unused for 30, 7 and 3 days, then for 25 hours: Docker images,
+#      named volumes and build cache, tool cache versions, caches in the runner
+#      home. A running job has used what it needs within 24 hours (relatime), so
+#      it keeps them;
 #   3. still below the threshold: every cache, only while no job runs. Jobs that
 #      start meanwhile wait in their started hook.
 declare -gA GC_FREED=() GC_COUNT=()
@@ -513,6 +515,16 @@ gc_candidates() {
 				done
 				printf '%s\timage\t%s\t%s\0' "$last" "$tags" "$id"
 			done
+		# Named volumes no container uses, even a stopped one (anonymous ones went
+		# with the waste). Docker keeps no use time: their newest file tells, like
+		# a tool cache. Only plain local volumes: removing a bind, NFS or tmpfs one
+		# frees nothing on this disk.
+		(docker volume ls -q --filter dangling=true 2>/dev/null | xargs -r docker volume inspect 2>/dev/null |
+			jq -r '.[] | select(.Driver == "local" and ((.Options // {}) | length) == 0 and ((.Labels // {}) | has("com.docker.volume.anonymous") | not)) | [.Name, .Mountpoint] | @tsv' || true) |
+			while IFS=$'\t' read -r name dir; do
+				[[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || continue
+				printf '%s\tvolume\t\t%s\0' "$(gc_last_used "$dir")" "$name"
+			done
 	fi
 	for dir in "$GC_TOOL_CACHE"/*/*; do
 		[ -d "$dir" ] && [ ! -L "$dir" ] || continue
@@ -544,6 +556,13 @@ gc_remove() {
 			docker image rm "$target" >/dev/null 2>&1 || return 0
 		fi
 		gc_note images "$before" 1
+		return 0
+	fi
+	if [ "$kind" = volume ]; then
+		[[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || return 0
+		# Refused while a container uses it: a job took it since the scan.
+		docker volume rm "$target" >/dev/null 2>&1 || return 0
+		gc_note volumes "$before" 1
 		return 0
 	fi
 	[ -d "$target" ] && [ ! -L "$target" ] && gc_cache_entry "$target" || return 0
@@ -597,7 +616,7 @@ cmd_gc() {
 	GC_TARGET=$target
 	gc_waste
 	if [ "$mode" != light ] && ! gc_reached; then
-		# Without access times, file caches only go in the idle step.
+		# Without access times, file caches and volumes only go in the idle step.
 		findmnt -no OPTIONS -T "$ROOT" 2>/dev/null | grep -qw noatime && atime=no
 		local -a entries=()
 		mapfile -d '' -t entries < <(gc_candidates | sort -z -t $'\t' -n -k1,1)

@@ -123,7 +123,7 @@ CREATE TABLE "github_runner_node" (
 	"cpuPercent" integer DEFAULT 70 NOT NULL,
 	"memoryPercent" integer DEFAULT 70 NOT NULL,
 	"diskReserveGb" integer DEFAULT 15 NOT NULL,
-	"diskCleanupGb" integer DEFAULT 30 NOT NULL,
+	"diskCleanupPercent" integer DEFAULT 90 NOT NULL,
 	"maxRunners" integer DEFAULT 0 NOT NULL,
 	"extraLabels" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"enabled" boolean DEFAULT true NOT NULL,
@@ -139,7 +139,7 @@ CREATE TABLE "github_runner_node" (
 	"lockedBy" text,
 	"lockedUntil" text,
 	"createdAt" text NOT NULL,
-	CONSTRAINT "github_runner_node_budget" CHECK ("github_runner_node"."cpuPercent" BETWEEN 10 AND 100 AND "github_runner_node"."memoryPercent" BETWEEN 10 AND 100 AND "github_runner_node"."maxRunners" BETWEEN 0 AND 32 AND "github_runner_node"."diskReserveGb" >= 0 AND "github_runner_node"."diskCleanupGb" >= "github_runner_node"."diskReserveGb")
+	CONSTRAINT "github_runner_node_budget" CHECK ("github_runner_node"."cpuPercent" BETWEEN 10 AND 100 AND "github_runner_node"."memoryPercent" BETWEEN 10 AND 100 AND "github_runner_node"."maxRunners" BETWEEN 0 AND 32 AND "github_runner_node"."diskReserveGb" >= 0 AND "github_runner_node"."diskCleanupPercent" BETWEEN 50 AND 99)
 );
 --> statement-breakpoint
 CREATE TABLE "github_runner_operation" (

@@ -483,7 +483,7 @@ export const checkGithubRunnerMachine = async (
 			cpuPercent: number;
 			memoryPercent: number;
 			diskReserveGb: number;
-			diskCleanupGb: number;
+			diskCleanupPercent: number;
 			maxRunners: number;
 			vmDiskGb: number;
 		};
@@ -662,7 +662,7 @@ export const completeGithubRunnerEnrollment = async (
 		vmName: node.vmName,
 		vmDiskGb: node.vmDiskGb,
 		diskReserveGb: node.diskReserveGb,
-		diskCleanupGb: node.diskCleanupGb,
+		diskCleanupPercent: node.diskCleanupPercent,
 		cpuPercent: node.cpuPercent,
 		memoryPercent: node.memoryPercent,
 		maxRunners: node.maxRunners,
@@ -862,7 +862,10 @@ export const getGithubRunnerOverview = async (organizationId: string) => {
 							? diskThresholds(host.diskTotalBytes, node)
 							: null,
 						vm: node.observed?.sandbox?.diskTotalBytes
-							? vmDiskThresholds(node.observed.sandbox.diskTotalBytes)
+							? vmDiskThresholds(
+									node.observed.sandbox.diskTotalBytes,
+									node.diskCleanupPercent,
+								)
 							: null,
 					},
 					operation:

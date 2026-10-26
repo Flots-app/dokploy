@@ -4738,12 +4738,12 @@
           "notNull": true,
           "default": 15
         },
-        "diskCleanupGb": {
-          "name": "diskCleanupGb",
+        "diskCleanupPercent": {
+          "name": "diskCleanupPercent",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": 30
+          "default": 90
         },
         "maxRunners": {
           "name": "maxRunners",
@@ -4912,7 +4912,7 @@
       "checkConstraints": {
         "github_runner_node_budget": {
           "name": "github_runner_node_budget",
-          "value": "\"github_runner_node\".\"cpuPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"memoryPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"maxRunners\" BETWEEN 0 AND 32 AND \"github_runner_node\".\"diskReserveGb\" >= 0 AND \"github_runner_node\".\"diskCleanupGb\" >= \"github_runner_node\".\"diskReserveGb\""
+          "value": "\"github_runner_node\".\"cpuPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"memoryPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"maxRunners\" BETWEEN 0 AND 32 AND \"github_runner_node\".\"diskReserveGb\" >= 0 AND \"github_runner_node\".\"diskCleanupPercent\" BETWEEN 50 AND 99"
         }
       },
       "isRLSEnabled": false

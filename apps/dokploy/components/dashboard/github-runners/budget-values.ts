@@ -3,7 +3,8 @@ export interface BudgetValues {
 	memoryPercent: number;
 	maxRunners: number;
 	diskReserveGb: number;
-	diskCleanupGb: number;
+	/** Caches are cleaned once the disk is this full. */
+	diskCleanupPercent: number;
 	vmDiskGb: number;
 	extraLabels: string;
 }
@@ -13,7 +14,7 @@ export const defaultBudget: BudgetValues = {
 	memoryPercent: 70,
 	maxRunners: 0,
 	diskReserveGb: 15,
-	diskCleanupGb: 30,
+	diskCleanupPercent: 90,
 	vmDiskGb: 60,
 	extraLabels: "",
 };

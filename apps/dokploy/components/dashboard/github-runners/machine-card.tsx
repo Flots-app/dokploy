@@ -158,7 +158,8 @@ const diskLevel = (machine: RunnerMachine) => {
 	if (!host) return "ok" as const;
 	if (host.diskFreeBytes < machine.diskReserveGb * GiB)
 		return "danger" as const;
-	return host.diskFreeBytes < machine.diskCleanupGb * GiB
+	const cleanup = machine.diskThresholds.host?.cleanupBytes;
+	return cleanup !== undefined && host.diskFreeBytes < cleanup
 		? ("warn" as const)
 		: ("ok" as const);
 };
@@ -245,7 +246,7 @@ const MachineUsage = ({
 				label="Disk free"
 				value={
 					host
-						? `${formatBytes(host.diskFreeBytes)} · cleans < ${machine.diskCleanupGb} GiB`
+						? `${formatBytes(host.diskFreeBytes)} · cleans at ${machine.diskCleanupPercent}% used`
 						: "—"
 				}
 				ratio={

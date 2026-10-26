@@ -857,7 +857,14 @@ export const createOperation = async (
 export interface NodeCheckResult {
 	fingerprint: string;
 	platform: string;
-	host: { cpus: number; memoryBytes: number; arch: string; os: string } | null;
+	host: {
+		cpus: number;
+		memoryBytes: number;
+		/** The disk the cleanup percentage applies to (the Mac volume on macOS). */
+		diskTotalBytes: number | null;
+		arch: string;
+		os: string;
+	} | null;
 	checks: NodeCheck[];
 	canProvision: boolean;
 }
@@ -875,7 +882,7 @@ export const checkRunnerMachine = async (input: {
 	vmName: string;
 	vmDiskGb: number;
 	diskReserveGb: number;
-	diskCleanupGb: number;
+	diskCleanupPercent: number;
 	cpuPercent: number;
 	memoryPercent: number;
 	maxRunners: number;
@@ -917,6 +924,7 @@ export const checkRunnerMachine = async (input: {
 					? {
 							cpus: status.host.cpus,
 							memoryBytes: status.host.memoryBytes,
+							diskTotalBytes: status.disk?.totalBytes ?? null,
 							arch: status.host.arch,
 							os: `macOS ${status.host.version}`,
 						}
@@ -933,6 +941,7 @@ export const checkRunnerMachine = async (input: {
 			host: {
 				cpus: facts.cpus,
 				memoryBytes: facts.memoryBytes,
+				diskTotalBytes: facts.diskTotalBytes,
 				arch: facts.arch,
 				os: `${facts.distro} ${facts.distroVersion}`,
 			},
@@ -2617,7 +2626,7 @@ const diskGoal = (
 			pressure: diskPressure(
 				runtime.disk.freeBytes,
 				runtime.disk.totalBytes,
-				vmDiskThresholds(runtime.disk.totalBytes),
+				vmDiskThresholds(runtime.disk.totalBytes, node.diskCleanupPercent),
 				fillRate(samples.vm, now),
 			),
 		},

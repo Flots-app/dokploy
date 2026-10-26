@@ -1,4 +1,5 @@
 import { budgetWarnings, formatBytes, formatCpus, vmSize } from "./budget";
+import { diskThresholds, freeAtUsage } from "./disk";
 import { LIMA_VERSION } from "./macos";
 import type { LinuxFacts, MacStatus } from "./probe";
 import { RUNTIME_VERSION } from "./runtime";
@@ -18,7 +19,7 @@ export interface CheckSettings {
 	vmName: string;
 	vmDiskGb: number;
 	diskReserveGb: number;
-	diskCleanupGb: number;
+	diskCleanupPercent: number;
 	cpuPercent: number;
 	memoryPercent: number;
 	maxRunners: number;
@@ -39,6 +40,28 @@ const budgetChecks = (
 	budgetWarnings(platform, host, settings).map((message, index) =>
 		check(`budget-${index}`, "Budget", "warn", message),
 	);
+
+/**
+ * The cleanup percentage of a small disk can leave less free space than the
+ * reserve: caches would then only go once jobs already stop starting.
+ */
+const cleanupBelowReserve = (
+	totalBytes: number | null | undefined,
+	settings: CheckSettings,
+	disk: string,
+): NodeCheck[] => {
+	if (!totalBytes) return [];
+	const free = freeAtUsage(totalBytes, settings.diskCleanupPercent);
+	if (free > settings.diskReserveGb * GiB) return [];
+	return [
+		check(
+			"disk-cleanup",
+			"Disk cleanup",
+			"warn",
+			`${settings.diskCleanupPercent}% of this ${formatBytes(totalBytes)} ${disk} leaves ${formatBytes(free)} free, not more than the ${settings.diskReserveGb} GiB reserve: caches are only cleaned once new jobs stop starting. Lower the percentage or the reserve.`,
+		),
+	];
+};
 
 export const linuxChecks = (
 	facts: LinuxFacts,
@@ -120,7 +143,7 @@ export const linuxChecks = (
 				"dedicated",
 				"Dedicated machine",
 				"warn",
-				`${facts.docker.containers} Docker containers already exist. Jobs share this Docker daemon, its containers move to the runner budget after a restart, and unused Docker data is pruned.`,
+				`${facts.docker.containers} Docker containers already exist. Jobs share this Docker daemon, its containers move to the runner budget after a restart, and unused Docker data is pruned: images, build cache and volumes no container uses.`,
 			),
 		);
 	} else {
@@ -168,7 +191,11 @@ export const linuxChecks = (
 				),
 	);
 	const free = facts.diskFreeBytes ?? 0;
-	const wanted = (settings.diskCleanupGb + 10) * GiB;
+	const wanted =
+		(facts.diskTotalBytes
+			? diskThresholds(facts.diskTotalBytes, settings).cleanupBytes
+			: settings.diskReserveGb * GiB) +
+		10 * GiB;
 	checks.push(
 		free >= wanted
 			? check("disk", "Disk", "pass", `${formatBytes(free)} free`)
@@ -176,9 +203,10 @@ export const linuxChecks = (
 					"disk",
 					"Disk",
 					free < 5 * GiB ? "fail" : "warn",
-					`${formatBytes(free)} free: little room for caches, which are trimmed below ${settings.diskCleanupGb} GiB free; no job starts below the ${settings.diskReserveGb} GiB reserve`,
+					`${formatBytes(free)} free: little room for caches, which are cleaned once the disk is ${settings.diskCleanupPercent}% full; no job starts below the ${settings.diskReserveGb} GiB reserve`,
 				),
 	);
+	checks.push(...cleanupBelowReserve(facts.diskTotalBytes, settings, "disk"));
 	checks.push(
 		facts.githubReachable
 			? check("network", "GitHub", "pass", "github.com is reachable")
@@ -324,9 +352,10 @@ export const macChecks = (
 	}
 	const free = status.disk?.freeBytes ?? 0;
 	const needed =
-		(settings.diskCleanupGb +
-			(status.vm.status === "missing" ? settings.vmDiskGb : 0)) *
-		GiB;
+		(status.disk?.totalBytes
+			? diskThresholds(status.disk.totalBytes, settings).cleanupBytes
+			: settings.diskReserveGb * GiB) +
+		(status.vm.status === "missing" ? settings.vmDiskGb * GiB : 0);
 	checks.push(
 		free >= needed
 			? check("disk", "Disk", "pass", `${formatBytes(free)} free on the Mac`)
@@ -334,8 +363,11 @@ export const macChecks = (
 					"disk",
 					"Disk",
 					free < 10 * GiB ? "fail" : "warn",
-					`${formatBytes(free)} free on the Mac; the VM disk can grow to ${settings.vmDiskGb} GiB, its caches are trimmed while the Mac has less than ${settings.diskCleanupGb} GiB free, and no job starts below the ${settings.diskReserveGb} GiB reserve`,
+					`${formatBytes(free)} free on the Mac; the VM disk can grow to ${settings.vmDiskGb} GiB, its caches are cleaned once the Mac disk is ${settings.diskCleanupPercent}% full, and no job starts below the ${settings.diskReserveGb} GiB reserve`,
 				),
+	);
+	checks.push(
+		...cleanupBelowReserve(status.disk?.totalBytes, settings, "Mac disk"),
 	);
 	checks.push(
 		status.githubReachable

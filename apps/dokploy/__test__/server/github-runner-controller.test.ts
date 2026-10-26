@@ -3,6 +3,7 @@ import {
 	requestTick,
 	rotateRunnerNodeKey,
 } from "@dokploy/server/utils/github-runners/controller";
+import { RUNTIME_VERSION } from "@dokploy/server/utils/github-runners/runtime";
 import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import {
@@ -188,7 +189,7 @@ const node = (
 	memoryPercent: 80,
 	maxRunners: 2,
 	diskReserveGb: 10,
-	diskCleanupGb: 20,
+	diskCleanupPercent: 90,
 	extraLabels: [],
 	hostKeyFingerprint: "SHA256:test",
 	sshPrivateKey: "private",
@@ -204,10 +205,10 @@ const node = (
 	...overrides,
 });
 
-/** What `runnerctl status` prints on a Linux machine with runtime v8 and no slot. */
+/** What `runnerctl status` prints on a Linux machine with the current runtime and no slot. */
 const status = (autonomy: string) =>
 	[
-		"runtime version=8",
+		`runtime version=${RUNTIME_VERSION}`,
 		"host cpus=4 memory_kib=8388608 available_kib=4194304 arch=x86_64 load=0.10",
 		"disk total_kib=209715200 free_kib=157286400",
 		"release current=2.330.0",

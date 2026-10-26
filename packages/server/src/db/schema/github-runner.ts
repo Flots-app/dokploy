@@ -554,8 +554,8 @@ export const githubRunnerNodes = pgTable(
 		cpuPercent: integer("cpuPercent").notNull().default(70),
 		memoryPercent: integer("memoryPercent").notNull().default(70),
 		diskReserveGb: integer("diskReserveGb").notNull().default(15),
-		/** Below this much free space, the least recently used caches are removed. */
-		diskCleanupGb: integer("diskCleanupGb").notNull().default(30),
+		/** Once the disk is this full (percent used), the least recently used caches are removed. */
+		diskCleanupPercent: integer("diskCleanupPercent").notNull().default(90),
 		/** Concurrent jobs; 0 sizes it from the budget (2 CPUs and 3 GiB per job). */
 		maxRunners: integer("maxRunners").notNull().default(0),
 		extraLabels: jsonb("extraLabels").$type<string[]>().notNull().default([]),
@@ -587,7 +587,7 @@ export const githubRunnerNodes = pgTable(
 		),
 		check(
 			"github_runner_node_budget",
-			sql`${table.cpuPercent} BETWEEN 10 AND 100 AND ${table.memoryPercent} BETWEEN 10 AND 100 AND ${table.maxRunners} BETWEEN 0 AND 32 AND ${table.diskReserveGb} >= 0 AND ${table.diskCleanupGb} >= ${table.diskReserveGb}`,
+			sql`${table.cpuPercent} BETWEEN 10 AND 100 AND ${table.memoryPercent} BETWEEN 10 AND 100 AND ${table.maxRunners} BETWEEN 0 AND 32 AND ${table.diskReserveGb} >= 0 AND ${table.diskCleanupPercent} BETWEEN 50 AND 99`,
 		),
 	],
 );
@@ -1023,20 +1023,11 @@ const budgetFields = {
 	cpuPercent: z.number().int().min(10).max(100),
 	memoryPercent: z.number().int().min(10).max(100),
 	diskReserveGb: z.number().int().min(0).max(10_000),
-	diskCleanupGb: z.number().int().min(1).max(10_000),
+	/** Below 50% caches would go while half the disk is free. */
+	diskCleanupPercent: z.number().int().min(50).max(99),
 	maxRunners: z.number().int().min(0).max(32),
 	vmDiskGb: z.number().int().min(20).max(4096),
 	extraLabels: z.array(label).max(20),
-};
-
-const cleanupAboveReserve = (value: {
-	diskReserveGb: number;
-	diskCleanupGb: number;
-}) => value.diskCleanupGb > value.diskReserveGb;
-
-const cleanupAboveReserveError = {
-	message: "Caches must be cleaned before the disk reaches the reserve",
-	path: ["diskCleanupGb"],
 };
 
 const connectionFields = {
@@ -1080,18 +1071,16 @@ export const apiCompleteGithubRunnerEnrollment = z.object({
 	port: z.number().int().min(1).max(65535).default(22),
 });
 
-export const apiFinishGithubRunnerEnrollment = z
-	.object({
-		githubRunnerNodeId: z.string().min(1),
-		cpuPercent: budgetFields.cpuPercent,
-		memoryPercent: budgetFields.memoryPercent,
-		diskReserveGb: budgetFields.diskReserveGb,
-		diskCleanupGb: budgetFields.diskCleanupGb,
-		maxRunners: budgetFields.maxRunners,
-		vmDiskGb: budgetFields.vmDiskGb,
-		extraLabels: budgetFields.extraLabels,
-	})
-	.refine(cleanupAboveReserve, cleanupAboveReserveError);
+export const apiFinishGithubRunnerEnrollment = z.object({
+	githubRunnerNodeId: z.string().min(1),
+	cpuPercent: budgetFields.cpuPercent,
+	memoryPercent: budgetFields.memoryPercent,
+	diskReserveGb: budgetFields.diskReserveGb,
+	diskCleanupPercent: budgetFields.diskCleanupPercent,
+	maxRunners: budgetFields.maxRunners,
+	vmDiskGb: budgetFields.vmDiskGb,
+	extraLabels: budgetFields.extraLabels,
+});
 
 export const apiCheckGithubRunnerNode = z.object({
 	...connectionFields,
@@ -1099,28 +1088,26 @@ export const apiCheckGithubRunnerNode = z.object({
 	cpuPercent: budgetFields.cpuPercent.default(70),
 	memoryPercent: budgetFields.memoryPercent.default(70),
 	diskReserveGb: budgetFields.diskReserveGb.default(15),
-	diskCleanupGb: budgetFields.diskCleanupGb.default(30),
+	diskCleanupPercent: budgetFields.diskCleanupPercent.default(90),
 	maxRunners: budgetFields.maxRunners.default(0),
 	vmDiskGb: budgetFields.vmDiskGb.default(60),
 });
 
-export const apiCreateGithubRunnerNode = z
-	.object({
-		githubRunnerPoolId: z.string().min(1),
-		name: nodeName,
-		description: z.string().trim().max(500).nullable().default(null),
-		...connectionFields,
-		/** Fingerprint shown by the checks and accepted by the operator. */
-		hostKeyFingerprint: z.string().min(1),
-		cpuPercent: budgetFields.cpuPercent.default(70),
-		memoryPercent: budgetFields.memoryPercent.default(70),
-		diskReserveGb: budgetFields.diskReserveGb.default(15),
-		diskCleanupGb: budgetFields.diskCleanupGb.default(30),
-		maxRunners: budgetFields.maxRunners.default(0),
-		vmDiskGb: budgetFields.vmDiskGb.default(60),
-		extraLabels: budgetFields.extraLabels.default([]),
-	})
-	.refine(cleanupAboveReserve, cleanupAboveReserveError);
+export const apiCreateGithubRunnerNode = z.object({
+	githubRunnerPoolId: z.string().min(1),
+	name: nodeName,
+	description: z.string().trim().max(500).nullable().default(null),
+	...connectionFields,
+	/** Fingerprint shown by the checks and accepted by the operator. */
+	hostKeyFingerprint: z.string().min(1),
+	cpuPercent: budgetFields.cpuPercent.default(70),
+	memoryPercent: budgetFields.memoryPercent.default(70),
+	diskReserveGb: budgetFields.diskReserveGb.default(15),
+	diskCleanupPercent: budgetFields.diskCleanupPercent.default(90),
+	maxRunners: budgetFields.maxRunners.default(0),
+	vmDiskGb: budgetFields.vmDiskGb.default(60),
+	extraLabels: budgetFields.extraLabels.default([]),
+});
 
 export const apiFindGithubRunnerNode = z.object({
 	githubRunnerNodeId: z.string().min(1),
@@ -1128,17 +1115,15 @@ export const apiFindGithubRunnerNode = z.object({
 
 const drainMode = z.enum(["wait", "kill"]);
 
-export const apiUpdateGithubRunnerNode = z
-	.object({
-		githubRunnerNodeId: z.string().min(1),
-		description: z.string().trim().max(500).nullable(),
-		...budgetFields,
-		/** null follows the pool; left out keeps the current setting. */
-		updatePolicy: updatePolicySchema.nullable().optional(),
-		/** How running jobs are handled when the change needs a VM restart. */
-		mode: drainMode.default("wait"),
-	})
-	.refine(cleanupAboveReserve, cleanupAboveReserveError);
+export const apiUpdateGithubRunnerNode = z.object({
+	githubRunnerNodeId: z.string().min(1),
+	description: z.string().trim().max(500).nullable(),
+	...budgetFields,
+	/** null follows the pool; left out keeps the current setting. */
+	updatePolicy: updatePolicySchema.nullable().optional(),
+	/** How running jobs are handled when the change needs a VM restart. */
+	mode: drainMode.default("wait"),
+});
 
 export const apiCleanGithubRunnerNode = z.object({
 	githubRunnerNodeId: z.string().min(1),

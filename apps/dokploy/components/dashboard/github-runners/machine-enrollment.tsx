@@ -351,7 +351,7 @@ const FinishStep = ({
 				cpuPercent: budget.cpuPercent,
 				memoryPercent: budget.memoryPercent,
 				diskReserveGb: budget.diskReserveGb,
-				diskCleanupGb: budget.diskCleanupGb,
+				diskCleanupPercent: budget.diskCleanupPercent,
 				maxRunners: budget.maxRunners,
 				vmDiskGb: budget.vmDiskGb,
 				extraLabels: parseLabels(budget.extraLabels),

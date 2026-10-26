@@ -51,6 +51,7 @@ import {
 	diskPressure,
 	diskThresholds,
 	fillRate,
+	freeAtUsage,
 	vmCleanupGoal,
 	vmDiskThresholds,
 } from "@dokploy/server/utils/github-runners/disk";
@@ -1280,7 +1281,7 @@ describe("machine checks", () => {
 		vmName: "dokploy-runners",
 		vmDiskGb: 60,
 		diskReserveGb: 15,
-		diskCleanupGb: 30,
+		diskCleanupPercent: 90,
 		cpuPercent: 70,
 		memoryPercent: 70,
 		maxRunners: 0,
@@ -1358,7 +1359,7 @@ describe("machine checks", () => {
 			parseMacStatus(
 				[
 					"mac cpus=10 memory_bytes=34359738368 arch=arm64 version=26.1 load=1",
-					"macdisk total_kib=482797652 free_kib=104857600",
+					"macdisk total_kib=482797652 free_kib=134217728",
 					"network github=200",
 					setup,
 					`lima version=${LIMA_VERSION} managed=yes`,
@@ -1389,29 +1390,58 @@ describe("disk cleanup", () => {
 	const minutes = (count: number) => count * 60_000;
 
 	it("cleans between the threshold and a headroom of 5% of the disk", () => {
+		// 85% used on 200 GiB: cleaned below 30 GiB free, until 40 GiB are.
 		expect(
-			diskThresholds(200 * GiB, { diskReserveGb: 15, diskCleanupGb: 30 }),
+			diskThresholds(200 * GiB, {
+				diskReserveGb: 15,
+				diskCleanupPercent: 85,
+			}),
 		).toEqual({
 			reserveBytes: 15 * GiB,
 			cleanupBytes: 30 * GiB,
 			targetBytes: 40 * GiB,
 		});
-		// 5% of 2 TiB is capped at 25 GiB, 5% of 50 GiB raised to 5 GiB.
+		// 5% of 2000 GiB is capped at 25 GiB, 5% of 50 GiB raised to 5 GiB.
 		expect(
-			diskThresholds(2048 * GiB, { diskReserveGb: 15, diskCleanupGb: 30 })
-				.targetBytes,
-		).toBe(55 * GiB);
+			diskThresholds(2000 * GiB, {
+				diskReserveGb: 15,
+				diskCleanupPercent: 90,
+			}),
+		).toEqual({
+			reserveBytes: 15 * GiB,
+			cleanupBytes: 200 * GiB,
+			targetBytes: 225 * GiB,
+		});
 		expect(
-			diskThresholds(50 * GiB, { diskReserveGb: 5, diskCleanupGb: 10 })
-				.targetBytes,
-		).toBe(15 * GiB);
-		// The VM disk keeps 15% free, never less than the job floor plus 5 GiB.
-		expect(vmDiskThresholds(60 * GiB)).toEqual({
+			diskThresholds(50 * GiB, { diskReserveGb: 5, diskCleanupPercent: 80 }),
+		).toEqual({
+			reserveBytes: 5 * GiB,
+			cleanupBytes: 10 * GiB,
+			targetBytes: 15 * GiB,
+		});
+		// The VM disk follows the same percentage, never below the job floor plus 5 GiB.
+		expect(vmDiskThresholds(60 * GiB, 85)).toEqual({
 			reserveBytes: 3 * GiB,
 			cleanupBytes: 9 * GiB,
 			targetBytes: 14 * GiB,
 		});
-		expect(vmDiskThresholds(20 * GiB).cleanupBytes).toBe(8 * GiB);
+		expect(vmDiskThresholds(60 * GiB, 90).cleanupBytes).toBe(8 * GiB);
+		expect(vmDiskThresholds(200 * GiB, 90).cleanupBytes).toBe(20 * GiB);
+	});
+
+	it("never cleans later than the reserve on a small disk", () => {
+		// 90% of 100 GiB leaves 10 GiB, below the 15 GiB reserve.
+		expect(freeAtUsage(100 * GiB, 90)).toBe(10 * GiB);
+		expect(
+			diskThresholds(100 * GiB, {
+				diskReserveGb: 15,
+				diskCleanupPercent: 90,
+			}),
+		).toEqual({
+			reserveBytes: 15 * GiB,
+			cleanupBytes: 15 * GiB,
+			targetBytes: 20 * GiB,
+		});
 	});
 
 	it("measures the fill rate over the last minutes", () => {
@@ -1435,7 +1465,7 @@ describe("disk cleanup", () => {
 	it("cleans below the threshold, or before the jobs get there", () => {
 		const thresholds = diskThresholds(200 * GiB, {
 			diskReserveGb: 15,
-			diskCleanupGb: 30,
+			diskCleanupPercent: 85,
 		});
 		expect(diskPressure(50 * GiB, 200 * GiB, thresholds, null)).toBeNull();
 		expect(diskPressure(29 * GiB, 200 * GiB, thresholds, null)).toEqual({
@@ -1462,11 +1492,14 @@ describe("disk cleanup", () => {
 	it("frees in the VM what the Mac is missing", () => {
 		const mac = diskPressure(
 			20 * GiB,
-			460 * GiB,
-			diskThresholds(460 * GiB, { diskReserveGb: 15, diskCleanupGb: 30 }),
+			500 * GiB,
+			diskThresholds(500 * GiB, {
+				diskReserveGb: 15,
+				diskCleanupPercent: 94,
+			}),
 			null,
 		);
-		// The Mac needs 33 GiB more (target 30 + 23 GiB of headroom).
+		// The Mac needs 35 GiB more (target 30 + 25 GiB of headroom).
 		expect(
 			vmCleanupGoal(
 				{ freeBytes: 40 * GiB, totalBytes: 60 * GiB, pressure: null },
@@ -1481,7 +1514,7 @@ describe("disk cleanup", () => {
 		const vm = diskPressure(
 			8 * GiB,
 			60 * GiB,
-			vmDiskThresholds(60 * GiB),
+			vmDiskThresholds(60 * GiB, 85),
 			null,
 		);
 		expect(

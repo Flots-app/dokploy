@@ -1,8 +1,9 @@
 /**
  * Disk housekeeping of a runner machine, like the kubelet image garbage
- * collector: caches grow freely until free space drops below the cleanup
- * threshold, then `runnerctl gc` removes the least recently used ones until the
- * target is free again. Below the reserve no new job starts.
+ * collector: caches grow freely until the disk is fuller than the cleanup
+ * threshold (a percentage of its size, like the kubelet's
+ * imageGCHighThresholdPercent), then `runnerctl gc` removes the least recently
+ * used ones until the target is free again. Below the reserve no new job starts.
  */
 const GiB = 1024 ** 3;
 
@@ -35,13 +36,23 @@ export interface DiskThresholds {
 const headroom = (totalBytes: number) =>
 	Math.min(25 * GiB, Math.max(5 * GiB, Math.round(totalBytes * 0.05)));
 
-/** Thresholds of the machine disk (the Mac volume for a Mac), from its settings. */
+/** Free space left on a disk of this size once it is `percent` full. */
+export const freeAtUsage = (totalBytes: number, percent: number) =>
+	Math.round((totalBytes * (100 - percent)) / 100);
+
+/**
+ * Thresholds of the machine disk (the Mac volume for a Mac), from its settings.
+ * The cleanup never starts later than the reserve, whatever the percentage.
+ */
 export const diskThresholds = (
 	totalBytes: number,
-	settings: { diskReserveGb: number; diskCleanupGb: number },
+	settings: { diskReserveGb: number; diskCleanupPercent: number },
 ): DiskThresholds => {
 	const reserveBytes = settings.diskReserveGb * GiB;
-	const cleanupBytes = Math.max(settings.diskCleanupGb * GiB, reserveBytes);
+	const cleanupBytes = Math.max(
+		freeAtUsage(totalBytes, settings.diskCleanupPercent),
+		reserveBytes,
+	);
 	return {
 		reserveBytes,
 		cleanupBytes,
@@ -49,11 +60,17 @@ export const diskThresholds = (
 	};
 };
 
-/** The macOS VM disk only holds runner data: fixed thresholds, from its size. */
-export const vmDiskThresholds = (totalBytes: number): DiskThresholds => {
+/**
+ * The macOS VM disk only holds runner data: the same percentage, with a floor
+ * that keeps room above the VM reserve on a small disk.
+ */
+export const vmDiskThresholds = (
+	totalBytes: number,
+	diskCleanupPercent: number,
+): DiskThresholds => {
 	const cleanupBytes = Math.max(
 		VM_MIN_FREE_BYTES + 5 * GiB,
-		Math.round(totalBytes * 0.15),
+		freeAtUsage(totalBytes, diskCleanupPercent),
 	);
 	return {
 		reserveBytes: VM_MIN_FREE_BYTES,

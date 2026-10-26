@@ -7,6 +7,7 @@ import {
 	sliceLimits,
 	vmSize,
 } from "@dokploy/server/utils/github-runners/budget";
+import { freeAtUsage } from "@dokploy/server/utils/github-runners/disk";
 import { AlertBlock } from "@/components/shared/alert-block";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,68 +16,89 @@ import type { BudgetValues } from "./budget-values";
 import { formatBytes } from "./format";
 import { BudgetSlider, NumberInput } from "./shared";
 
+const GiB = 1024 ** 3;
+
 /** Disk reserve, cleanup threshold and, on a Mac, the VM disk. */
 const DiskFields = ({
 	platform,
+	diskTotalBytes,
 	value,
 	set,
 }: {
 	platform: "linux" | "macos";
+	/** The disk the percentage applies to (the Mac volume on a Mac), once known. */
+	diskTotalBytes: number | null;
 	value: BudgetValues;
 	set: (patch: Partial<BudgetValues>) => void;
-}) => (
-	<>
-		<div className="space-y-2">
-			<Label htmlFor="runner-disk-reserve">Disk reserve (GiB)</Label>
-			<NumberInput
-				id="runner-disk-reserve"
-				min={0}
-				value={value.diskReserveGb}
-				onValueChange={(diskReserveGb) => set({ diskReserveGb })}
-			/>
-			<p className="text-xs text-muted-foreground">
-				No new job starts below this free space on the{" "}
-				{platform === "macos" ? "Mac" : "machine"}.
-			</p>
-		</div>
-		<div className="space-y-2">
-			<Label htmlFor="runner-disk-cleanup">Clean caches below (GiB)</Label>
-			<NumberInput
-				id="runner-disk-cleanup"
-				min={1}
-				value={value.diskCleanupGb}
-				onValueChange={(diskCleanupGb) => set({ diskCleanupGb })}
-			/>
-			<p className="text-xs text-muted-foreground">
-				Below this free space{platform === "macos" ? " on the Mac" : ""}, or
-				when the jobs are about to get there, the least recently used Docker
-				images, build cache, tools and package caches
-				{platform === "macos" ? " of the VM" : ""} are removed. Caches a running
-				job uses are kept.
-			</p>
-		</div>
-		{platform === "macos" && (
+}) => {
+	const cleanupFree = diskTotalBytes
+		? freeAtUsage(diskTotalBytes, value.diskCleanupPercent)
+		: null;
+	const disk = platform === "macos" ? "Mac disk" : "disk";
+	return (
+		<>
 			<div className="space-y-2">
-				<Label htmlFor="runner-vm-disk">VM disk (GiB)</Label>
+				<Label htmlFor="runner-disk-reserve">Disk reserve (GiB)</Label>
 				<NumberInput
-					id="runner-vm-disk"
-					min={20}
-					value={value.vmDiskGb}
-					onValueChange={(vmDiskGb) => set({ vmDiskGb })}
+					id="runner-disk-reserve"
+					min={0}
+					value={value.diskReserveGb}
+					onValueChange={(diskReserveGb) => set({ diskReserveGb })}
 				/>
 				<p className="text-xs text-muted-foreground">
-					Sparse: it only uses what the caches hold. It can grow, never shrink.
+					No new job starts below this free space on the{" "}
+					{platform === "macos" ? "Mac" : "machine"}.
 				</p>
 			</div>
-		)}
-		{value.diskCleanupGb <= value.diskReserveGb && (
-			<p className="text-xs text-destructive sm:col-span-2">
-				Caches must be cleaned before the disk reaches the reserve: set the
-				cleanup threshold above it.
-			</p>
-		)}
-	</>
-);
+			<div className="space-y-2">
+				<Label htmlFor="runner-disk-cleanup">Clean caches from (% used)</Label>
+				<NumberInput
+					id="runner-disk-cleanup"
+					min={50}
+					max={99}
+					value={value.diskCleanupPercent}
+					onValueChange={(diskCleanupPercent) => set({ diskCleanupPercent })}
+				/>
+				<p className="text-xs text-muted-foreground">
+					Once the {disk} is this full
+					{cleanupFree !== null && diskTotalBytes
+						? ` (${formatBytes(cleanupFree)} free of ${formatBytes(diskTotalBytes)})`
+						: ""}
+					, or when the jobs are about to get there, the least recently used
+					Docker images, volumes and build cache, tools and package caches
+					{platform === "macos" ? " of the VM" : ""} are removed. Caches a
+					running job uses are kept.
+					{platform === "macos"
+						? " The VM disk follows the same percentage."
+						: ""}
+				</p>
+			</div>
+			{platform === "macos" && (
+				<div className="space-y-2">
+					<Label htmlFor="runner-vm-disk">VM disk (GiB)</Label>
+					<NumberInput
+						id="runner-vm-disk"
+						min={20}
+						value={value.vmDiskGb}
+						onValueChange={(vmDiskGb) => set({ vmDiskGb })}
+					/>
+					<p className="text-xs text-muted-foreground">
+						Sparse: it only uses what the caches hold. It can grow, never
+						shrink.
+					</p>
+				</div>
+			)}
+			{cleanupFree !== null && cleanupFree <= value.diskReserveGb * GiB && (
+				<p className="text-xs text-destructive sm:col-span-2">
+					{value.diskCleanupPercent}% of this {disk} leaves{" "}
+					{formatBytes(cleanupFree)} free, not more than the reserve: caches
+					would only be cleaned once new jobs stop starting. Lower the
+					percentage or the reserve.
+				</p>
+			)}
+		</>
+	);
+};
 
 /** Budget editor shared by "Add machine" and "Edit resources". */
 export const BudgetFields = ({
@@ -86,7 +108,11 @@ export const BudgetFields = ({
 	onChange,
 }: {
 	platform: "linux" | "macos";
-	host: { cpus: number; memoryBytes: number } | null;
+	host: {
+		cpus: number;
+		memoryBytes: number;
+		diskTotalBytes?: number | null;
+	} | null;
 	value: BudgetValues;
 	onChange: (value: BudgetValues) => void;
 }) => {
@@ -155,7 +181,12 @@ export const BudgetFields = ({
 						{auto ? ` (${auto} here)` : ""}.
 					</p>
 				</div>
-				<DiskFields platform={platform} value={value} set={set} />
+				<DiskFields
+					platform={platform}
+					diskTotalBytes={host?.diskTotalBytes ?? null}
+					value={value}
+					set={set}
+				/>
 				<div className="space-y-2">
 					<Label htmlFor="runner-extra-labels">Machine labels</Label>
 					<Input
