@@ -11,10 +11,19 @@ const ACTIVE = new Set([
 	"requested",
 ]);
 
+/**
+ * A cancel the run did not follow within this delay is forced. The dead
+ * runner never acknowledges a cancel; forcing at once would skip the run's
+ * always() jobs (GitHub: use force-cancel when a run does not respond).
+ */
+export const FORCE_CANCEL_AFTER_MS = 3 * 60_000;
+
 export type RerunDecision =
 	| { action: "wait" }
 	/** Only the interrupted job is left in the run: cancel it instead of waiting for GitHub's timeout. */
 	| { action: "cancel"; note: string }
+	/** The cancel was not followed: the run waits for a runner that is gone. */
+	| { action: "force-cancel"; note: string }
 	| { action: "rerun"; note: string }
 	| { action: "skip"; note: string };
 
@@ -34,9 +43,16 @@ export const initialRerunStatus = (enabled: boolean, runAttempt: string) => {
  * cancelled right away instead.
  */
 export const decideRerun = (
-	job: { runnerName: string; runAttempt: string; rerunStatus: string | null },
+	job: {
+		runnerName: string;
+		runAttempt: string;
+		rerunStatus: string | null;
+		/** When the run was cancelled, for a cancel the run does not follow. */
+		rerunAt?: string | null;
+	},
 	run: WorkflowRun,
 	jobs: WorkflowRunJob[],
+	now = Date.now(),
 ): RerunDecision => {
 	if (run.runAttempt > Number(job.runAttempt)) {
 		return {
@@ -58,9 +74,17 @@ export const decideRerun = (
 			note: `re-running the failed jobs (attempt ${run.runAttempt + 1})`,
 		};
 	}
-	if (job.rerunStatus === "cancelling" || ours.status === "completed") {
-		return { action: "wait" };
+	if (job.rerunStatus === "cancelling") {
+		const cancelledAt = Date.parse(job.rerunAt ?? "");
+		return Number.isFinite(cancelledAt) &&
+			now - cancelledAt > FORCE_CANCEL_AFTER_MS
+			? {
+					action: "force-cancel",
+					note: "the run did not follow the cancel: forcing it",
+				}
+			: { action: "wait" };
 	}
+	if (ours.status === "completed") return { action: "wait" };
 	const othersActive = jobs.some(
 		(item) => item !== ours && ACTIVE.has(item.status),
 	);

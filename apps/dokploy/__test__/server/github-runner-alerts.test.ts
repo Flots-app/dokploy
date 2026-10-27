@@ -366,6 +366,10 @@ describe("runner alerts", () => {
 		expect(parseTokenExpiration("2026-11-02 10:00:00 -0800")).toBe(
 			"2026-11-02T18:00:00.000Z",
 		);
+		// The format is not documented: another date format still counts.
+		expect(parseTokenExpiration("Mon, 02 Nov 2026 10:00:00 GMT")).toBe(
+			"2026-11-02T10:00:00.000Z",
+		);
 		expect(parseTokenExpiration("soon")).toBeNull();
 		expect(parseTokenExpiration(null)).toBeNull();
 	});

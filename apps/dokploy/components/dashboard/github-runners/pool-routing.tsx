@@ -60,7 +60,7 @@ export const RoutingFields = ({
 								</FormControl>
 								<FormDescription>
 									{scope === "organization"
-										? "An organization variable, visible to its private repositories."
+										? "An organization variable, visible to its private repositories. On GitHub Free they cannot read organization variables: use a repository pool there."
 										: "A variable of the repository."}
 								</FormDescription>
 								<FormMessage />

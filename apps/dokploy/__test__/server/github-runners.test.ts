@@ -42,6 +42,7 @@ import {
 	generateMachineKey,
 	limaLogLine,
 	provisionRunnerNode,
+	RUNNER_STOP_TIMEOUT_MS,
 	reconnectDelay,
 	rerouteQueuedRuns,
 	routePool,
@@ -128,6 +129,7 @@ import {
 } from "@dokploy/server/utils/github-runners/reconcile";
 import {
 	decideRerun,
+	FORCE_CANCEL_AFTER_MS,
 	initialRerunStatus,
 	MAX_RUN_ATTEMPTS,
 } from "@dokploy/server/utils/github-runners/rerun";
@@ -1289,6 +1291,8 @@ apt_update && echo updated`,
 				"/etc/systemd/system/dokploy-runner@.service",
 			),
 		).toMatch(/^TimeoutStopSec=300$/m);
+		// The controller waits longer than systemd, or it gives up first.
+		expect(RUNNER_STOP_TIMEOUT_MS).toBeGreaterThan(300_000);
 		// Settings a killed runner migrated are not read by the next one.
 		expect(runnerctl).toContain(
 			'"$dir/.runner_migrated" "$dir/.credentials_migrated"',
@@ -2047,6 +2051,42 @@ describe("recovery of interrupted jobs", () => {
 				runJob(job.runnerName, "in_progress"),
 			]),
 		).toEqual({ action: "wait" });
+	});
+
+	it("forces a cancel the run did not follow, never at once", () => {
+		const cancelledAt = Date.parse("2026-10-27T10:00:00Z");
+		const cancelling = {
+			...job,
+			rerunStatus: "cancelling",
+			rerunAt: new Date(cancelledAt).toISOString(),
+		};
+		const active = [runJob(job.runnerName, "in_progress")];
+		// A plain cancel lets the run's always() jobs run: it gets 3 minutes.
+		expect(
+			decideRerun(
+				cancelling,
+				run(),
+				active,
+				cancelledAt + FORCE_CANCEL_AFTER_MS - 1,
+			),
+		).toEqual({ action: "wait" });
+		expect(
+			decideRerun(
+				cancelling,
+				run(),
+				active,
+				cancelledAt + FORCE_CANCEL_AFTER_MS + 1,
+			),
+		).toMatchObject({ action: "force-cancel" });
+		// The run completed meanwhile: re-run, no force.
+		expect(
+			decideRerun(
+				cancelling,
+				run({ status: "completed", conclusion: "cancelled" }),
+				[runJob(job.runnerName, "completed", "cancelled")],
+				cancelledAt + 10 * FORCE_CANCEL_AFTER_MS,
+			),
+		).toMatchObject({ action: "rerun" });
 	});
 
 	it("never acts on a run this runner did not run or that was re-run already", () => {

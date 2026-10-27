@@ -90,7 +90,11 @@ export const parseTokenExpiration = (value: string | null) => {
 		.match(
 			/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)\s*(UTC|Z|[+-]\d{2}:?\d{2})?$/,
 		);
-	if (!match) return null;
+	if (!match) {
+		// GitHub does not document the format: any date JavaScript reads will do.
+		const parsed = value ? Date.parse(value) : Number.NaN;
+		return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+	}
 	const [, date, time, zone] = match;
 	const offset =
 		!zone || zone === "UTC" || zone === "Z"

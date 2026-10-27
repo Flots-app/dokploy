@@ -182,6 +182,11 @@ import { type RunnerReleaseInfo, runnerVersionStatus } from "./versions";
 const GiB = 1024 ** 3;
 export const TICK_MS = 5_000;
 /**
+ * A runner unit gets 5 minutes to stop (TimeoutStopSec in the runtime, as in
+ * GitHub's own unit): Dokploy waits a little longer for systemd to give up.
+ */
+export const RUNNER_STOP_TIMEOUT_MS = 6 * 60_000;
+/**
  * Leases on a machine are short and renewed while held: when the process
  * holding one dies, another instance takes the machine over within a minute
  * and a half.
@@ -2476,7 +2481,7 @@ const executeActions = async (
 			`Stopping ${kills.length} runner(s)${busy ? `, interrupting ${busy} running job(s)` : ""}`,
 		);
 		await driver.guest(`${RUNNERCTL} stop-all`, {
-			timeoutMs: 3 * 60_000,
+			timeoutMs: RUNNER_STOP_TIMEOUT_MS,
 			label: "Stopping the runners",
 		});
 		await Promise.all(
@@ -2543,7 +2548,7 @@ const executeActions = async (
 						break;
 					}
 					await driver.guest(`${RUNNERCTL} stop ${action.slot}`, {
-						timeoutMs: 2 * 60_000,
+						timeoutMs: RUNNER_STOP_TIMEOUT_MS,
 						label: `Stopping slot ${action.slot}`,
 					});
 					await note(
@@ -2554,7 +2559,7 @@ const executeActions = async (
 				case "stop": {
 					if (isKillDrain(node.drain, Date.now())) break; // done above
 					await driver.guest(`${RUNNERCTL} stop ${action.slot}`, {
-						timeoutMs: 2 * 60_000,
+						timeoutMs: RUNNER_STOP_TIMEOUT_MS,
 						label: `Stopping slot ${action.slot}`,
 					});
 					if (action.runnerId) {
@@ -4084,8 +4089,15 @@ const recoverInterruptedJobs = async (pool: GithubRunnerPool) => {
 			const decision = decideRerun(first, run, runJobs);
 			if (decision.action === "wait") return;
 			if (decision.action === "cancel") {
-				await client.forceCancelRun(first.repository, first.runId);
+				// A plain cancel first: the run's always() jobs still run.
+				await client.cancelRun(first.repository, first.runId);
 				await mark("cancelling", decision.note);
+			} else if (decision.action === "force-cancel") {
+				await client.forceCancelRun(first.repository, first.runId);
+				await db
+					.update(githubRunnerJobs)
+					.set({ rerunNote: decision.note })
+					.where(inArray(githubRunnerJobs.githubRunnerJobId, ids));
 			} else if (decision.action === "rerun") {
 				await client.rerunFailedJobs(first.repository, first.runId);
 				await mark("requested", decision.note);
