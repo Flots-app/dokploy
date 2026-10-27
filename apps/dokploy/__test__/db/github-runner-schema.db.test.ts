@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { db } from "@dokploy/server/db";
 import {
 	firewallAttachments,
@@ -94,7 +95,7 @@ describe("constraints", () => {
 		const pool = (values: Partial<typeof githubRunnerPools.$inferInsert>) =>
 			db.insert(githubRunnerPools).values({
 				organizationId: a.organizationId,
-				name: `scope-${Math.random()}`,
+				name: `scope-${randomUUID()}`,
 				owner: "example",
 				authType: "token",
 				scope: "repository",
