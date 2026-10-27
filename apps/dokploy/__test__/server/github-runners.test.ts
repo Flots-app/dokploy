@@ -2535,6 +2535,40 @@ describe("machine enrollment", () => {
 		expect(other.publicKey).not.toBe(machineKey.publicKey);
 	});
 
+	it("never keeps a key ssh2 truncated", () => {
+		// About one ssh2 key in 256 loses the leading 0x00 of its public key.
+		let truncated: ReturnType<typeof utils.generateKeyPairSync> | undefined;
+		for (let i = 0; i < 20_000 && !truncated; i++) {
+			const keys = utils.generateKeyPairSync("ed25519");
+			if (utils.parseKey(keys.private) instanceof Error) truncated = keys;
+		}
+		if (!truncated) throw new Error("ssh2 no longer truncates keys");
+		const blob = Buffer.from(truncated.public.split(" ")[1] ?? "", "base64");
+		expect(blob.readUInt32BE(15)).toBe(31);
+
+		let calls = 0;
+		const generate = ((
+			...args: Parameters<typeof utils.generateKeyPairSync>
+		) =>
+			++calls === 1
+				? truncated
+				: utils.generateKeyPairSync(
+						...args,
+					)) as typeof utils.generateKeyPairSync;
+		const keys = generateMachineKey("m6", generate);
+		expect(calls).toBe(2);
+		expect(utils.parseKey(keys.privateKey)).not.toBeInstanceOf(Error);
+		expect(keys.publicKey).toMatch(/ dokploy-runner@m6$/);
+		expect(() =>
+			generateMachineKey("m6", (() => truncated) as typeof generate),
+		).toThrow(/Unable to generate a readable SSH key for m6/);
+		for (let i = 0; i < 2_000; i++) {
+			expect(
+				utils.parseKey(generateMachineKey("m6").privateKey),
+			).not.toBeInstanceOf(Error);
+		}
+	});
+
 	it("fingerprints a key like ssh-keygen", () => {
 		const dir = mkdtempSync(join(tmpdir(), "dokploy-runner-key-"));
 		try {

@@ -4467,12 +4467,25 @@ const routePools = async () => {
 /** "dokploy-runner@<machine>", the comment of a machine key. */
 export const machineKeyComment = (name: string) => `dokploy-runner@${name}`;
 
-/** A new ed25519 key for one machine (OpenSSH format, for ssh2 and authorized_keys). */
-export const generateMachineKey = (name: string) => {
-	const keys = ssh2.utils.generateKeyPairSync("ed25519", {
-		comment: machineKeyComment(name),
-	});
-	return { privateKey: keys.private, publicKey: keys.public.trim() };
+/**
+ * A new ed25519 key for one machine (OpenSSH format, for ssh2 and authorized_keys).
+ * ssh2 1.16 drops the first byte of a public key that starts with 0x00
+ * (lib/keygen.js strips every leading zero of the bit string): about one key in
+ * 256 then comes out 31 bytes long, and neither ssh2 nor OpenSSH can read it.
+ * Such a key is drawn again.
+ */
+export const generateMachineKey = (
+	name: string,
+	generate: typeof ssh2.utils.generateKeyPairSync = ssh2.utils
+		.generateKeyPairSync,
+) => {
+	for (let attempt = 0; attempt < 10; attempt++) {
+		const keys = generate("ed25519", { comment: machineKeyComment(name) });
+		if (!(ssh2.utils.parseKey(keys.private) instanceof Error)) {
+			return { privateKey: keys.private, publicKey: keys.public.trim() };
+		}
+	}
+	throw new Error(`Unable to generate a readable SSH key for ${name}`);
 };
 
 /**
