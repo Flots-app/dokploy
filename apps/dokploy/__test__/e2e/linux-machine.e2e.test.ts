@@ -227,13 +227,21 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 			run("cat /etc/docker/daemon.json", { root: true }).stdout,
 		) as Record<string, unknown>;
 		expect(daemon["cgroup-parent"]).toBe("dokploy-runners.slice");
-		// A job's own container shares the budget.
-		const container = run(
-			"docker run --rm alpine:3.20 sh -c 'nproc; cat /proc/self/cgroup'",
-		);
+		// A job's own container shares the budget: its CPUs inside, and its
+		// cgroup seen from the host (inside, a cgroup namespace shows "/").
+		const container = run("docker run --rm alpine:3.20 nproc");
 		expect(container.status, container.stderr).toBe(0);
-		expect(container.stdout.split("\n")[0]).toBe(String(half));
-		expect(container.stdout).toContain("dokploy-runners.slice");
+		expect(container.stdout.trim()).toBe(String(half));
+		const started = run(
+			"docker run -d --name e2e_budget alpine:3.20 sleep 120",
+		);
+		expect(started.status, started.stderr).toBe(0);
+		const cgroup = run(
+			"cat /proc/$(docker inspect -f '{{.State.Pid}}' e2e_budget)/cgroup",
+			{ root: true },
+		).stdout;
+		run("docker rm -f e2e_budget");
+		expect(cgroup).toContain("/dokploy.slice/dokploy-runners.slice/");
 
 		const status = run("/opt/dokploy-runners/bin/runnerctl status", {
 			root: true,
