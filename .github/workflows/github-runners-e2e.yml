@@ -1,0 +1,144 @@
+name: GitHub runners E2E
+
+# The real setup scripts, runtime and firewalls of the GitHub runner fleet, run
+# on throwaway GitHub-hosted machines: an Ubuntu runner stands for a Linux
+# runner machine, a macOS runner for a Mac mini. The Mac's VM is created but not
+# booted: GitHub's arm64 macOS runners cannot nest virtualization.
+on:
+  pull_request:
+    branches: [main, canary]
+    paths:
+      - "packages/server/src/utils/github-runners/**"
+      - "packages/server/src/utils/firewall/**"
+      - "packages/server/src/services/github-runner.ts"
+      - "packages/server/src/services/firewall.ts"
+      - "packages/server/src/db/schema/github-runner.ts"
+      - "packages/server/src/db/schema/firewall.ts"
+      - "apps/dokploy/drizzle/**"
+      - "apps/dokploy/__test__/db/**"
+      - "apps/dokploy/__test__/e2e/**"
+      - ".github/workflows/github-runners-e2e.yml"
+  push:
+    branches: [canary]
+    paths:
+      - "packages/server/src/utils/github-runners/**"
+      - "packages/server/src/utils/firewall/**"
+      - "apps/dokploy/__test__/e2e/**"
+      - ".github/workflows/github-runners-e2e.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Read only: the tests use this token to list releases. It may not register a
+# runner, so the machines never take a real repository's jobs.
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux runner machine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: postgres://dokploy@localhost:5432/dokploy_test
+      DOKPLOY_E2E_MACHINE: throwaway
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.4.0
+          cache: "pnpm"
+
+      - name: Set up Socket Firewall
+        uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
+        with:
+          mode: firewall-free
+          shims: "false"
+
+      - name: Install dependencies
+        run: sfw pnpm install --frozen-lockfile
+
+      - name: Start the image's PostgreSQL 16
+        # Not a service container: provisioning restarts Docker, which would stop it.
+        run: |
+          set -euo pipefail
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE dokploy LOGIN" \
+            -c "CREATE DATABASE dokploy_test OWNER dokploy"
+          # Throwaway database of this job only: no password to keep.
+          hba=$(sudo -u postgres psql -tAc "SHOW hba_file")
+          sudo sed -i -E 's#^(host[[:space:]]+all[[:space:]]+all[[:space:]]+(127\.0\.0\.1/32|::1/128)[[:space:]]+)[^[:space:]]+#\1trust#' "$hba"
+          sudo systemctl reload postgresql.service
+          psql "$DATABASE_URL" -tAc "select version()"
+
+      - name: Start sshd
+        # Dokploy reaches the machine over SSH, here on 127.0.0.1.
+        run: sudo systemctl start ssh
+
+      - name: Apply every migration to the empty database
+        working-directory: apps/dokploy
+        run: |
+          set -euo pipefail
+          pnpm migration:run 2>&1 | tee "$RUNNER_TEMP/migration.log"
+          grep -qx "Migration complete" "$RUNNER_TEMP/migration.log"
+
+      - name: Enroll, provision, firewall, clean and remove this machine
+        working-directory: apps/dokploy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm test:e2e
+
+  macos:
+    name: Mac runner machine
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DOKPLOY_E2E_MACHINE: throwaway
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.4.0
+          cache: "pnpm"
+
+      - name: Set up Socket Firewall
+        uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
+        with:
+          mode: firewall-free
+          shims: "false"
+
+      - name: Install dependencies
+        run: sfw pnpm install --frozen-lockfile
+
+      - name: Turn on Remote Login
+        # As the administrator of a Mac mini does before running the script.
+        run: |
+          set -euo pipefail
+          sudo launchctl print system/com.openssh.sshd >/dev/null 2>&1 ||
+            sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist
+          sudo launchctl print system/com.openssh.sshd >/dev/null
+
+      - name: Set up, probe, install Lima, firewall and uninstall this Mac
+        working-directory: apps/dokploy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm test:e2e
