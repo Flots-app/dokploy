@@ -103,8 +103,7 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 			}),
 		);
 		const setup = run(`bash ${scriptPath}`, { root: true });
-		console.log(setup.stdout, setup.stderr);
-		expect(setup.status, setup.stderr).toBe(0);
+		expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
 		const code = setup.stdout.match(/^dokploy-runner-setup:\S+$/m)?.[0];
 		if (!code) throw new Error("no setup code");
 		const parsed = parseSetupCode(code);
@@ -181,10 +180,14 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 
 		const status = await probe();
 		const checks = macChecks(status, settings);
-		console.log(checks);
+		const shown = JSON.stringify(checks, null, 1);
 		expect(status.host?.arch).toBe("arm64");
-		expect(checks.find((item) => item.id === "network")?.status).toBe("pass");
-		expect(checks.find((item) => item.id === "platform")?.status).toBe("pass");
+		expect(checks.find((item) => item.id === "network")?.status, shown).toBe(
+			"pass",
+		);
+		expect(checks.find((item) => item.id === "platform")?.status, shown).toBe(
+			"pass",
+		);
 		expect(status.firewall?.helper).toBe("yes");
 	});
 
@@ -209,8 +212,7 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 			macCreateVmScript(VM, { cpus: 2, memoryGiB: "2", diskGb: 20 }),
 			{ timeoutMs: 20 * 60_000, allowFailure: true },
 		);
-		console.log(created.stdout, created.stderr);
-		expect(created.exitCode, created.stderr).toBe(0);
+		expect(created.exitCode, `${created.stdout}\n${created.stderr}`).toBe(0);
 		expect((await probe()).vm).toMatchObject({
 			status: "Stopped",
 			cpus: 2,
@@ -227,8 +229,8 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 			diskBytes: 25 * 1024 ** 3,
 		});
 
-		// GitHub's macOS runners cannot nest virtualization: only what the start
-		// says is recorded, the boot itself needs a real Mac.
+		// GitHub's macOS runners cannot nest virtualization: the start fails
+		// there, after the port check; the boot itself needs a real Mac.
 		const start = await remote(macStartVmScript(VM), {
 			timeoutMs: 4 * 60_000,
 			allowFailure: true,
@@ -237,11 +239,8 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 			stdout: "",
 			stderr: String(error),
 		}));
-		console.log(
-			"VM start on a GitHub runner:",
-			start.exitCode,
-			start.stderr.slice(-2000),
-		);
+		expect(start.exitCode, start.stderr.slice(-2000)).not.toBe(0);
+		expect(start.stderr).not.toMatch(/outside 6002\d-6003\d/);
 
 		await remote(macDeleteVmScript(VM), { timeoutMs: 5 * 60_000 });
 		expect((await probe()).vm.status).toBe("missing");
@@ -349,8 +348,9 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 		session?.close();
 		session = null;
 		const uninstall = run(`bash ${scriptPath} --uninstall`, { root: true });
-		console.log(uninstall.stdout, uninstall.stderr);
-		expect(uninstall.status, uninstall.stderr).toBe(0);
+		expect(uninstall.status, `${uninstall.stdout}\n${uninstall.stderr}`).toBe(
+			0,
+		);
 		expect(run("id dokploy-manager").status).not.toBe(0);
 		for (const path of [
 			"/etc/ssh/sshd_config.d/050-dokploy-manager.conf",

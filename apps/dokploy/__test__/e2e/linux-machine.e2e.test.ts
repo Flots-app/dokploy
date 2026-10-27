@@ -168,8 +168,8 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 			{ githubRunnerNodeId: nodeId, code, host: "127.0.0.1", port: 22 },
 			owner.organizationId,
 		);
-		console.log(checked.checks);
-		expect(checked).toMatchObject({
+		// What the checks said shows when one of them stops the enrollment.
+		expect(checked, JSON.stringify(checked.checks, null, 1)).toMatchObject({
 			fingerprint: hostKey,
 			platform: "linux",
 			canProvision: true,
@@ -192,26 +192,28 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 	it("provisions the runtime, the runner and the budget", async () => {
 		const operation = await provisionRunnerNode(nodeId, owner.userId);
 		const done = await operationDone(operation.githubRunnerOperationId);
-		console.log(done.logs);
-		expect(done.status, done.errorMessage ?? "").toBe("done");
+		expect(done.status, `${done.errorMessage ?? ""}\n${done.logs}`).toBe(
+			"done",
+		);
 		expect(await node(nodeId)).toMatchObject({
 			phase: "ready",
 			applied: { runtimeVersion: RUNTIME_VERSION },
 		});
 
-		// The slice name only means something to Docker's systemd cgroup driver.
-		console.log(
-			"Docker cgroup driver:",
-			run("docker info --format '{{.CgroupDriver}}'").stdout.trim(),
+		// The slice name only means something to Docker's systemd cgroup driver,
+		// which the runtime switches Docker to.
+		expect(run("docker info --format '{{.CgroupDriver}}'").stdout.trim()).toBe(
+			"systemd",
 		);
 		const cpus = Number(run("nproc").stdout.trim());
 		const slice = run(
 			"systemctl show dokploy-runners.slice -p CPUQuotaPerSecUSec -p AllowedCPUs -p MemoryMax",
 		).stdout;
-		console.log(slice);
 		// Half the CPUs, the last ones, so nproc inside matches the quota.
 		const half = Math.max(1, Math.floor(cpus / 2));
-		expect(slice).toMatch(new RegExp(`^CPUQuotaPerSecUSec=${half}s$`, "m"));
+		expect(slice, slice).toMatch(
+			new RegExp(`^CPUQuotaPerSecUSec=${half}s$`, "m"),
+		);
 		expect(slice).toMatch(/^AllowedCPUs=\S+$/m);
 		expect(slice).not.toMatch(/^MemoryMax=infinity$/m);
 		const daemon = JSON.parse(
@@ -329,8 +331,7 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 				),
 			10 * 60_000,
 		);
-		console.log(cleanup);
-		expect(cleanup?.idle).toBe("done");
+		expect(cleanup?.idle, JSON.stringify(cleanup)).toBe("done");
 		const volumes = run("docker volume ls -q").stdout.split("\n");
 		expect(volumes).not.toContain("e2e_cache");
 		expect(volumes).toContain("e2e_used");
@@ -345,8 +346,9 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 		);
 		if (operation) {
 			const done = await operationDone(operation.githubRunnerOperationId);
-			console.log(done.logs);
-			expect(done.status, done.errorMessage ?? "").toBe("done");
+			expect(done.status, `${done.errorMessage ?? ""}\n${done.logs}`).toBe(
+				"done",
+			);
 		}
 		await waitFor(
 			"the machine to be forgotten",
