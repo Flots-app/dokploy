@@ -136,8 +136,11 @@ ${macFirewallUninstall}	# Stops the runner VM: its disk goes with the home folde
 	rm -f "$DROPIN"
 	if id "$MANAGER_USER" >/dev/null 2>&1; then
 		dseditgroup -o edit -d "$MANAGER_USER" -t user com.apple.access_ssh >/dev/null 2>&1 || true
-		sysadminctl -deleteUser "$MANAGER_USER" >/dev/null 2>&1 ||
+		sysadminctl -deleteUser "$MANAGER_USER" >/dev/null 2>&1 || true
+		# Its exit code is not documented: check the account and its home are gone.
+		! id "$MANAGER_USER" >/dev/null 2>&1 ||
 			fail "sysadminctl could not delete $MANAGER_USER"
+		[ ! -d "$MANAGER_HOME" ] || rm -rf "$MANAGER_HOME"
 	fi
 	echo "Done. Power settings are left as they are: review them with pmset -g."
 	exit 0
@@ -167,7 +170,10 @@ fi
 
 step "Remote Login"
 if ! launchctl print system/com.openssh.sshd >/dev/null 2>&1; then
-	systemsetup -setremotelogin on >/dev/null 2>&1 ||
+	# systemsetup needs Full Disk Access and exits 0 even when refused: what
+	# counts is whether sshd is loaded afterwards.
+	systemsetup -setremotelogin on 2>&1 || true
+	launchctl print system/com.openssh.sshd >/dev/null 2>&1 ||
 		fail "turn on Remote Login in System Settings > General > Sharing, then run this script again"
 fi
 # "Only these users": the runner account joins them; "All users" needs nothing.

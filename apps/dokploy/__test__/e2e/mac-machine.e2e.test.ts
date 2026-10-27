@@ -1,8 +1,11 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pfRuleset } from "@dokploy/server/utils/firewall/backends";
+import {
+	LIMA_SSH_PORTS,
+	pfRuleset,
+} from "@dokploy/server/utils/firewall/backends";
 import { compileFirewall } from "@dokploy/server/utils/firewall/model";
 import { FIREWALL_TEMPLATES } from "@dokploy/server/utils/firewall/rules";
 import { macChecks } from "@dokploy/server/utils/github-runners/checks";
@@ -149,7 +152,14 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 		const sudo = run("sudo -l -U dokploy-manager", { root: true }).stdout;
 		expect(sudo).toContain(`NOPASSWD: ${MAC_FIREWALL_HELPER}`);
 		expect(sudo).not.toMatch(/NOPASSWD: ALL/);
-		expect(run("pmset -g custom").stdout).toMatch(/^\s*autorestart\s+1$/m);
+		// Keep awake: never sleeps. A virtual Mac has no restart after a power
+		// loss (pmset ignores what the hardware lacks); a Mac mini has it.
+		const power = run("pmset -g custom").stdout;
+		expect(power).toMatch(/^\s*sleep\s+0$/m);
+		expect(power).toMatch(/^\s*disksleep\s+0$/m);
+		if (/\bautorestart\b/.test(run("pmset -g cap").stdout)) {
+			expect(power).toMatch(/^\s*autorestart\s+1$/m);
+		}
 	});
 
 	it("logs in with the machine key and reads the Mac", async () => {
@@ -287,6 +297,31 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 		expect(run("curl -sS -o /dev/null -m 3 http://10.255.255.1/").status).toBe(
 			28,
 		);
+
+		// The Mac's loopback (192.168.5.2 from the VM): a service there is out
+		// of reach, except in the range Lima's SSH forward uses.
+		const sshPort = LIMA_SSH_PORTS.first + 5;
+		for (const port of [18080, sshPort]) {
+			spawn(
+				"python3",
+				["-m", "http.server", String(port), "--bind", "127.0.0.1"],
+				{
+					detached: true,
+					stdio: "ignore",
+				},
+			).unref();
+		}
+		await new Promise((resolve) => setTimeout(resolve, 2_000));
+		expect(
+			run("curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/")
+				.stdout,
+		).toBe("200");
+		const local = await fromAccount("http://127.0.0.1:18080/");
+		expect(local.exitCode, local.stderr).not.toBe(0);
+		expect((await fromAccount(`http://127.0.0.1:${sshPort}/`)).stdout).toBe(
+			"200",
+		);
+		run("pkill -f 'http.server'");
 
 		// Hand-written rules are refused.
 		const forged = await remote(`sudo -n ${MAC_FIREWALL_HELPER} apply`, {

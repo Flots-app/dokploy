@@ -52,7 +52,7 @@ fail() { echo "error: $*" >&2; exit 1; }
 header_re='^# dokploy-firewall [a-f0-9]{32}$'
 table_re='^table <dk[0-9]{1,3}> const \{ [0-9a-fA-F.:/, ]+ \}$'
 port='[0-9]{1,5}(:[0-9]{1,5})?'
-rule_re="^(pass|block return) out quick( on lo0)? proto (tcp|udp|\{ tcp udp \}) from any to (any|(! )?<dk[0-9]{1,3}>)( port ($port|\{( $port)+ \}))?$"
+rule_re="^(pass|block return) out quick( on lo0)? proto (tcp|udp|\{ tcp udp \}) from any to (any|(! )?<dk[0-9]{1,3}>)( port ($port|\{( $port)+ \}))?( no state)?$"
 
 validate() {
 	local count=0 line expected actual

@@ -2788,6 +2788,75 @@ echo "os=$os"`,
 		expect(output.trim()).toMatch(/^os=\S/);
 	});
 
+	it("notices on a Mac when Remote Login stays off or the account stays", () => {
+		const script = machineSetupScript({
+			platform: "macos",
+			machine: "m6",
+			publicKey: machineKey.publicKey,
+			keepAwake: false,
+		});
+		const between = (from: string, to: string) =>
+			script.slice(
+				script.indexOf(from),
+				script.indexOf(to, script.indexOf(from)),
+			);
+		const run = (fragment: string, stubs: string) =>
+			spawnSync(
+				"bash",
+				[
+					"-c",
+					`set -euo pipefail
+fail() { echo "error: $*" >&2; exit 1; }
+step() { :; }
+MANAGER_USER=dokploy-manager
+MANAGER_HOME=/nonexistent/dokploy-manager
+${stubs}
+${fragment}
+echo reached`,
+				],
+				{ encoding: "utf8" },
+			);
+
+		// systemsetup without Full Disk Access: refused, yet exit 0.
+		const remoteLogin = between('step "Remote Login"', '# "Only these users"');
+		const refused = run(
+			remoteLogin,
+			`launchctl() { return 113; }
+systemsetup() { echo "You need administrator access to run this tool... exiting!"; return 0; }`,
+		);
+		expect(refused.status).toBe(1);
+		expect(refused.stderr).toMatch(/turn on Remote Login/);
+		const turnedOn = run(
+			remoteLogin,
+			`on=""
+launchctl() { [ -n "$on" ]; }
+systemsetup() { on=1; }`,
+		);
+		expect(turnedOn.stdout).toContain("reached");
+
+		// sysadminctl's exit code is not documented: the account must be gone.
+		const remove = between(
+			'	if id "$MANAGER_USER"',
+			'	echo "Done. Power settings',
+		);
+		const stays = run(
+			remove,
+			`id() { return 0; }
+dseditgroup() { :; }
+sysadminctl() { return 0; }`,
+		);
+		expect(stays.status).toBe(1);
+		expect(stays.stderr).toMatch(/could not delete dokploy-manager/);
+		const gone = run(
+			remove,
+			`deleted=""
+id() { [ -z "$deleted" ]; }
+dseditgroup() { :; }
+sysadminctl() { deleted=1; }`,
+		);
+		expect(gone.stdout).toContain("reached");
+	});
+
 	it("reads the code the script prints", () => {
 		const parsed = parseSetupCode(
 			`  ${code(valid).replace(/(.{40})/g, "$1\n")}  `,

@@ -87,8 +87,12 @@ Dispatch jobs with
 
 - The anonymous GitHub API quota is 60 calls per hour per public IP. Dokploy
   never uses it on a schedule, but other tools on the same network may.
-- Lima forwards SSH through vsock: a guest firewall does not cut Dokploy off.
-  Use `limactl stop --force` to simulate a dead machine.
+- SSH to an Ubuntu 24.04 guest does not go through vsock (Lima needs systemd
+  256 or later for that): Lima forwards it through its user-mode network to the
+  guest's sshd. A job that is root in the VM can therefore stop sshd or block
+  port 22 and cut Dokploy off until the VM restarts (the Mac side, `limactl
+  stop` and `start`, keeps working).
+- Use `limactl stop --force` to simulate a dead machine.
 - `fallocate` fills the guest disk without using space on the Mac: use it to
   push free space below the thresholds. Use `dd if=/dev/urandom` for caches
   whose removal must give space back to the Mac.

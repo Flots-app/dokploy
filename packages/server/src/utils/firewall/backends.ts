@@ -137,6 +137,13 @@ ${jobs.map((line) => `\t\t${line}`).join("\n")}
 };
 
 /**
+ * Mac loopback ports where Lima forwards the runner VM's sshd: Dokploy puts the
+ * VM's SSH port in this range (limactl --ssh-port). The VM reaches the Mac's
+ * loopback through 192.168.5.2, and pf leaves only this range open there.
+ */
+export const LIMA_SSH_PORTS = { first: 60022, last: 60031 } as const;
+
+/**
  * pf, for a Mac: the VM of the jobs reaches the network through Lima, whose
  * processes run as the account Dokploy logs in with. The root helper the
  * setup script installs loads these rules in an anchor of its own and binds
@@ -160,13 +167,22 @@ export const pfRuleset = (compiled: CompiledFirewall): Ruleset => {
 		...inboundNote(compiled, "the VM takes no connection from the network"),
 	];
 	const rules: string[] = [
-		"pass out quick on lo0 proto { tcp udp } from any to any",
+		`pass out quick on lo0 proto tcp from any to any port ${LIMA_SSH_PORTS.first}:${LIMA_SSH_PORTS.last}`,
 		"pass out quick proto { tcp udp } from any to any port 53",
+		// Services listening on the Mac's loopback stay out of the jobs' reach.
+		"block return out quick on lo0 proto { tcp udp } from any to any",
 	];
+	notes.push(
+		`On a Mac, the VM reaches the Mac's own loopback (127.0.0.1) only on ports ${LIMA_SSH_PORTS.first}-${LIMA_SSH_PORTS.last}, where Lima forwards its SSH.`,
+	);
 	for (const rule of compiled.outbound.rules) {
 		if (rule.protocol === "icmp") continue;
+		// Without state, every packet meets the current rules: a stricter
+		// firewall cuts the connections already open instead of letting them
+		// run until they close. Replies come in, which these rules never match.
 		const action =
 			rule.action === "allow" ? "pass out quick" : "block return out quick";
+		const state = rule.action === "allow" ? " no state" : "";
 		const protocol = rule.protocol === "any" ? "{ tcp udp }" : rule.protocol;
 		const to = isAnywhere(rule)
 			? "any"
@@ -178,8 +194,10 @@ export const pfRuleset = (compiled: CompiledFirewall): Ruleset => {
 			: rule.ports.length === 1 && rule.ports[0]
 				? ` port ${range(rule.ports[0])}`
 				: ` port { ${rule.ports.map(range).join(" ")} }`;
-		rules.push(`${action} proto ${protocol} from any to ${to}${port}`);
+		rules.push(`${action} proto ${protocol} from any to ${to}${port}${state}`);
 	}
+	// An allow policy adds no rule: what nothing matched passes without state,
+	// and the anchors after this one still apply.
 	if (compiled.outbound.policy === "deny") {
 		rules.push("block return out quick proto { tcp udp } from any to any");
 	}

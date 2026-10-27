@@ -1,3 +1,4 @@
+import { LIMA_SSH_PORTS } from "../firewall/backends";
 import { macFirewallStatus, macWaitForFirewall } from "./firewall";
 import { shellQuote, statusCommand } from "./runtime";
 import { BOOT_DAEMON } from "./setup-constants";
@@ -76,13 +77,33 @@ fi`
 }
 `;
 
+/**
+ * Prints a free port of the range pf leaves open on the Mac's loopback, for
+ * the VM's SSH. Lima picks a random one otherwise (lima-vm/lima, ssh.localPort 0).
+ */
+const pickSshPort = `pick_ssh_port() {
+	local used port
+	used=" $(limactl list --format '{{.SSHLocalPort}}' 2>/dev/null | tr '\\n' ' ') "
+	for port in $(seq ${LIMA_SSH_PORTS.first} ${LIMA_SSH_PORTS.last}); do
+		case "$used" in *" $port "*) continue ;; esac
+		nc -z -G 1 127.0.0.1 "$port" >/dev/null 2>&1 && continue
+		echo "$port"
+		return 0
+	done
+	echo "no free port between ${LIMA_SSH_PORTS.first} and ${LIMA_SSH_PORTS.last} for the SSH of the VM" >&2
+	return 1
+}`;
+
 /** Creates the VM like the CI runbook: plain mode, no host mount, no port forwarding. */
 export const macCreateVmScript = (
 	vmName: string,
 	size: { cpus: number; memoryGiB: string; diskGb: number },
 ) => `${prelude}
 set -eu
+${pickSshPort}
+port=$(pick_ssh_port)
 limactl create --tty=false --name=${vm(vmName)} --plain --vm-type=vz \\
+	--ssh-port="$port" \\
 	--cpus=${size.cpus} --memory=${shellQuote(size.memoryGiB)} --disk=${size.diskGb} \\
 	template:ubuntu-24.04
 `;
@@ -96,10 +117,24 @@ limactl create --tty=false --name=${vm(vmName)} --plain --vm-type=vz \\
 export const macStartVmScript = (vmName: string) => `${prelude}
 set -eu
 name=${vm(vmName)}
+${pickSshPort}
+in_range() { [ "\${1:-0}" -ge ${LIMA_SSH_PORTS.first} ] && [ "\${1:-0}" -le ${LIMA_SSH_PORTS.last} ]; }
 status=$(limactl list --format '{{.Status}}' "$name")
+port=$(limactl list --format '{{.SSHLocalPort}}' "$name")
 if [ "$status" = Running ]; then
+	# The firewall leaves only that range open on the loopback: Dokploy would
+	# lose its SSH to a VM outside it.
+	in_range "$port" || {
+		echo "VM $name runs with SSH port $port, outside ${LIMA_SSH_PORTS.first}-${LIMA_SSH_PORTS.last}: stop it so Dokploy can move its port" >&2
+		exit 1
+	}
 	echo "VM $name already running"
 	exit 0
+fi
+if ! in_range "$port"; then
+	port=$(pick_ssh_port)
+	echo "Moving the SSH port of VM $name to $port"
+	limactl edit --tty=false --ssh-port="$port" "$name"
 fi
 dir=$(limactl list --format '{{.Dir}}' "$name")
 boot=$(sysctl -n kern.boottime | sed -E 's/^\\{ sec = ([0-9]+).*/\\1/')
@@ -115,13 +150,21 @@ touch ${enabledFlag}
 limactl start --tty=false "$name"
 `;
 
-/** Graceful shutdown of the guest. Never --force: see macStartVmScript. */
+/**
+ * Graceful shutdown of the guest, forced when the guest refuses it (vz answers
+ * "CanRequestStop is not supported" in some states; lima-vm/lima#5436). Forcing
+ * a running VM is safe: its PID files are current, and Lima 2.2 ignores those
+ * of a previous boot anyway.
+ */
 export const macStopVmScript = (vmName: string) => `${prelude}
 set -eu
 name=${vm(vmName)}
 rm -f ${enabledFlag}
 if [ "$(limactl list --format '{{.Status}}' "$name" 2>/dev/null)" = Running ]; then
-	limactl stop "$name"
+	limactl stop "$name" || {
+		echo "VM $name refused to stop: forcing it" >&2
+		limactl stop --force "$name"
+	}
 fi
 `;
 
@@ -141,7 +184,8 @@ name=${vm(vmName)}
 rm -f ${enabledFlag}
 if limactl list --format '{{.Status}}' "$name" >/dev/null 2>&1; then
 	limactl stop "$name" >/dev/null 2>&1 || true
-	limactl delete "$name"
+	# --force: a VM that refused to stop is deleted anyway.
+	limactl delete --force "$name"
 fi
 `;
 
@@ -187,8 +231,11 @@ echo "lima installed=$("$root/lima/bin/limactl" --version | awk '{print $NF}')"
 `;
 };
 
-/** Bumped when the boot script changes: machines get it written again. 2: waits for pf. */
-export const MAC_BOOT_SCRIPT_VERSION = 2;
+/**
+ * Bumped when the boot script changes: machines get it written again.
+ * 2: waits for pf. 3: keeps the SSH port of the VM in the range pf leaves open.
+ */
+export const MAC_BOOT_SCRIPT_VERSION = 3;
 
 /**
  * Script the boot daemon of the setup script runs at every boot: it starts the

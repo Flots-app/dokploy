@@ -13,6 +13,7 @@ import {
 	apiUpdateFirewall,
 } from "@dokploy/server/db/schema";
 import {
+	LIMA_SSH_PORTS,
 	NFT_UID_PLACEHOLDER,
 	nftablesRuleset,
 	pfRuleset,
@@ -35,6 +36,11 @@ import {
 	macFirewallHelper,
 	parseFirewallStatus,
 } from "@dokploy/server/utils/github-runners/firewall";
+import {
+	macCreateVmScript,
+	macStartVmScript,
+	macStopVmScript,
+} from "@dokploy/server/utils/github-runners/macos";
 import { machineSetupScript } from "@dokploy/server/utils/github-runners/setup";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
@@ -253,16 +259,155 @@ describe("pf ruleset", () => {
 			"table <dk1> const { 203.0.113.7, 2001:db8::7 }",
 			"table <dk2> const { 10.0.4.20, fd00::20 }",
 			`table <dk3> const { ${[...NON_PUBLIC.v4, ...NON_PUBLIC.v6].join(", ")} }`,
-			"pass out quick on lo0 proto { tcp udp } from any to any",
+			// The Mac's loopback: Lima's SSH forward only, then nothing.
+			"pass out quick on lo0 proto tcp from any to any port 60022:60031",
 			"pass out quick proto { tcp udp } from any to any port 53",
+			"block return out quick on lo0 proto { tcp udp } from any to any",
 			"block return out quick proto { tcp udp } from any to <dk1>",
-			"pass out quick proto tcp from any to <dk2> port { 5000 8000:8100 }",
-			"pass out quick proto { tcp udp } from any to ! <dk3>",
+			// No state: a stricter firewall cuts the connections already open.
+			"pass out quick proto tcp from any to <dk2> port { 5000 8000:8100 } no state",
+			"pass out quick proto { tcp udp } from any to ! <dk3> no state",
 			"block return out quick proto { tcp udp } from any to any",
 		]);
 		expect(notes.join(" ")).toContain(
 			"On a Mac, pf filters TCP and UDP only: ICMP (ping) is not filtered",
 		);
+		expect(notes.join(" ")).toContain(
+			"only on ports 60022-60031, where Lima forwards its SSH",
+		);
+	});
+
+	it("leaves the VM's SSH range in the range Lima's scripts pick from", () => {
+		const create = macCreateVmScript("dokploy-runners", {
+			cpus: 2,
+			memoryGiB: "2",
+			diskGb: 20,
+		});
+		expect(create).toContain('--ssh-port="$port"');
+		expect(create).toContain(
+			`seq ${LIMA_SSH_PORTS.first} ${LIMA_SSH_PORTS.last}`,
+		);
+		// A VM started outside the range is moved into it first; one already
+		// running outside it is refused rather than cut off by the firewall.
+		const start = macStartVmScript("dokploy-runners");
+		expect(start).toContain('limactl edit --tty=false --ssh-port="$port"');
+		expect(start).toMatch(/outside 60022-60031: stop it/);
+		for (const script of [create, start]) {
+			const bash = spawnSync("bash", ["-n"], { input: script });
+			expect(bash.status, bash.stderr.toString()).toBe(0);
+		}
+	});
+});
+
+describe("Lima VM SSH port", () => {
+	/** Runs a Mac script with fake limactl, nc and sysctl, as the Mac account would. */
+	const runMac = (
+		script: string,
+		vm: { status: string; port: number },
+		busyPorts: number[] = [],
+	) => {
+		const home = mkdtempSync(join(tmpdir(), "dokploy-lima-"));
+		const bin = join(home, ".dokploy/lima/bin");
+		spawnSync("mkdir", ["-p", bin]);
+		const fakes: Record<string, string> = {
+			limactl: `#!/bin/bash
+echo "limactl $*" >>"${home}/calls"
+case "$*" in
+*"{{.Status}}"*) echo "${vm.status}" ;;
+*"{{.SSHLocalPort}}"*) echo "${vm.port}" ;;
+*"{{.Dir}}"*) echo "${home}" ;;
+stop*) [ -f "${home}/refuse-stop" ] && [ "$2" != --force ] && exit 1 ;;
+esac
+exit 0
+`,
+			nc: `#!/bin/bash
+# nc -z -G 1 127.0.0.1 PORT: the port is the last argument.
+case " ${busyPorts.join(" ")} " in *" ${"${@: -1}"} "*) exit 0 ;; esac
+exit 1
+`,
+			sysctl: "#!/bin/bash\necho '{ sec = 1700000000, usec = 0 }'\n",
+		};
+		for (const [name, body] of Object.entries(fakes)) {
+			writeFileSync(join(bin, name), body);
+			chmodSync(join(bin, name), 0o755);
+		}
+		const result = spawnSync("bash", ["-c", script], {
+			env: { ...process.env, HOME: home },
+			encoding: "utf8",
+		});
+		let calls = "";
+		try {
+			calls = readFileSync(join(home, "calls"), "utf8");
+		} catch {}
+		return { ...result, calls, home };
+	};
+
+	it("moves a VM with a random port into the range before starting it", () => {
+		const moved = runMac(
+			macStartVmScript("dokploy-runners"),
+			{
+				status: "Stopped",
+				port: 0,
+			},
+			[LIMA_SSH_PORTS.first],
+		);
+		expect(moved.status, moved.stderr).toBe(0);
+		// The first port is taken by another process: the next one is used.
+		expect(moved.calls).toContain(
+			`limactl edit --tty=false --ssh-port=${LIMA_SSH_PORTS.first + 1} dokploy-runners`,
+		);
+		expect(moved.calls).toMatch(/limactl start --tty=false dokploy-runners/);
+		expect(moved.calls.indexOf("edit")).toBeLessThan(
+			moved.calls.indexOf("start"),
+		);
+
+		const kept = runMac(macStartVmScript("dokploy-runners"), {
+			status: "Stopped",
+			port: LIMA_SSH_PORTS.first + 3,
+		});
+		expect(kept.status, kept.stderr).toBe(0);
+		expect(kept.calls).not.toContain("edit");
+	});
+
+	it("refuses a running VM outside the range instead of cutting it off", () => {
+		const running = runMac(macStartVmScript("dokploy-runners"), {
+			status: "Running",
+			port: 49152,
+		});
+		expect(running.status).toBe(1);
+		expect(running.stderr).toMatch(/outside 60022-60031: stop it/);
+		expect(running.calls).not.toMatch(/edit|start/);
+	});
+
+	it("creates the VM on a free port of the range", () => {
+		const created = runMac(
+			macCreateVmScript("dokploy-runners", {
+				cpus: 2,
+				memoryGiB: "2",
+				diskGb: 20,
+			}),
+			{ status: "", port: LIMA_SSH_PORTS.first },
+			[],
+		);
+		expect(created.status, created.stderr).toBe(0);
+		// Another instance already uses the first port.
+		expect(created.calls).toContain(`--ssh-port=${LIMA_SSH_PORTS.first + 1}`);
+	});
+
+	it("forces a stop the guest refuses", () => {
+		const stop = macStopVmScript("dokploy-runners");
+		const graceful = runMac(stop, {
+			status: "Running",
+			port: LIMA_SSH_PORTS.first,
+		});
+		expect(graceful.status, graceful.stderr).toBe(0);
+		expect(graceful.calls).not.toContain("--force");
+		const refused = runMac(`touch "$HOME/refuse-stop"\n${stop}`, {
+			status: "Running",
+			port: LIMA_SSH_PORTS.first,
+		});
+		expect(refused.status, refused.stderr).toBe(0);
+		expect(refused.calls).toContain("limactl stop --force dokploy-runners");
 	});
 });
 
