@@ -310,16 +310,20 @@ describe.runIf(process.platform === "darwin")("a Mac runner machine", () => {
 				},
 			).unref();
 		}
-		await new Promise((resolve) => setTimeout(resolve, 2_000));
-		expect(
-			run("curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/")
-				.stdout,
-		).toBe("200");
+		// Both servers answer the runner's own account, which pf leaves alone.
+		for (const port of [18080, sshPort]) {
+			const url = `http://127.0.0.1:${port}/`;
+			let answer = run(`curl -sS -o /dev/null -w '%{http_code}' ${url}`);
+			for (let i = 0; i < 30 && answer.stdout !== "200"; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 1_000));
+				answer = run(`curl -sS -o /dev/null -w '%{http_code}' ${url}`);
+			}
+			expect(answer.stdout, `${url}: ${answer.stderr}`).toBe("200");
+		}
 		const local = await fromAccount("http://127.0.0.1:18080/");
 		expect(local.exitCode, local.stderr).not.toBe(0);
-		expect((await fromAccount(`http://127.0.0.1:${sshPort}/`)).stdout).toBe(
-			"200",
-		);
+		const ssh = await fromAccount(`http://127.0.0.1:${sshPort}/`);
+		expect(ssh.stdout, ssh.stderr).toBe("200");
 		run("pkill -f 'http.server'");
 
 		// Hand-written rules are refused.

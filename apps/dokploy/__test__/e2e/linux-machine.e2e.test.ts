@@ -162,7 +162,14 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 			/^authenticationmethods publickey$/m,
 		);
 		expect(sshd("runner")).toMatch(/^permittty yes$/m);
-		expect(run("visudo -c", { root: true }).status).toBe(0);
+		// Our rule only: the image's own sudoers files are not ours to judge.
+		const sudoers = run("visudo -cf /etc/sudoers.d/dokploy-manager", {
+			root: true,
+		});
+		expect(sudoers.status, `${sudoers.stdout}\n${sudoers.stderr}`).toBe(0);
+		expect(run("sudo -l -U dokploy-manager", { root: true }).stdout).toMatch(
+			/\(root\) NOPASSWD: ALL/,
+		);
 
 		const checked = await completeGithubRunnerEnrollment(
 			{ githubRunnerNodeId: nodeId, code, host: "127.0.0.1", port: 22 },
