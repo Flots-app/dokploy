@@ -1,6 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -914,6 +915,11 @@ describe("reconcile planner", () => {
 		expect(isStale(ghRunner(1, { version: "2.328.0" }), plannerNode())).toBe(
 			true,
 		);
+		// GitHub updated the runner itself on a job: a newer release is kept,
+		// or every arm would be recycled until Dokploy installs that release.
+		expect(isStale(ghRunner(1, { version: "2.399.0" }), plannerNode())).toBe(
+			false,
+		);
 		const plan = planNode({
 			now: NOW,
 			node,
@@ -1178,6 +1184,120 @@ describe("runtime scripts", () => {
 		const recorded = execFileSync("cat", [join(dir, "3")]).toString();
 		expect(recorded).toMatch(/^repository=Flots-app\/monorepo\nrun_id=99\n/);
 		expect(recorded).toMatch(/workflow=CI Pipeline\n/);
+	});
+
+	it("fails the job when a pool hook fails half-way, as GitHub runs hooks", () => {
+		const { completed } = files();
+		const hook = join(dir, "job-completed.sh");
+		writeFileSync(hook, completed);
+		for (const [name, body] of [
+			["errexit", "false\necho after\n"],
+			["pipefail", "false | true\necho after\n"],
+		] as const) {
+			const poolHook = join(dir, `pool-${name}.sh`);
+			writeFileSync(poolHook, body);
+			const result = spawnSync("bash", [hook], {
+				env: { ...process.env, DOKPLOY_JOB_COMPLETED_HOOK: poolHook },
+				encoding: "utf8",
+			});
+			// GitHub runs a .sh hook with bash -e -o pipefail: the job fails.
+			expect(result.status, name).not.toBe(0);
+			expect(result.stdout, name).not.toContain("after");
+		}
+	});
+
+	it("keeps background updates from restarting runners or updating Docker", () => {
+		const { install } = files();
+		const conf = join(dir, "needrestart.conf");
+		writeFileSync(
+			conf,
+			extractRuntimeFile(
+				install,
+				"/etc/needrestart/conf.d/50-dokploy-runners.conf",
+			),
+		);
+		// needrestart evaluates its conf.d files as Perl into %nrconf, then skips
+		// the services an override_rc pattern maps to 0.
+		const decided = execFileSync("perl", [
+			"-e",
+			`our %nrconf = (override_rc => { qr(^bluetooth) => 0 });
+do $ARGV[0]; die $@ if $@;
+for my $unit (@ARGV[1..$#ARGV]) {
+	my $restart = 1;
+	for my $re (keys %{$nrconf{override_rc}}) {
+		$restart = $nrconf{override_rc}{$re} if $unit =~ /$re/;
+	}
+	print "$unit=$restart\n";
+}`,
+			conf,
+			"dokploy-runner@3.service",
+			"docker.service",
+			"bluetooth.service",
+		]).toString();
+		expect(decided).toBe(
+			"dokploy-runner@3.service=0\ndocker.service=1\nbluetooth.service=0\n",
+		);
+		const unattended = extractRuntimeFile(
+			install,
+			"/etc/apt/apt.conf.d/51dokploy-runners",
+		);
+		expect(unattended).toMatch(
+			/^Unattended-Upgrade::Package-Blacklist \{ "docker\.io";.*"containerd";.*"runc"; \};$/m,
+		);
+		// Uninstalled with the runtime.
+		expect(files().runnerctl).toContain(
+			"/etc/needrestart/conf.d/50-dokploy-runners.conf /etc/apt/apt.conf.d/51dokploy-runners",
+		);
+		// Dokploy's own OS updates restart Docker, once the machine is drained.
+		expect(files().osPatch).toContain(
+			"if systemctl is-active --quiet docker; then systemctl restart docker; fi",
+		);
+	});
+
+	it("waits for the package lists lock instead of failing", () => {
+		const { install } = files();
+		const start = install.indexOf("apt_update() {");
+		const fn = install.slice(start, install.indexOf("\n}\n", start) + 2);
+		const count = join(dir, "apt-calls");
+		const result = spawnSync(
+			"bash",
+			[
+				"-c",
+				`set -euo pipefail
+fail() { echo "error: $*" >&2; exit 1; }
+sleep() { :; }
+apt-get() { echo x >>"${count}"; [ "$(wc -l <"${count}")" -ge 3 ]; }
+${fn}
+apt_update && echo updated`,
+			],
+			{ encoding: "utf8" },
+		);
+		// The lists lock was held twice (apt-daily), then apt went through.
+		expect(result.stdout.trim()).toBe("updated");
+		expect(readFileSync(count, "utf8").trim().split("\n")).toHaveLength(3);
+		expect(files().osPatch).toMatch(
+			/for attempt in \$\(seq 1 30\); do\n\t\$apt update -qq && break/,
+		);
+	});
+
+	it("gives runners time to stop, starts each one clean, and keeps the budget", () => {
+		const { install, runnerctl } = files();
+		// As GitHub's own unit: 5 minutes to cancel and report the job.
+		expect(
+			extractRuntimeFile(
+				install,
+				"/etc/systemd/system/dokploy-runner@.service",
+			),
+		).toMatch(/^TimeoutStopSec=300$/m);
+		// Settings a killed runner migrated are not read by the next one.
+		expect(runnerctl).toContain(
+			'"$dir/.runner_migrated" "$dir/.credentials_migrated"',
+		);
+		// Autoarm needs the firewall table itself, not only its hash file.
+		expect(runnerctl).toContain("! nft list table inet dokploy_firewall");
+		// Job containers stay in the slice only with the systemd cgroup driver.
+		expect(install).toContain('"native.cgroupdriver=systemd"');
+		expect(install).toContain("job containers would escape the runner budget");
 	});
 
 	it("makes a starting job wait for a cleanup that needs every cache", () => {
@@ -3174,6 +3294,110 @@ gc_parse 'entries[$(touch ${dir}/injected)]\thome\t\t${home}/.cache/pip'
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it.skipIf(!linuxShell)(
+		"installs a runner release only once it starts on the machine",
+		() => {
+			const dir = realpathSync(mkdtempSync(join(tmpdir(), "dokploy-release-")));
+			try {
+				const install = installRuntimeScript();
+				const runnerctl = extractRuntimeFile(
+					install,
+					"/opt/dokploy-runners/bin/runnerctl",
+				)
+					.replace(
+						"export PATH=/usr/local/sbin",
+						`export PATH=${join(dir, "bin")}:/usr/local/sbin`,
+					)
+					.replace("ROOT=/opt/dokploy-runners", `ROOT=${join(dir, "root")}`)
+					.replace(
+						"STATE=/var/lib/dokploy-runners",
+						`STATE=${join(dir, "state")}`,
+					);
+				writeFileSync(join(dir, "runnerctl"), runnerctl);
+				mkdirSync(join(dir, "bin"));
+				mkdirSync(join(dir, "root/releases"), { recursive: true });
+				// curl hands over the local archive; chown needs root, sleep is skipped.
+				writeFileSync(
+					join(dir, "bin/curl"),
+					`#!/bin/bash\nwhile [ "$1" != -o ]; do shift; done\ncp "${join(dir, "runner.tar.gz")}" "$2"\n`,
+				);
+				writeFileSync(join(dir, "bin/chown"), "#!/bin/bash\nexit 0\n");
+				writeFileSync(join(dir, "bin/sleep"), "#!/bin/bash\nexit 0\n");
+				for (const tool of ["curl", "chown", "sleep"]) {
+					chmodSync(join(dir, "bin", tool), 0o755);
+				}
+				const release = (listener: string) => {
+					const build = join(dir, "build");
+					rmSync(build, { recursive: true, force: true });
+					mkdirSync(join(build, "bin"), { recursive: true });
+					writeFileSync(join(build, "run.sh"), "#!/bin/bash\n");
+					writeFileSync(
+						join(build, "bin/Runner.Listener"),
+						`#!/bin/bash\n${listener}\n`,
+					);
+					writeFileSync(
+						join(build, "bin/installdependencies.sh"),
+						"#!/bin/bash\necho 'E: Could not get lock' >&2\nexit 1\n",
+					);
+					for (const file of [
+						"run.sh",
+						"bin/Runner.Listener",
+						"bin/installdependencies.sh",
+					]) {
+						chmodSync(join(build, file), 0o755);
+					}
+					execFileSync("tar", [
+						"-czf",
+						join(dir, "runner.tar.gz"),
+						"-C",
+						build,
+						".",
+					]);
+					return (
+						execFileSync("sha256sum", [join(dir, "runner.tar.gz")])
+							.toString()
+							.split(" ")[0] ?? ""
+					);
+				};
+				const installRelease = (sha: string) =>
+					spawnSync(
+						"bash",
+						[
+							join(dir, "runnerctl"),
+							"install-release",
+							"2.399.0",
+							"https://example.test/runner.tar.gz",
+							sha,
+						],
+						{ encoding: "utf8" },
+					);
+
+				// ICU missing: the listener cannot start, so nothing is installed.
+				const broken = installRelease(
+					release('echo "Couldn\'t find a valid ICU package" >&2; exit 134'),
+				);
+				expect(broken.status).not.toBe(0);
+				expect(broken.stderr).toContain("does not start on this machine");
+				expect(broken.stderr).toContain(
+					"dependency installer failed: E: Could not get lock",
+				);
+				expect(
+					spawnSync("test", ["-e", join(dir, "root/releases/2.399.0")]).status,
+				).not.toBe(0);
+				expect(
+					spawnSync("test", ["-e", join(dir, "root/releases/current")]).status,
+				).not.toBe(0);
+
+				// The same release once its dependencies are there.
+				const working = installRelease(release('echo "2.399.0"'));
+				expect(working.status, working.stderr).toBe(0);
+				expect(working.stdout).toContain("release installed=2.399.0");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it.skipIf(!linuxShell)(
 		"cleans the caches without following what jobs named or linked",

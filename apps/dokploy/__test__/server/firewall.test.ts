@@ -141,6 +141,15 @@ describe("firewall rules", () => {
 			});
 			expect(parsed.success, template.id).toBe(true);
 		}
+		// A Mac's VM has no clock sync in Lima's plain mode: NTP must stay open.
+		const webOnly = FIREWALL_TEMPLATES.find((item) => item.id === "web-only");
+		expect(webOnly?.rules).toContainEqual(
+			expect.objectContaining({
+				action: "allow",
+				protocol: "udp",
+				ports: "123",
+			}),
+		);
 	});
 });
 
@@ -204,22 +213,25 @@ const sample = () =>
 	);
 
 describe("nftables ruleset", () => {
-	it("filters the job account and the Docker bridges, in order", () => {
+	it("filters the job account and every forwarded connection, in order", () => {
 		const { text, hash, notes } = nftablesRuleset(sample());
 		expect(text).toMatch(/^# Dokploy firewall "Internet only"/);
 		expect(text).toContain(
 			"table inet dokploy_firewall\ndelete table inet dokploy_firewall\n",
 		);
 		expect(text).toContain(`meta skuid ${NFT_UID_PLACEHOLDER} jump jobs`);
-		expect(text).toContain('iifname "docker0" jump jobs');
-		expect(text).toContain('iifname "br-*" jump jobs');
+		// Every connection the machine forwards: a Docker network with a bridge
+		// name of its own (com.docker.network.bridge.name) is filtered too.
+		expect(text).toContain("ct direction original jump jobs");
+		expect(text).not.toContain("iifname");
 		const jobs = text
 			.slice(text.indexOf("chain jobs {"), text.indexOf("chain output"))
 			.split("\n")
 			.map((line) => line.trim())
 			.filter((line) => line && !line.startsWith("chain") && line !== "}");
 		expect(jobs).toEqual([
-			"ct state established,related accept",
+			// Only replies skip the rules: a stricter firewall cuts what is open.
+			"ct direction reply accept",
 			'oifname "lo" accept',
 			"meta l4proto { tcp, udp } th dport 53 accept",
 			"ip daddr @v4_1 reject",

@@ -153,7 +153,7 @@ export const FIREWALL_TEMPLATES: {
 		id: "web-only",
 		name: "Web only",
 		description:
-			"Only HTTPS, HTTP and SSH (git) to the public Internet: package registries, GitHub and container registries keep working.",
+			"Only HTTPS, HTTP and SSH (git) to the public Internet, and NTP for the clock: package registries, GitHub and container registries keep working.",
 		inboundPolicy: "deny",
 		outboundPolicy: "deny",
 		rules: [
@@ -172,6 +172,16 @@ export const FIREWALL_TEMPLATES: {
 				ports: "443",
 				peer: { type: "object", object: "internet" },
 				description: "HTTP/3",
+			},
+			{
+				// A Mac's VM runs in Lima's plain mode, without the host's clock
+				// sync: NTP keeps it right, or TLS fails once it drifts.
+				direction: "outbound",
+				action: "allow",
+				protocol: "udp",
+				ports: "123",
+				peer: { type: "object", object: "internet" },
+				description: "NTP (time)",
 			},
 		],
 	},

@@ -5,6 +5,7 @@ import type {
 import type { GithubRunner } from "./github-api";
 import { RELEASE_AFTER_MS, type WaitingTarget } from "./placement";
 import type { LocalSlot } from "./probe";
+import { compareVersions } from "./versions";
 
 /** A runner that has not come online this long after its slot started is restarted. */
 export const STARTUP_GRACE_MS = 3 * 60_000;
@@ -90,11 +91,14 @@ export const isStale = (runner: GithubRunner, node: PlannerNode) => {
 	if (runner.customLabels.some((label) => !wanted.has(label.toLowerCase()))) {
 		return true;
 	}
+	// Only an older release is recycled. GitHub updates a runner itself when a
+	// job is assigned (docs: self-hosted runners, "Runner software updates"), and
+	// the slot keeps that copy: a newer runner is not one to replace.
 	return Boolean(
 		node.runnerVersion &&
 			runner.status === "online" &&
 			runner.version &&
-			runner.version !== node.runnerVersion,
+			compareVersions(runner.version, node.runnerVersion) < 0,
 	);
 };
 

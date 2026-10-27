@@ -384,8 +384,16 @@ export DEBIAN_FRONTEND=noninteractive
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 command -v apt-get >/dev/null 2>&1 || { echo "error: Dokploy installs OS updates with apt only" >&2; exit 1; }
 apt="apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
-$apt update -qq
+# The package lists lock has no timeout, unlike dpkg's: apt-daily may hold it.
+for attempt in $(seq 1 30); do
+	$apt update -qq && break
+	[ "$attempt" != 30 ] || exit 1
+	sleep 10
+done
 $apt -y -q --with-new-pkgs upgrade
+# Ubuntu's docker.io leaves the old daemon running after an upgrade (and the
+# runtime keeps Docker out of background updates): the machine is drained now.
+if systemctl is-active --quiet docker; then systemctl restart docker; fi
 echo "patched boot=$(cat /proc/sys/kernel/random/boot_id) reboot=$([ -f /var/run/reboot-required ] && echo yes || echo no)"
 `;
 

@@ -41,10 +41,11 @@ export const NFT_TABLE = "dokploy_firewall";
 export const NFT_UID_PLACEHOLDER = "@JOB_UID@";
 
 /**
- * nftables, for a Linux runner machine: what the job account sends, and what
- * Docker containers (all started by jobs: the machine is dedicated to them)
- * forward through their bridges. Loaded in one transaction: the table is
- * replaced whole or not at all.
+ * nftables, for a Linux runner machine: what the job account sends, and the
+ * connections the machine forwards, which are the Docker containers' (all
+ * started by jobs: the machine is dedicated to them), whatever the name of
+ * their network's bridge. Loaded in one transaction: the table is replaced
+ * whole or not at all.
  */
 export const nftablesRuleset = (compiled: CompiledFirewall): Ruleset => {
 	const sets = new Map<string, { name: string; text: string }>();
@@ -101,7 +102,10 @@ export const nftablesRuleset = (compiled: CompiledFirewall): Ruleset => {
 		);
 	};
 	const jobs = [
-		"ct state established,related accept",
+		// Replies of the connections the jobs accept. Every packet the jobs send
+		// otherwise meets the current rules, even on a connection opened under
+		// older, looser ones: a stricter firewall cuts it.
+		"ct direction reply accept",
 		'oifname "lo" accept',
 		"meta l4proto { tcp, udp } th dport 53 accept",
 		...compiled.outbound.rules.flatMap(lines),
@@ -120,8 +124,7 @@ ${jobs.map((line) => `\t\t${line}`).join("\n")}
 	}
 	chain forward {
 		type filter hook forward priority 0; policy accept;
-		iifname "docker0" jump jobs
-		iifname "br-*" jump jobs
+		ct direction original jump jobs
 	}
 }
 `;

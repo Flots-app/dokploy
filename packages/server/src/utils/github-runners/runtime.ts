@@ -4,16 +4,20 @@
  * file below changes; the controller reinstalls the runtime when the machine
  * reports an older version.
  */
+import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 
-export const RUNTIME_VERSION = 9;
+export const RUNTIME_VERSION = 10;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
  * v6 changed the disk cleanup records, so it is required. v7 adds the
  * reserve a machine arms itself with while no controller answers: optional.
  * v8 reports the autonomy setting it follows: optional. v9 also removes the
- * least recently used named Docker volumes: optional.
+ * least recently used named Docker volumes: optional. v10 gives a runner 5
+ * minutes to stop, checks the runner starts, keeps background updates from
+ * restarting runners or Docker mid-job, and forces Docker's systemd cgroup
+ * driver: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 
@@ -216,7 +220,9 @@ cmd_autoarm() {
 	firewall=$(printf '%s' "$settings" | sed -n 's/.*firewall=\([a-z0-9]*\).*/\1/p')
 	[[ "$max" =~ ^[0-9]+$ && "$min_free" =~ ^[0-9]+$ ]] || return 0
 	# Linux: no job without the firewall it must run behind (a Mac filters on the host).
-	if [[ "$firewall" =~ ^[a-f0-9]{32}$ ]] && [ "$(cat /run/dokploy-firewall.hash 2>/dev/null)" != "$firewall" ]; then
+	# The table itself, not only the hash file: a flushed ruleset leaves the file behind.
+	if [[ "$firewall" =~ ^[a-f0-9]{32}$ ]] && { [ "$(cat /run/dokploy-firewall.hash 2>/dev/null)" != "$firewall" ] ||
+		! nft list table inet ${NFT_TABLE} >/dev/null 2>&1; }; then
 		echo "runnerctl: firewall not loaded, no slot armed" >&2
 		return 0
 	fi
@@ -295,7 +301,8 @@ cmd_arm() {
 	# Ephemeral: nothing of the previous job survives in the slot. Shared caches
 	# (tool cache, home, Docker images and build cache) are kept for speed.
 	rm -rf "$dir/_work" "$dir/_diag" "$dir/.runner" "$dir/.credentials" \
-		"$dir/.credentials_rsaparams" "$dir/.dokploy-runner-name" "$STATE/jobs/$slot"
+		"$dir/.credentials_rsaparams" "$dir/.runner_migrated" "$dir/.credentials_migrated" \
+		"$dir/.dokploy-runner-name" "$STATE/jobs/$slot"
 	install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$dir/_work" || die "slot $slot: could not create its workspace"
 	read_jit "$dir"
 	[ -s "$dir/.runner" ] && [ -s "$dir/.credentials" ] || die "incomplete JIT configuration"
@@ -367,9 +374,19 @@ cmd_install_release() {
 		mkdir "$tmp/runner"
 		tar -xzf "$tmp/runner.tar.gz" -C "$tmp/runner"
 		if [ -x "$tmp/runner/bin/installdependencies.sh" ]; then
-			"$tmp/runner/bin/installdependencies.sh" >/dev/null 2>&1 ||
-				echo "warning: the runner dependency installer failed" >&2
+			# apt may be busy (apt-daily after a boot): try again before giving up.
+			for attempt in 1 2 3; do
+				"$tmp/runner/bin/installdependencies.sh" >"$tmp/dependencies.log" 2>&1 && break
+				if [ "$attempt" = 3 ]; then
+					echo "warning: the runner dependency installer failed: $(tail -n 3 "$tmp/dependencies.log" | tr '\n' ' ')" >&2
+				else
+					sleep 20
+				fi
+			done
 		fi
+		# A missing library (ICU) only shows once a job comes: check it now.
+		RUNNER_ALLOW_RUNASROOT=1 "$tmp/runner/bin/Runner.Listener" --version >/dev/null 2>&1 ||
+			die "actions/runner $version does not start on this machine: its dependencies are missing"
 		chown -R root:root "$tmp/runner"
 		rm -rf "$target"
 		mv "$tmp/runner" "$target"
@@ -670,7 +687,8 @@ cmd_uninstall() {
 	cmd_stop_all >/dev/null || echo "warning: removing the runtime anyway" >&2
 	systemctl stop "$SLICE" >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/dokploy-runner@.service "/etc/systemd/system/$SLICE" \
-		/etc/systemd/system/fstrim.timer.d/dokploy-runners.conf
+		/etc/systemd/system/fstrim.timer.d/dokploy-runners.conf \
+		/etc/needrestart/conf.d/50-dokploy-runners.conf /etc/apt/apt.conf.d/51dokploy-runners
 	rmdir /etc/systemd/system/fstrim.timer.d 2>/dev/null || true
 	rm -rf "/etc/systemd/system.control/$SLICE.d" "/etc/systemd/system/$SLICE.d"
 	if [ -f /etc/docker/daemon.json ] && command -v jq >/dev/null 2>&1 &&
@@ -736,7 +754,8 @@ fi
 hook="\${DOKPLOY_JOB_${phase.toUpperCase()}_HOOK:-}"
 if [ -n "$hook" ]; then
 	case "$hook" in
-	*.sh) exec /bin/bash "$hook" "$@" ;;
+	# As the runner runs a .sh hook itself: errors and failed pipes fail the job.
+	*.sh) exec /bin/bash --noprofile --norc -e -o pipefail "$hook" "$@" ;;
 	*) exec "$hook" "$@" ;;
 	esac
 fi
@@ -773,7 +792,9 @@ ExecStart=/opt/dokploy-runners/slots/%i/run.sh
 KillMode=mixed
 # run.sh exits with 143 after forwarding SIGTERM: a clean stop.
 SuccessExitStatus=143
-TimeoutStopSec=60
+# As GitHub's own unit: time to cancel the job, run its post steps and hooks,
+# and report it before systemd kills what is left.
+TimeoutStopSec=300
 Restart=no
 LimitNOFILE=1048576
 `;
@@ -828,6 +849,24 @@ AccuracySec=5
 WantedBy=timers.target
 `;
 
+/**
+ * Security updates install in the background (unattended-upgrades). On 24.04
+ * needrestart then restarts the services using an updated library, runners
+ * included, which cancels their job: runners restart between jobs instead.
+ */
+const needrestartConf = `# Managed by Dokploy: runners restart between jobs, not during them.
+$nrconf{override_rc}{qr(^dokploy-runner)} = 0;
+`;
+
+/**
+ * Ubuntu's docker.io does not restart Docker on upgrade (its debconf default),
+ * so a background update would leave the old daemon running: Docker is updated
+ * with Dokploy's OS updates instead, once the machine is drained.
+ */
+const unattendedConf = `// Managed by Dokploy: Docker is updated with Dokploy's OS updates, between jobs.
+Unattended-Upgrade::Package-Blacklist { "docker.io"; "docker-ce"; "docker-ce-cli"; "containerd"; "containerd.io"; "runc"; };
+`;
+
 const files: { path: string; mode: string; content: string }[] = [
 	{ path: RUNNERCTL, mode: "0755", content: runnerctl },
 	{ path: `${RUNTIME_ROOT}/bin/bench.sh`, mode: "0755", content: bench },
@@ -861,6 +900,16 @@ const files: { path: string; mode: string; content: string }[] = [
 		mode: "0644",
 		content: autoarmTimer,
 	},
+	{
+		path: "/etc/needrestart/conf.d/50-dokploy-runners.conf",
+		mode: "0644",
+		content: needrestartConf,
+	},
+	{
+		path: "/etc/apt/apt.conf.d/51dokploy-runners",
+		mode: "0644",
+		content: unattendedConf,
+	},
 ];
 
 const heredoc = (content: string) => {
@@ -884,9 +933,20 @@ fail() { echo "error: $*" >&2; exit 1; }
 [ -d /run/systemd/system ] || fail "systemd is required"
 [ "$(stat -fc %T /sys/fs/cgroup)" = cgroup2fs ] || fail "cgroup v2 is required"
 
+# DPkg::Lock::Timeout covers dpkg's locks, not the package lists one that
+# apt-daily holds after a boot (apt-pkg/update.cc): wait for it.
+apt_update() {
+	local attempt
+	for attempt in $(seq 1 30); do
+		apt-get -o DPkg::Lock::Timeout=300 update -qq && return 0
+		[ "$attempt" = 30 ] || sleep 10
+	done
+	fail "apt-get update kept failing"
+}
+
 if command -v apt-get >/dev/null 2>&1; then
 	log "Installing packages"
-	apt-get -o DPkg::Lock::Timeout=300 update -qq
+	apt_update
 	apt-get -o DPkg::Lock::Timeout=300 install -y -qq ca-certificates curl tar jq git >/dev/null
 	if ! command -v docker >/dev/null 2>&1; then
 		log "Installing Docker"
@@ -909,7 +969,8 @@ if ! id dokploy-runner >/dev/null 2>&1; then
 	useradd --system --home-dir /var/lib/dokploy-runners/home --create-home --shell /bin/bash dokploy-runner
 fi
 usermod -aG docker dokploy-runner
-install -d -m 0755 ${RUNTIME_ROOT} ${RUNTIME_ROOT}/bin ${RUNTIME_ROOT}/releases /etc/dokploy-runners
+install -d -m 0755 ${RUNTIME_ROOT} ${RUNTIME_ROOT}/bin ${RUNTIME_ROOT}/releases /etc/dokploy-runners \\
+	/etc/needrestart/conf.d /etc/apt/apt.conf.d
 install -d -m 0755 -o dokploy-runner -g dokploy-runner ${RUNTIME_ROOT}/slots ${RUNTIME_ROOT}/tool-cache
 install -d -m 0700 -o dokploy-runner -g dokploy-runner /var/lib/dokploy-runners/jobs /var/lib/dokploy-runners/home
 install -d -m 0700 /var/lib/dokploy-runners/image-seen
@@ -939,6 +1000,19 @@ if command -v docker >/dev/null 2>&1; then
 		systemctl restart docker
 	else
 		systemctl start docker
+	fi
+	# A slice name only means something to the systemd cgroup driver: with
+	# cgroupfs, Docker reads it as a path outside the slice, and job containers
+	# escape the budget unnoticed (dockerd --cgroup-parent).
+	driver=$(docker info --format '{{.CgroupDriver}}' 2>/dev/null || true)
+	if [ "$driver" != systemd ]; then
+		log "Switching Docker to the systemd cgroup driver (was: \${driver:-unknown})"
+		jq '."exec-opts" = ([(."exec-opts" // [])[] | select(startswith("native.cgroupdriver=") | not)] + ["native.cgroupdriver=systemd"])' \\
+			/etc/docker/daemon.json >/etc/docker/daemon.json.dokploy
+		mv -f /etc/docker/daemon.json.dokploy /etc/docker/daemon.json
+		systemctl restart docker
+		[ "$(docker info --format '{{.CgroupDriver}}' 2>/dev/null || true)" = systemd ] ||
+			fail "Docker does not use the systemd cgroup driver: job containers would escape the runner budget"
 	fi
 fi
 
