@@ -86,6 +86,15 @@ jobs:
         # Dokploy reaches the machine over SSH, here on 127.0.0.1.
         run: sudo systemctl start ssh
 
+      - name: Keep the test database out of needrestart
+        # Dokploy's database never runs on a runner machine: here it does, and
+        # the runtime's apt installs must not restart it under the tests.
+        run: |
+          sudo install -d -m 0755 /etc/needrestart/conf.d
+          # shellcheck disable=SC2016 # Perl, not shell: written as is.
+          echo '$nrconf{override_rc}{qr(^postgresql)} = 0;' |
+            sudo tee /etc/needrestart/conf.d/90-ci-database.conf
+
       - name: Apply every migration to the empty database
         working-directory: apps/dokploy
         run: |
@@ -98,6 +107,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm test:e2e
+
+      - name: Machine logs
+        if: always()
+        run: |
+          sudo journalctl --no-pager -o short-iso -u 'postgresql*' | tail -n 30
+          sudo journalctl --no-pager -o short-iso --grep 'needrestart|Restarting' | tail -n 30 || true
+          sudo tail -n 40 /var/log/apt/term.log || true
+          sudo dmesg | grep -iE 'oom|killed process' | tail -n 10 || true
 
   macos:
     name: Mac runner machine

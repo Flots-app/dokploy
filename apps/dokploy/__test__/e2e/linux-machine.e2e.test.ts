@@ -60,10 +60,19 @@ const waitFor = async <T>(
 	timeoutMs: number,
 ): Promise<T> => {
 	const until = Date.now() + timeoutMs;
+	let failure: unknown = null;
 	for (;;) {
-		const value = await check();
+		// A query can fail while a service of this machine restarts: try again.
+		const value = await check().catch((error: unknown) => {
+			failure = error;
+			return null;
+		});
 		if (value) return value;
-		if (Date.now() > until) throw new Error(`Timed out waiting for ${what}`);
+		if (Date.now() > until) {
+			throw new Error(
+				`Timed out waiting for ${what}${failure ? `: ${failure instanceof Error ? failure.message : String(failure)}` : ""}`,
+			);
+		}
 		await new Promise((resolve) => setTimeout(resolve, 2_000));
 	}
 };
@@ -354,6 +363,8 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 	});
 
 	it("uninstalls the runtime when removed, then the script removes the account", async () => {
+		// The removal drains through the controller's ticks.
+		await startGithubRunnerController({ kind: "standalone", version: "e2e" });
 		const operation = await removeRunnerNode(
 			nodeId,
 			{ mode: "kill", uninstall: true, force: false },
