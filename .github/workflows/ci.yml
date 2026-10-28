@@ -110,3 +110,63 @@ jobs:
       - name: Test the build server and CI pool watchdogs
         if: matrix.job == 'test'
         run: node --test ops/build-server-watchdog/*.test.mjs ops/ci-pool-watchdog/*.test.mjs
+
+  # The unit tests mock the database: here the migrations run on an empty
+  # PostgreSQL, then the services and routers are tested against it.
+  database:
+    name: database
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        # The major version Dokploy deploys (packages/server/src/setup/postgres-setup.ts).
+        image: postgres:16.15@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
+        env:
+          POSTGRES_USER: dokploy
+          POSTGRES_DB: dokploy_test
+          # Throwaway database of this job only: no password to keep.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dokploy -d dokploy_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://dokploy@localhost:5432/dokploy_test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.4.0
+          cache: "pnpm"
+
+      - name: Set up Socket Firewall
+        uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
+        with:
+          mode: firewall-free
+          shims: "false"
+
+      - name: Install dependencies
+        run: sfw pnpm install --frozen-lockfile
+
+      - name: Apply every migration to the empty database
+        working-directory: apps/dokploy
+        run: |
+          set -euo pipefail
+          # migration.ts prints a failure without exiting non-zero: check its output.
+          pnpm migration:run 2>&1 | tee "$RUNNER_TEMP/migration.log"
+          grep -qx "Migration complete" "$RUNNER_TEMP/migration.log"
+
+      - name: Test the services and routers against PostgreSQL
+        working-directory: apps/dokploy
+        run: pnpm test:db

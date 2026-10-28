@@ -9,7 +9,7 @@ import { createAccessControl } from "better-auth/plugins/access";
  * The rest are Dokploy-specific resources.
  *
  * Enterprise-only resources (only assignable via custom roles):
- * deployment, envVars, server, registry, certificate, backup, domain, logs, monitoring
+ * deployment, envVars, server, githubRunner, firewall, registry, certificate, backup, domain, logs, monitoring
  */
 export const statements = {
 	// better-auth organization plugin defaults
@@ -36,6 +36,8 @@ export const statements = {
 	projectEnvVars: ["read", "write"],
 	environmentEnvVars: ["read", "write"],
 	server: ["read", "create", "delete"],
+	githubRunner: ["read", "create", "update", "delete"],
+	firewall: ["read", "create", "update", "delete"],
 	registry: ["read", "create", "delete"],
 	certificate: ["read", "create", "update", "delete"],
 	backup: ["read", "create", "update", "delete", "restore"],
@@ -62,6 +64,8 @@ export const enterpriseOnlyResources = new Set<string>([
 	"projectEnvVars",
 	"environmentEnvVars",
 	"server",
+	"githubRunner",
+	"firewall",
 	"registry",
 	"certificate",
 	"backup",
@@ -101,6 +105,8 @@ export const ownerRole = ac.newRole({
 	projectEnvVars: ["read", "write"],
 	environmentEnvVars: ["read", "write"],
 	server: ["read", "create", "delete"],
+	githubRunner: ["read", "create", "update", "delete"],
+	firewall: ["read", "create", "update", "delete"],
 	registry: ["read", "create", "delete"],
 	certificate: ["read", "create", "update", "delete"],
 	backup: ["read", "create", "update", "delete", "restore"],
@@ -138,6 +144,8 @@ export const adminRole = ac.newRole({
 	projectEnvVars: ["read", "write"],
 	environmentEnvVars: ["read", "write"],
 	server: ["read", "create", "delete"],
+	githubRunner: ["read", "create", "update", "delete"],
+	firewall: ["read", "create", "update", "delete"],
 	registry: ["read", "create", "delete"],
 	certificate: ["read", "create", "update", "delete"],
 	backup: ["read", "create", "update", "delete", "restore"],
@@ -186,6 +194,8 @@ export const memberRole = ac.newRole({
 	monitoring: ["read"],
 	// Org-level enterprise resources — member cannot manage these
 	server: [],
+	githubRunner: [],
+	firewall: [],
 	registry: [],
 	certificate: [],
 	destination: [],

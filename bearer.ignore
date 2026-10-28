@@ -851,6 +851,12 @@
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
   },
+  "4329d462369c08f717ae71eba4194874_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #45, packages/server/src/utils/notifications/github-runners.ts: a failed channel is logged with the notification's name and the sender's error, whose message carries the HTTP status or the fetch error, never the webhook URL or token (see utils/notifications/utils.ts).",
+    "false_positive": false,
+    "ignored_at": "2026-10-26T11:38:17Z"
+  },
   "4541447b25fa3a3e2bac27440a39dae5_0": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -2147,6 +2153,12 @@
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
   },
+  "ac964071d1201acb8a0c310cc903fc56_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #45, apps/dokploy/__test__/server/github-runners.test.ts: not a secret. A made-up encrypted value in a test that checks database errors never reach the browser.",
+    "false_positive": true,
+    "ignored_at": "2026-10-26T11:38:17Z"
+  },
   "adaeb442739c618425bfc40b7b9a61fb_0": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -2735,6 +2747,12 @@
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
   },
+  "cf9dd4ea2566c9f77729f7253fc5dedb_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #45, apps/dokploy/server/runner-controller.ts: the operator needs the startup error to see why the standalone controller waits for the database. Its only query writes the controller's owner, kind, host and version: no secret can be in it.",
+    "false_positive": false,
+    "ignored_at": "2026-10-26T11:38:17Z"
+  },
   "d09f066bab6cf36a91f0b987b2f43155_0": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -2866,6 +2884,12 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "d4e3a9cde765df2ed0785faff4cdc59d_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #45, packages/server/src/utils/github-runners/errors.ts: logs the Postgres error (error.cause) on purpose instead of the Drizzle error, whose query parameters may hold encrypted secrets. The browser only gets a generic message.",
+    "false_positive": false,
+    "ignored_at": "2026-10-26T11:38:17Z"
   },
   "d6883da7610d868da076a40aafcff44b_0": {
     "author": "baseline",
@@ -3490,5 +3514,11 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "ffd8fd35f8f6b30ad877b18758cb1c6f_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #45, packages/server/src/utils/github-runners/github-api.ts: the rate-limit warning names the GitHub account or repository and GitHub's own message, so operators see why runners pause. No token or header is logged.",
+    "false_positive": false,
+    "ignored_at": "2026-10-26T11:38:17Z"
   }
 }

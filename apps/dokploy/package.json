@@ -38,6 +38,8 @@
 		"version": "echo $(node -p \"require('./package.json').version\")",
 		"test": "vitest --config __test__/vitest.config.ts",
 		"test:ci": "vitest run --config __test__/vitest.config.ts",
+		"test:db": "vitest run --config __test__/db/vitest.config.ts",
+		"test:e2e": "vitest run --config __test__/e2e/vitest.config.ts",
 		"generate:openapi": "tsx -r dotenv/config scripts/generate-openapi.ts"
 	},
 	"dependencies": {

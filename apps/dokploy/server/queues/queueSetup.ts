@@ -1,4 +1,4 @@
-import { IS_CLOUD } from "@dokploy/server";
+import { IS_CLOUD, stopGithubRunnerController } from "@dokploy/server";
 import {
 	execAsync,
 	execAsyncRemote,
@@ -91,7 +91,12 @@ export const getJobsByComposeId = async (composeId: string) => {
 if (!IS_CLOUD) {
 	process.on("SIGTERM", () => {
 		myQueue.close();
-		process.exit(0);
+		// Hands the GitHub runner controller's lead over at once instead of
+		// letting its lease expire (20 s); never holds the exit long.
+		void Promise.race([
+			stopGithubRunnerController().catch(() => undefined),
+			new Promise((resolve) => setTimeout(resolve, 2_000)),
+		]).finally(() => process.exit(0));
 	});
 }
 
