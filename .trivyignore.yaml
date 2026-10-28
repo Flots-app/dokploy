@@ -11,16 +11,6 @@
 # purls match in the repository scan and in the image scan alike.
 
 vulnerabilities:
-  # Not exploitable here, upgrade pending. GHSA-965c-763c-88jm (published
-  # 2026-10-27) needs the Magic Link plugin enabled, and Dokploy's auth
-  # (packages/server/src/lib/auth.ts) does not enable it. The fix is
-  # better-auth 1.7.7, a minor upgrade of every login path (OAuth, SSO, 2FA,
-  # API keys, SCIM) that gets its own pull request and tests.
-  - id: CVE-2026-114607
-    purls:
-      - "pkg:npm/better-auth@1.6.23"
-    expired_at: 2026-11-10
-    statement: "Not exploitable: GHSA-965c-763c-88jm requires the Magic Link plugin, which Dokploy does not enable. Upgrade better-auth and its plugins 1.6.23 -> 1.7.7 in a dedicated pull request"
   - id: CVE-2026-59873
     purls:
       - "pkg:npm/tar@6.2.1"
