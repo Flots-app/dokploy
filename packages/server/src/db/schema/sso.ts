@@ -59,9 +59,10 @@ export const ssoProviderBodySchema = z.object({
 			skipDiscovery: z.boolean().optional(),
 			scopes: z.array(z.string()).optional(),
 			pkce: z.boolean().default(true).optional(),
+			// better-auth 1.7 takes the account subject from the verified `sub`
+			// claim; its mapping rejects an `id` key.
 			mapping: z
 				.object({
-					id: z.string({}),
 					email: z.string({}),
 					emailVerified: z.string({}).optional(),
 					name: z.string({}),
@@ -75,7 +76,9 @@ export const ssoProviderBodySchema = z.object({
 		.object({
 			entryPoint: z.string({}),
 			cert: z.string({}),
-			callbackUrl: z.string({}),
+			// Post-login redirect since better-auth 1.7. The IdP posts to the ACS
+			// endpoint, /api/auth/sso/saml2/sp/acs/:providerId.
+			callbackUrl: z.string({}).optional(),
 			audience: z.string().optional(),
 			idpMetadata: z
 				.object({
@@ -97,27 +100,27 @@ export const ssoProviderBodySchema = z.object({
 						.optional(),
 				})
 				.optional(),
-			spMetadata: z.object({
-				metadata: z.string().optional(),
-				entityID: z.string().optional(),
-				binding: z.string().optional(),
-				privateKey: z.string().optional(),
-				privateKeyPass: z.string().optional(),
-				isAssertionEncrypted: z.boolean().optional(),
-				encPrivateKey: z.string().optional(),
-				encPrivateKeyPass: z.string().optional(),
-			}),
+			spMetadata: z
+				.object({
+					metadata: z.string().optional(),
+					entityID: z.string().optional(),
+					binding: z.string().optional(),
+					privateKey: z.string().optional(),
+					privateKeyPass: z.string().optional(),
+					isAssertionEncrypted: z.boolean().optional(),
+					encPrivateKey: z.string().optional(),
+					encPrivateKeyPass: z.string().optional(),
+				})
+				.optional(),
 			wantAssertionsSigned: z.boolean().optional(),
 			authnRequestsSigned: z.boolean().optional(),
 			signatureAlgorithm: z.string().optional(),
 			digestAlgorithm: z.string().optional(),
 			identifierFormat: z.string().optional(),
 			privateKey: z.string().optional(),
-			decryptionPvk: z.string().optional(),
-			additionalParams: z.record(z.string(), z.any()).optional(),
+			// The SAML subject is the signed NameID since better-auth 1.7.
 			mapping: z
 				.object({
-					id: z.string({}),
 					email: z.string({}),
 					emailVerified: z.string({}).optional(),
 					name: z.string({}),

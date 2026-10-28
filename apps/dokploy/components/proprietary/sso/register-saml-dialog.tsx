@@ -86,12 +86,12 @@ function parseSamlConfig(samlConfig: string | null): {
 	try {
 		const parsed = JSON.parse(samlConfig) as {
 			entryPoint?: string;
-			cert?: string;
+			cert?: string | string[];
 			idpMetadata?: { metadata?: string };
 		};
 		return {
 			entryPoint: parsed.entryPoint,
-			cert: parsed.cert,
+			cert: Array.isArray(parsed.cert) ? parsed.cert[0] : parsed.cert,
 			idpMetadataXml: parsed.idpMetadata?.metadata,
 		};
 	} catch {
@@ -163,17 +163,10 @@ export function RegisterSamlDialog({
 
 	const onSubmit = async (data: SamlProviderForm) => {
 		try {
-			// maybe add the /saml/metadata endpoint to the baseURL
-			const baseURLWithMetadata = `${baseURL}/saml/metadata`;
-			const generateSpMetadata = (providerId: string) => {
-				return `<?xml version="1.0" encoding="UTF-8"?>
-<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${baseURL}">
-    <md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
-        <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${baseURL}/api/auth/sso/saml2/callback/${providerId}" index="1"/>
-    </md:SPSSODescriptor>
-</md:EntityDescriptor>`;
-			};
-
+			// better-auth 1.7 generates the SP metadata and serves the ACS at
+			// /sso/saml2/sp/acs/:providerId. Without IdP metadata XML it needs the
+			// IdP entity ID, which is the issuer here. The SP entity ID stays
+			// baseURL; without it better-auth would reuse the IdP issuer.
 			await mutateAsync({
 				providerId: data.providerId,
 				issuer: data.issuer,
@@ -181,16 +174,13 @@ export function RegisterSamlDialog({
 				samlConfig: {
 					entryPoint: data.entryPoint,
 					cert: data.cert,
-					callbackUrl: `${baseURL}/api/auth/sso/saml2/callback/${data.providerId}`,
+					callbackUrl: `${baseURL}/dashboard/home`,
 					audience: baseURL,
 					idpMetadata: data.idpMetadataXml?.trim()
 						? { metadata: data.idpMetadataXml.trim() }
-						: undefined,
-					spMetadata: {
-						metadata: generateSpMetadata(data.providerId),
-					},
+						: { entityID: data.issuer },
+					spMetadata: { entityID: baseURL },
 					mapping: {
-						id: "nameID",
 						email: "email",
 						name: "displayName",
 						firstName: "givenName",
@@ -252,10 +242,10 @@ export function RegisterSamlDialog({
 									{baseURL && (
 										<div className="rounded-md bg-muted px-3 py-2 text-xs">
 											<p className="font-medium text-muted-foreground">
-												Callback URL (configure in your IdP)
+												ACS URL (configure in your IdP)
 											</p>
 											<p className="mt-0.5 break-all font-mono">
-												{baseURL}/api/auth/sso/saml2/callback/
+												{baseURL}/api/auth/sso/saml2/sp/acs/
 												{watchedProviderId?.trim() || "..."}
 											</p>
 										</div>

@@ -2,7 +2,6 @@
 
 import {
 	Eye,
-	KeyRound,
 	Loader2,
 	LogIn,
 	Pencil,
@@ -35,7 +34,6 @@ import { api } from "@/utils/api";
 import { useUrl } from "@/utils/hooks/use-url";
 import { RegisterOidcDialog } from "./register-oidc-dialog";
 import { RegisterSamlDialog } from "./register-saml-dialog";
-import { ScimDialog } from "./scim-dialog";
 
 type ProviderForDetails = {
 	id: string | null;
@@ -180,12 +178,6 @@ export const SSOSettings = () => {
 						<Shield className="mr-2 size-4" />
 						Manage origins
 					</Button>
-					<ScimDialog>
-						<Button variant="outline" size="sm">
-							<KeyRound className="mr-2 size-4" />
-							Manage SCIM
-						</Button>
-					</ScimDialog>
 				</div>
 			</div>
 
@@ -449,12 +441,13 @@ export const SSOSettings = () => {
 								)}
 								<div className="grid gap-1">
 									<span className="text-xs font-medium text-muted-foreground">
-										Callback URL (configure in your IdP)
+										{detailsProvider.samlConfig ? "ACS URL" : "Callback URL"}{" "}
+										(configure in your IdP)
 									</span>
 									<p className="break-all rounded-md bg-muted px-2 py-1.5 font-mono text-xs">
 										{baseURL || "{baseURL}"}
 										{detailsProvider.samlConfig
-											? "/api/auth/sso/saml2/callback/"
+											? "/api/auth/sso/saml2/sp/acs/"
 											: "/api/auth/sso/callback/"}
 										{detailsProvider.providerId}
 									</p>

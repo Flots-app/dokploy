@@ -176,6 +176,11 @@ export const Enable2FA = () => {
 				throw new Error(error?.message || "Error enabling 2FA");
 			}
 
+			// better-auth 1.7 also has OTP-only enrollment; this dialog enrolls TOTP.
+			if (enableData.method !== "totp") {
+				throw new Error("No TOTP URI received from server");
+			}
+
 			if (enableData.backupCodes) {
 				setBackupCodes(enableData.backupCodes);
 			}
