@@ -19,6 +19,7 @@ const TRUSTED_PROVIDERS = ["google", "github"] as const;
 type SocialProvider = (typeof TRUSTED_PROVIDERS)[number];
 
 type AccountItem = {
+	id: string;
 	providerId: string;
 	accountId?: string;
 };
@@ -84,13 +85,11 @@ export function LinkingAccount() {
 		}
 	};
 
-	const handleUnlink = async (providerId: string, accountId?: string) => {
+	// unlinkAccount takes the local account row id, not the provider's accountId.
+	const handleUnlink = async (providerId: string, id: string) => {
 		setUnlinkingProviderId(providerId);
 		try {
-			const { error } = await authClient.unlinkAccount({
-				providerId,
-				...(accountId && { accountId }),
-			});
+			const { error } = await authClient.unlinkAccount({ accountId: id });
 			if (error) {
 				toast.error(error.message ?? "Failed to unlink account");
 				return;
@@ -142,7 +141,7 @@ export function LinkingAccount() {
 							<ul className="space-y-2">
 								{socialAccounts.map((acc) => (
 									<li
-										key={acc.accountId ?? acc.providerId}
+										key={acc.id}
 										className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
 									>
 										<span className="font-medium">
@@ -153,9 +152,7 @@ export function LinkingAccount() {
 												variant="ghost"
 												size="sm"
 												className="text-destructive hover:text-destructive hover:bg-destructive/10"
-												onClick={() =>
-													handleUnlink(acc.providerId, acc.accountId)
-												}
+												onClick={() => handleUnlink(acc.providerId, acc.id)}
 												disabled={unlinkingProviderId === acc.providerId}
 												isLoading={unlinkingProviderId === acc.providerId}
 											>

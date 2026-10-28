@@ -1,6 +1,5 @@
 import type { IncomingMessage } from "node:http";
 import { apiKey } from "@better-auth/api-key";
-import { scim } from "@better-auth/scim";
 import { sso } from "@better-auth/sso";
 import * as bcrypt from "bcrypt";
 import { betterAuth } from "better-auth";
@@ -386,11 +385,9 @@ const createBetterAuth = () =>
 					// required: true,
 					input: false,
 				},
-				ownerId: {
-					type: "string",
-					// required: true,
-					input: false,
-				},
+				// No ownerId here: user has no such column, and better-auth 1.7
+				// rejects every auth request when a declared field has no column.
+				// validateRequest sets it from the active organization.
 				allowImpersonation: {
 					fieldName: "allowImpersonation",
 					type: "boolean",
@@ -420,20 +417,9 @@ const createBetterAuth = () =>
 				references: "user",
 			}),
 			sso({ trustEmailVerified: true }),
-			scim({
-				beforeSCIMTokenGenerated: async ({ user }) => {
-					const dbUser = await db.query.user.findFirst({
-						where: eq(schema.user.id, user.id),
-						columns: { enableEnterpriseFeatures: true },
-					});
-
-					if (!dbUser?.enableEnterpriseFeatures) {
-						throw new APIError("FORBIDDEN", {
-							message: "SCIM provisioning requires an enterprise license",
-						});
-					}
-				},
-			}),
+			// SCIM is off: better-auth 1.7 replaced the SCIM plugin (connections,
+			// identity and projection callbacks) and its state cannot migrate in
+			// place. It comes back once Dokploy's SCIM is ported to that model.
 			twoFactor(),
 			organization({
 				ac,
@@ -445,6 +431,16 @@ const createBetterAuth = () =>
 				dynamicAccessControl: {
 					enabled: true,
 					maximumRolesPerOrganization: 10,
+				},
+				// Dokploy creates organizations itself (/organization/create is
+				// disabled). Declaring the required owner_id column keeps better-auth
+				// 1.7's schema check from rejecting every auth request.
+				schema: {
+					organization: {
+						additionalFields: {
+							ownerId: { type: "string", required: true, input: false },
+						},
+					},
 				},
 			}),
 			// Self-hosted needs the admin plugin too: SCIM deactivation (active: false)
@@ -475,9 +471,6 @@ const _auth = {
 	createApiKey: api.createApiKey,
 	registerSSOProvider: api.registerSSOProvider,
 	updateSSOProvider: api.updateSSOProvider,
-	generateSCIMToken: api.generateSCIMToken,
-	listSCIMProviderConnections: api.listSCIMProviderConnections,
-	deleteSCIMProviderConnection: api.deleteSCIMProviderConnection,
 };
 
 export type AuthType = typeof _auth;
@@ -591,6 +584,8 @@ export const validateRequest = async (request: IncomingMessage) => {
 		};
 	}
 
+	const user = session.user as typeof session.user & { ownerId: string };
+
 	if (session?.user) {
 		const member = await db.query.member.findFirst({
 			where: and(
@@ -618,11 +613,11 @@ export const validateRequest = async (request: IncomingMessage) => {
 			member?.user.isValidEnterpriseLicense || false;
 		session.session.activeOrganizationId = member?.organization.id || "";
 		if (member) {
-			session.user.ownerId = member.organization.ownerId;
+			user.ownerId = member.organization.ownerId;
 		} else {
-			session.user.ownerId = session.user.id;
+			user.ownerId = session.user.id;
 		}
 	}
 
-	return session;
+	return { ...session, user };
 };

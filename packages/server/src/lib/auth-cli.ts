@@ -1,5 +1,4 @@
 import { apiKey } from "@better-auth/api-key";
-import { scim } from "@better-auth/scim";
 import { sso } from "@better-auth/sso";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -22,7 +21,6 @@ export const auth = betterAuth({
 		},
 		additionalFields: {
 			role: { type: "string", input: false },
-			ownerId: { type: "string", input: false },
 			allowImpersonation: { type: "boolean", defaultValue: false },
 			lastName: { type: "string", required: false, defaultValue: "" },
 			enableEnterpriseFeatures: { type: "boolean", required: false },
@@ -40,8 +38,14 @@ export const auth = betterAuth({
 				enabled: true,
 				maximumRolesPerOrganization: 10,
 			},
+			schema: {
+				organization: {
+					additionalFields: {
+						ownerId: { type: "string", required: true, input: false },
+					},
+				},
+			},
 		}),
-		scim(),
 		admin(),
 	],
 });
