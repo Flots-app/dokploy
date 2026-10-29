@@ -131,7 +131,23 @@
 - [x] Publish `v0.29.14-flots.14` from `canary` and deploy it to production.
 - [x] Merge the server migration DNS hint fix in
   [Flots-app/dokploy#43](https://github.com/Flots-app/dokploy/pull/43).
-- [ ] Publish `v0.29.14-flots.15` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.15` from `canary` and deploy it to production.
+- [x] Merge the Compose rollback of crash-looping projects and the anonymous
+  volume carry-over in
+  [Flots-app/dokploy#46](https://github.com/Flots-app/dokploy/pull/46).
+- [x] Merge Trivy repository and image scanning in
+  [Flots-app/dokploy#47](https://github.com/Flots-app/dokploy/pull/47).
+- [x] Merge Bearer SAST and secrets scanning in
+  [Flots-app/dokploy#48](https://github.com/Flots-app/dokploy/pull/48).
+- [x] Merge the fixes of the CRITICAL Trivy advisories in
+  [Flots-app/dokploy#49](https://github.com/Flots-app/dokploy/pull/49).
+- [x] Merge the better-auth 1.7.7 upgrade for CVE-2026-114607 in
+  [Flots-app/dokploy#50](https://github.com/Flots-app/dokploy/pull/50).
+- [x] Merge the GitHub runner fleet and Firewalls in
+  [Flots-app/dokploy#45](https://github.com/Flots-app/dokploy/pull/45).
+- [x] Drop the better-auth 1.6.23 Trivy exception in
+  [Flots-app/dokploy#51](https://github.com/Flots-app/dokploy/pull/51).
+- [ ] Publish `v0.29.14-flots.16` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
