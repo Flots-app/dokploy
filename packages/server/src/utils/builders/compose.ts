@@ -7,7 +7,7 @@ import { writeDomainsToCompose } from "../docker/domain";
 import {
 	encodeBase64,
 	getEnvironmentVariablesObject,
-	prepareEnvironmentVariables,
+	prepareEnvironmentVariablesForFile,
 } from "../docker/utils";
 
 export type ComposeNested = InferResultType<
@@ -133,7 +133,7 @@ export const getCreateEnvFileCommand = (
 		envContent += `\nCOMPOSE_PREFIX=${compose.suffix}`;
 	}
 
-	const envFileLines = prepareEnvironmentVariables(
+	const envFileLines = prepareEnvironmentVariablesForFile(
 		envContent,
 		compose.environment.project.env,
 		compose.environment.env,
