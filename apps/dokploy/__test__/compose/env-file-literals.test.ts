@@ -23,10 +23,10 @@ afterEach(() => {
 });
 
 const cases: Record<string, string> = {
-	PASSWORD: "pa$$word",
+	DOLLAR_VALUE: "pa$$word",
 	SPECIAL: '!"#$%&/()=?',
 	NESTED_JSON: '{"nested":{"a":1}}',
-	MAIL_PASSWORD: "abc#de",
+	HASH_VALUE: "abc#de",
 	TRAILING_BACKSLASH: "trailing\\",
 	QUOTE_INSIDE: 'she said "hi"',
 	APOSTROPHE: "it's a test",
@@ -40,10 +40,10 @@ const cases: Record<string, string> = {
 // How each value must be typed in the UI so the (unchanged) dotenv input
 // parser resolves it to the raw string in `cases` above.
 const inputEncoding: Record<string, string> = {
-	PASSWORD: "pa$$word",
+	DOLLAR_VALUE: "pa$$word",
 	SPECIAL: `'!"#$%&/()=?'`,
 	NESTED_JSON: '{"nested":{"a":1}}',
-	MAIL_PASSWORD: `"abc#de"`,
+	HASH_VALUE: `"abc#de"`,
 	TRAILING_BACKSLASH: "trailing\\",
 	QUOTE_INSIDE: 'she said "hi"',
 	APOSTROPHE: "it's a test",

@@ -15,7 +15,7 @@ const dockerFilePath = join(codePath, "Dockerfile");
 afterEach(() => rmSync(projectPath, { force: true, recursive: true }));
 
 const cases: Record<string, string> = {
-	PASSWORD: "pa$$word",
+	DOLLAR_VALUE: "pa$$word",
 	NESTED_JSON: '{"nested":{"a":1}}',
 	QUOTE_INSIDE: 'she said "hi"',
 	BACKSLASH: "back\\slash",
