@@ -313,6 +313,28 @@ export type GithubRunnerRollouts = Partial<
 	Record<"runner" | "runtime", GithubRunnerRollout>
 >;
 
+/**
+ * Which jobs the runners of a pool accept, checked on the machine before the
+ * first step of each job. A refused job fails without running anything.
+ */
+export interface GithubRunnerJobGuard {
+	/** owner/name the jobs may come from; empty: any the runner group admits. */
+	repositories: string[];
+	/** Events that may trigger the jobs (push, pull_request…); empty: any. */
+	events: string[];
+	/** Pull requests (and workflow_run) whose head is in another repository. */
+	refuseForks: boolean;
+	/** Jobs that Dependabot triggered, or that re-run one of its runs. */
+	refuseDependabot: boolean;
+}
+
+export const DEFAULT_JOB_GUARD: GithubRunnerJobGuard = {
+	repositories: [],
+	events: [],
+	refuseForks: true,
+	refuseDependabot: true,
+};
+
 /** Operating system of a machine (or of a Mac's VM), as it reports it. */
 export interface GithubRunnerOsInfo {
 	/** os-release ID (ubuntu, debian…) or macos. */
@@ -455,6 +477,10 @@ export const githubRunnerPools = pgTable(
 		runnerEnv: encryptedText("runnerEnv").notNull().default(""),
 		jobStartedHook: text("jobStartedHook"),
 		jobCompletedHook: text("jobCompletedHook"),
+		jobGuard: jsonb("jobGuard")
+			.$type<GithubRunnerJobGuard>()
+			.notNull()
+			.default(DEFAULT_JOB_GUARD),
 		/** Re-run the jobs a crashed or stopped machine interrupted, on the other machines. */
 		rerunInterruptedJobs: boolean("rerunInterruptedJobs")
 			.notNull()
@@ -874,6 +900,29 @@ const githubName = z
 	.max(100)
 	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Invalid GitHub name");
 
+// The runtime writes both in the guard file, one per line.
+const repositoryFullName = z
+	.string()
+	.trim()
+	.max(201)
+	.regex(
+		/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/,
+		"Use owner/name, such as Flots-app/monorepo",
+	);
+
+const eventName = z
+	.string()
+	.trim()
+	.max(64)
+	.regex(/^[a-z_]+$/, "Use a GitHub event name, such as push or pull_request");
+
+export const jobGuardSchema = z.object({
+	repositories: z.array(repositoryFullName).max(50).default([]),
+	events: z.array(eventName).max(30).default([]),
+	refuseForks: z.boolean().default(true),
+	refuseDependabot: z.boolean().default(true),
+});
+
 const absolutePath = z
 	.string()
 	.trim()
@@ -921,6 +970,7 @@ const poolFields = z.object({
 	runnerEnv: envLines,
 	jobStartedHook: absolutePath,
 	jobCompletedHook: absolutePath,
+	jobGuard: jobGuardSchema.default(DEFAULT_JOB_GUARD),
 	rerunInterruptedJobs: z.boolean().default(true),
 	routingVariable: z
 		.string()

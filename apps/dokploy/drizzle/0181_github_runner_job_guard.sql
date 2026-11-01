@@ -1,0 +1,1 @@
+ALTER TABLE "github_runner_pool" ADD COLUMN "jobGuard" jsonb DEFAULT '{"repositories":[],"events":[],"refuseForks":true,"refuseDependabot":true}'::jsonb NOT NULL;

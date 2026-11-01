@@ -4,10 +4,11 @@
  * file below changes; the controller reinstalls the runtime when the machine
  * reports an older version.
  */
+import type { GithubRunnerJobGuard } from "../../db/schema/github-runner";
 import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 
-export const RUNTIME_VERSION = 10;
+export const RUNTIME_VERSION = 11;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -17,9 +18,13 @@ export const RUNTIME_VERSION = 10;
  * least recently used named Docker volumes: optional. v10 gives a runner 5
  * minutes to stop, checks the runner starts, keeps background updates from
  * restarting runners or Docker mid-job, and forces Docker's systemd cgroup
- * driver: optional.
+ * driver: optional. v11 refuses the jobs the pool's job guard does not accept
+ * (forks, Dependabot, other repositories or events): optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
+/** The first runtime with `runnerctl guard` and the check in job-started.sh. */
+export const JOB_GUARD_RUNTIME = 11;
+const JOB_GUARD_FILE = "/etc/dokploy-runners/job-guard";
 
 const RUNTIME_ROOT = "/opt/dokploy-runners";
 export const RUNNERCTL = `${RUNTIME_ROOT}/bin/runnerctl`;
@@ -358,6 +363,17 @@ cmd_env() {
 	chmod 0640 "$tmp"
 	mv -f "$tmp" "$ETC/runner.env"
 	echo "environment written"
+}
+
+# Read by job-started.sh, as the runner: never by the jobs' own environment.
+cmd_guard() {
+	local tmp
+	tmp=$(mktemp "$ETC/job-guard.XXXXXX")
+	cat >"$tmp"
+	chown "root:$RUNNER_USER" "$tmp"
+	chmod 0640 "$tmp"
+	mv -f "$tmp" "$ETC/job-guard"
+	echo "job guard written"
 }
 
 cmd_install_release() {
@@ -712,6 +728,7 @@ stop) cmd_stop "\${2:-}" ;;
 stop-all) cmd_stop_all ;;
 limits) cmd_limits "\${2:-}" "\${3:-}" "\${4:-}" ;;
 env) cmd_env ;;
+guard) cmd_guard ;;
 install-release) cmd_install_release "\${2:-}" "\${3:-}" "\${4:-}" ;;
 gc) cmd_gc "\${2:-}" "\${3:-}" "\${4:-}" ;;
 spare-add) cmd_spare_add "\${2:-}" ;;
@@ -719,7 +736,7 @@ spare-drop) cmd_spare_drop "\${2:-}" "\${3:-}" ;;
 autonomy) cmd_autonomy "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" ;;
 autoarm) cmd_autoarm ;;
 uninstall) cmd_uninstall ;;
-*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|install-release|spare-add|spare-drop|autonomy|autoarm|uninstall" ;;
+*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|guard|install-release|spare-add|spare-drop|autonomy|autoarm|uninstall" ;;
 esac
 `;
 
@@ -744,9 +761,109 @@ const waitForCleanup = sh`	if [ -e /var/lib/dokploy-runners/gc.lock ]; then
 
 const recordCompletion = sh`	printf 'completed=%s\n' "$(date +%s)" >>"$state" 2>/dev/null || true`;
 
+/**
+ * The job guard of the pool, before anything of the job runs. Its settings come
+ * from a file root wrote, never from the environment: a pull request brings its
+ * own workflow, so its env: could set any variable. GitHub runs this hook with
+ * bash -e -o pipefail, hence the if blocks. Without the file (written right
+ * after the runtime), the defaults apply: forks and Dependabot are refused.
+ */
+const jobGuardCheck = sh`guard_refuse() {
+	echo "Dokploy: this runner refuses the job: $*" >&2
+	exit 1
+}
+guard_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+guard_forks=refuse
+guard_dependabot=refuse
+guard_repositories=()
+guard_events=()
+if [ -e ${JOB_GUARD_FILE} ]; then
+	while read -r key value || [ -n "$key" ]; do
+		case "$key" in
+		"" | "#"*) ;;
+		forks) guard_forks=$value ;;
+		dependabot) guard_dependabot=$value ;;
+		repository) guard_repositories+=("$value") ;;
+		event) guard_events+=("$value") ;;
+		*) guard_refuse "the job guard of this machine has an unknown line ($key)" ;;
+		esac
+	done <${JOB_GUARD_FILE} || guard_refuse "the job guard of this machine is unreadable"
+fi
+for setting in "$guard_forks" "$guard_dependabot"; do
+	case "$setting" in
+	allow | refuse) ;;
+	*) guard_refuse "the job guard of this machine is invalid ($setting)" ;;
+	esac
+done
+if [ "$guard_dependabot" = refuse ]; then
+	for actor in "\${GITHUB_ACTOR:-}" "\${GITHUB_TRIGGERING_ACTOR:-}"; do
+		if [ "$actor" = "dependabot[bot]" ]; then
+			guard_refuse "the pool refuses Dependabot jobs"
+		fi
+	done
+fi
+if [ "\${#guard_repositories[@]}" -gt 0 ]; then
+	guard_match=
+	for item in "\${guard_repositories[@]}"; do
+		if [ "$(guard_lower "$item")" = "$(guard_lower "\${GITHUB_REPOSITORY:-}")" ]; then
+			guard_match=1
+		fi
+	done
+	if [ -z "$guard_match" ]; then
+		guard_refuse "the pool does not take jobs from \${GITHUB_REPOSITORY:-an unknown repository}"
+	fi
+fi
+if [ "\${#guard_events[@]}" -gt 0 ]; then
+	guard_match=
+	for item in "\${guard_events[@]}"; do
+		if [ "$item" = "\${GITHUB_EVENT_NAME:-}" ]; then
+			guard_match=1
+		fi
+	done
+	if [ -z "$guard_match" ]; then
+		guard_refuse "the pool does not take jobs triggered by \${GITHUB_EVENT_NAME:-an unknown event}"
+	fi
+fi
+if [ "$guard_forks" = refuse ]; then
+	if [ ! -r "\${GITHUB_EVENT_PATH:-}" ]; then
+		guard_refuse "the event of the job is unreadable, so a fork cannot be ruled out"
+	fi
+	# The head of a pull request, or of the run a workflow_run follows, must be
+	# the repository itself; a deleted fork has no head repository at all.
+	if ! guard_origin=$(jq -r '
+		if (.pull_request // .workflow_run) == null then "none"
+		elif (.repository.full_name // "") != "" and
+			((.pull_request.head.repo.full_name // .workflow_run.head_repository.full_name // "") | ascii_downcase) ==
+			(.repository.full_name | ascii_downcase) then "same"
+		else "fork" end' "$GITHUB_EVENT_PATH" 2>/dev/null); then
+		guard_refuse "the event of the job is unreadable, so a fork cannot be ruled out"
+	fi
+	case "$guard_origin" in
+	none | same) ;;
+	*) guard_refuse "the pool refuses pull requests from forks" ;;
+	esac
+fi`;
+
+/** The job guard file of a pool, as runnerctl guard installs it. */
+export const jobGuardFile = (guard: GithubRunnerJobGuard) => {
+	// The form checks both; a value that could break a line is left out anyway.
+	const safe = (values: string[], pattern: RegExp) =>
+		values.filter((value) => pattern.test(value));
+	return `${[
+		"# Managed by Dokploy: the jobs the runners of this pool accept.",
+		`forks ${guard.refuseForks ? "refuse" : "allow"}`,
+		`dependabot ${guard.refuseDependabot ? "refuse" : "allow"}`,
+		...safe(
+			guard.repositories,
+			/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/,
+		).map((repository) => `repository ${repository}`),
+		...safe(guard.events, /^[a-z_]+$/).map((event) => `event ${event}`),
+	].join("\n")}\n`;
+};
+
 const jobHook = (phase: "started" | "completed") => sh`#!/bin/bash
-# Managed by Dokploy: records the job of this runner slot, then runs the pool hook.
-slot="\${DOKPLOY_RUNNER_SLOT:-}"
+# Managed by Dokploy: ${phase === "started" ? "applies the job guard, " : ""}records the job of this runner slot, then runs the pool hook.
+${phase === "started" ? `${jobGuardCheck}\n` : ""}slot="\${DOKPLOY_RUNNER_SLOT:-}"
 if [[ "$slot" =~ ^[0-9]+$ ]]; then
 	state="/var/lib/dokploy-runners/jobs/$slot"
 ${phase === "started" ? `${recordJob}\n${waitForCleanup}` : recordCompletion}

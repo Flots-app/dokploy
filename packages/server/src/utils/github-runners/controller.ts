@@ -159,6 +159,8 @@ import {
 import {
 	CONTROLLER_SEEN,
 	installRuntimeScript,
+	JOB_GUARD_RUNTIME,
+	jobGuardFile,
 	MIN_RUNTIME_VERSION,
 	RUNNERCTL,
 	RUNTIME_VERSION,
@@ -570,9 +572,16 @@ export const runnerLabels = (
 	});
 };
 
-export const environmentHash = (pool: GithubRunnerPool) =>
+/** The job guard counts from the runtime that reads it: older ones keep their hash. */
+export const environmentHash = (
+	pool: GithubRunnerPool,
+	runtimeVersion: number,
+) =>
 	createHash("sha256")
 		.update(runnerEnvironment(pool))
+		.update(
+			runtimeVersion >= JOB_GUARD_RUNTIME ? jobGuardFile(pool.jobGuard) : "",
+		)
 		.digest("hex")
 		.slice(0, 16);
 
@@ -991,12 +1000,24 @@ const installRelease = async (
 	);
 };
 
-const writeEnvironment = (driver: NodeDriver, pool: GithubRunnerPool) =>
-	driver.guest(`${RUNNERCTL} env`, {
+const writeEnvironment = async (
+	driver: NodeDriver,
+	pool: GithubRunnerPool,
+	runtimeVersion: number,
+) => {
+	await driver.guest(`${RUNNERCTL} env`, {
 		input: runnerEnvironment(pool),
 		label: "Runner environment",
 		timeoutMs: 60_000,
 	});
+	if (runtimeVersion >= JOB_GUARD_RUNTIME) {
+		await driver.guest(`${RUNNERCTL} guard`, {
+			input: jobGuardFile(pool.jobGuard),
+			label: "Job guard",
+			timeoutMs: 60_000,
+		});
+	}
+};
 
 const applySliceLimits = async (
 	driver: NodeDriver,
@@ -1163,7 +1184,7 @@ const prepareMachine = async (
 	}
 	const release = await desiredRelease(node.pool, arch);
 	await installRelease(driver, release, log);
-	await writeEnvironment(driver, node.pool);
+	await writeEnvironment(driver, node.pool, RUNTIME_VERSION);
 	await applySliceLimits(driver, node, host, log);
 	const effective = effectiveBudget(node.platform, host, node);
 	const runners = resolveMaxRunners(node.maxRunners, node.platform, host, node);
@@ -1178,7 +1199,7 @@ const prepareMachine = async (
 		vmDiskGb: node.platform === "macos" ? node.vmDiskGb : null,
 		cpus: applied?.cpus ?? effective.cpus,
 		memoryBytes: applied?.memoryBytes ?? effective.memoryBytes,
-		envHash: environmentHash(node.pool),
+		envHash: environmentHash(node.pool, RUNTIME_VERSION),
 		vmCreatedByDokploy: node.platform === "macos" ? vmCreated : undefined,
 		bootScript: node.platform === "macos" ? MAC_BOOT_SCRIPT_VERSION : undefined,
 	} satisfies GithubRunnerAppliedConfig;
@@ -3739,11 +3760,13 @@ const actOnNode = async (
 					);
 				});
 			}
-			const envHash = environmentHash(node.pool);
+			// After a runtime update, the next pass writes the job guard it reads.
+			const { runtimeVersion } = runtime;
+			const envHash = environmentHash(node.pool, runtimeVersion);
 			if (node.applied && node.applied.envHash !== envHash) {
 				const applied = node.applied;
 				await maintain("Runner environment not updated", async () => {
-					await writeEnvironment(driver, node.pool);
+					await writeEnvironment(driver, node.pool, runtimeVersion);
 					node.applied = { ...applied, envHash };
 					recordEvent(events, "Runner environment updated");
 				});
