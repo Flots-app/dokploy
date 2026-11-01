@@ -147,7 +147,13 @@
   [Flots-app/dokploy#45](https://github.com/Flots-app/dokploy/pull/45).
 - [x] Drop the better-auth 1.6.23 Trivy exception in
   [Flots-app/dokploy#51](https://github.com/Flots-app/dokploy/pull/51).
-- [ ] Publish `v0.29.14-flots.16` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.16` from `canary` and deploy it to production.
+- [x] Keep special characters literal in the generated Compose `.env` in
+  [Flots-app/dokploy#53](https://github.com/Flots-app/dokploy/pull/53).
+- [x] Merge the job guard of GitHub runner pools (forks, Dependabot, other
+  repositories and events refused on the machine, runtime v11) in
+  [Flots-app/dokploy#54](https://github.com/Flots-app/dokploy/pull/54).
+- [ ] Publish `v0.29.14-flots.17` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
