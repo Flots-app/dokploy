@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { db } from "@dokploy/server/db";
@@ -119,6 +119,12 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 				authType: "token",
 				token: process.env.GITHUB_TOKEN ?? null,
 				labels: ["dokploy-e2e-ci"],
+				jobGuard: {
+					repositories: [process.env.GITHUB_REPOSITORY ?? ""],
+					events: [],
+					refuseForks: true,
+					refuseDependabot: true,
+				},
 				routingVariable: null,
 				autonomyReserve: 0,
 			})
@@ -262,6 +268,71 @@ describe.runIf(process.platform === "linux")("a Linux runner machine", () => {
 		expect(run("sudo -l -U dokploy-runner", { root: true }).stdout).toMatch(
 			/not allowed to run sudo/,
 		);
+	});
+
+	it("refuses the jobs the pool's guard does not accept, as the runner runs its hook", () => {
+		const guardFile = "/etc/dokploy-runners/job-guard";
+		// Root writes it; the jobs account reads it through its group only.
+		expect(
+			run(`stat -c '%U:%G %a' ${guardFile}`, { root: true }).stdout.trim(),
+		).toBe("root:dokploy-runner 640");
+		expect(run(`cat ${guardFile}`, { root: true }).stdout).toContain(
+			`repository ${process.env.GITHUB_REPOSITORY}\n`,
+		);
+		const events = mkdtempSync(join(tmpdir(), "dokploy-e2e-events-"));
+		chmodSync(events, 0o755);
+		const repository = process.env.GITHUB_REPOSITORY ?? "";
+		const hook = (
+			name: string,
+			event: object,
+			env: { repository?: string; event?: string; actor?: string } = {},
+		) => {
+			const file = join(events, `${name}.json`);
+			writeFileSync(file, JSON.stringify(event));
+			// GitHub runs a .sh hook with bash -e -o pipefail, as the runner.
+			return run(
+				[
+					"sudo -u dokploy-runner env",
+					`GITHUB_REPOSITORY=${env.repository ?? repository}`,
+					`GITHUB_EVENT_NAME=${env.event ?? "pull_request"}`,
+					`GITHUB_EVENT_PATH=${file}`,
+					`'GITHUB_ACTOR=${env.actor ?? "e2e"}'`,
+					"bash --noprofile --norc -e -o pipefail /opt/dokploy-runners/bin/job-started.sh",
+				].join(" "),
+			);
+		};
+		const pullRequest = (head: string) => ({
+			pull_request: { head: { repo: { full_name: head } } },
+			repository: { full_name: repository },
+		});
+		const same = hook("same", pullRequest(repository));
+		expect(same.status, same.stderr).toBe(0);
+		const push = hook(
+			"push",
+			{ repository: { full_name: repository } },
+			{
+				event: "push",
+			},
+		);
+		expect(push.status, push.stderr).toBe(0);
+		for (const [name, result] of [
+			["fork", hook("fork", pullRequest("someone/fork"))],
+			[
+				"dependabot",
+				hook("dependabot", pullRequest(repository), {
+					actor: "dependabot[bot]",
+				}),
+			],
+			[
+				"other repository",
+				hook("other", pullRequest("Flots-app/other"), {
+					repository: "Flots-app/other",
+				}),
+			],
+		] as const) {
+			expect(result.status, name).not.toBe(0);
+			expect(result.stderr, name).toContain("Dokploy: this runner refuses");
+		}
 	});
 
 	it("filters the jobs' outbound traffic with an Internet only firewall", async () => {

@@ -17,6 +17,7 @@ import { db } from "@dokploy/server/db";
 import {
 	apiCreateGithubRunnerPool,
 	apiStartGithubRunnerEnrollment,
+	DEFAULT_JOB_GUARD,
 	type GithubRunnerDrain,
 	type GithubRunnerPool,
 } from "@dokploy/server/db/schema";
@@ -142,6 +143,7 @@ import {
 } from "@dokploy/server/utils/github-runners/routing";
 import {
 	installRuntimeScript,
+	jobGuardFile,
 	linuxFactsScript,
 	runnerEnvironment,
 	sh,
@@ -1164,6 +1166,16 @@ describe("runtime scripts", () => {
 		).not.toThrow();
 	});
 
+	/** The payload GitHub hands every job; the job guard reads it. */
+	const pushEvent = () => {
+		const file = join(dir, "push-event.json");
+		writeFileSync(
+			file,
+			JSON.stringify({ repository: { full_name: "Flots-app/monorepo" } }),
+		);
+		return file;
+	};
+
 	it("records the job and chains the pool hook", () => {
 		const { started } = files();
 		const hook = join(dir, "job-started.sh");
@@ -1179,6 +1191,8 @@ describe("runtime scripts", () => {
 				GITHUB_RUN_ATTEMPT: "1",
 				GITHUB_WORKFLOW: "CI Pipeline",
 				GITHUB_JOB: "backend-tests",
+				GITHUB_EVENT_NAME: "push",
+				GITHUB_EVENT_PATH: pushEvent(),
 				DOKPLOY_JOB_STARTED_HOOK: poolHook,
 			},
 		}).toString();
@@ -1186,6 +1200,199 @@ describe("runtime scripts", () => {
 		const recorded = execFileSync("cat", [join(dir, "3")]).toString();
 		expect(recorded).toMatch(/^repository=Flots-app\/monorepo\nrun_id=99\n/);
 		expect(recorded).toMatch(/workflow=CI Pipeline\n/);
+	});
+
+	describe("job guard", () => {
+		const repository = { full_name: "Flots-app/monorepo" };
+		const pullRequest = (head: string | null) => ({
+			pull_request: { head: { repo: head ? { full_name: head } : null } },
+			repository,
+		});
+		let count = 0;
+		/** job-started.sh run as GitHub runs a .sh hook, with this guard file. */
+		const run = (
+			guard: string | null,
+			event: object | null,
+			env: Record<string, string> = {},
+		) => {
+			count += 1;
+			const guardFile = join(dir, `job-guard-${count}`);
+			if (guard !== null) writeFileSync(guardFile, guard);
+			const jobs = join(dir, `guard-jobs-${count}`);
+			mkdirSync(jobs);
+			const hook = join(dir, `guarded-${count}.sh`);
+			writeFileSync(
+				hook,
+				files()
+					.started.replaceAll("/etc/dokploy-runners/job-guard", guardFile)
+					.replace("/var/lib/dokploy-runners/jobs", jobs),
+			);
+			const eventFile = join(dir, `event-${count}.json`);
+			if (event) writeFileSync(eventFile, JSON.stringify(event));
+			const poolHook = join(dir, `pool-hook-${count}.sh`);
+			writeFileSync(poolHook, "echo pool hook ran\n");
+			const result = spawnSync(
+				"bash",
+				["--noprofile", "--norc", "-e", "-o", "pipefail", hook],
+				{
+					// Every variable the guard reads is set here: under GitHub
+					// Actions, the test's own job has them too.
+					env: {
+						...process.env,
+						DOKPLOY_RUNNER_SLOT: "1",
+						DOKPLOY_JOB_STARTED_HOOK: poolHook,
+						GITHUB_REPOSITORY: "Flots-app/monorepo",
+						GITHUB_EVENT_NAME: "pull_request",
+						GITHUB_EVENT_PATH: eventFile,
+						GITHUB_ACTOR: "s1nyx",
+						GITHUB_TRIGGERING_ACTOR: "s1nyx",
+						...env,
+					},
+					encoding: "utf8",
+				},
+			);
+			return {
+				accepted: result.status === 0,
+				stderr: result.stderr,
+				poolHookRan: result.stdout.includes("pool hook ran"),
+				recorded: existsSync(join(jobs, "1")),
+			};
+		};
+
+		it("refuses forks and Dependabot without a guard file", () => {
+			const same = run(null, pullRequest("Flots-app/monorepo"));
+			expect(same.accepted, same.stderr).toBe(true);
+			expect(same.poolHookRan && same.recorded).toBe(true);
+			for (const [name, result] of [
+				["fork", run(null, pullRequest("someone/monorepo"))],
+				["deleted fork", run(null, pullRequest(null))],
+				[
+					"fork workflow_run",
+					run(
+						null,
+						{
+							workflow_run: {
+								head_repository: { full_name: "someone/monorepo" },
+							},
+							repository,
+						},
+						{ GITHUB_EVENT_NAME: "workflow_run" },
+					),
+				],
+				[
+					"Dependabot",
+					run(null, pullRequest("Flots-app/monorepo"), {
+						GITHUB_ACTOR: "dependabot[bot]",
+					}),
+				],
+				[
+					"re-run of a Dependabot run",
+					run(null, pullRequest("Flots-app/monorepo"), {
+						GITHUB_TRIGGERING_ACTOR: "dependabot[bot]",
+					}),
+				],
+				["no event payload", run(null, null)],
+			] as const) {
+				expect(result.accepted, name).toBe(false);
+				expect(result.stderr, name).toContain("Dokploy: this runner refuses");
+				// Refused before anything: no record, no pool hook.
+				expect(result.recorded || result.poolHookRan, name).toBe(false);
+			}
+		});
+
+		it("takes pushes and same-repository workflow_run without a pull request", () => {
+			for (const [name, event, eventName] of [
+				["push", { ref: "refs/heads/main", repository }, "push"],
+				[
+					"workflow_run",
+					{
+						workflow_run: {
+							head_repository: { full_name: "flots-app/Monorepo" },
+						},
+						repository,
+					},
+					"workflow_run",
+				],
+			] as const) {
+				const result = run(null, event, { GITHUB_EVENT_NAME: eventName });
+				expect(result.accepted, `${name}: ${result.stderr}`).toBe(true);
+			}
+		});
+
+		it("follows the pool's file, not the job's environment", () => {
+			const fork = pullRequest("someone/monorepo");
+			const allowAll = jobGuardFile({
+				repositories: [],
+				events: [],
+				refuseForks: false,
+				refuseDependabot: false,
+			});
+			expect(run(allowAll, fork).accepted).toBe(true);
+			expect(
+				run(allowAll, fork, { GITHUB_ACTOR: "dependabot[bot]" }).accepted,
+			).toBe(true);
+			// A pull request brings its own workflow, so its env: proves nothing.
+			const strict = jobGuardFile(DEFAULT_JOB_GUARD);
+			expect(
+				run(strict, fork, {
+					guard_forks: "allow",
+					DOKPLOY_JOB_GUARD: "off",
+				}).accepted,
+			).toBe(false);
+		});
+
+		it("takes only the pool's repositories and events", () => {
+			const guard = jobGuardFile({
+				repositories: ["Flots-app/monorepo", "Flots-app/runner-smoke"],
+				events: ["pull_request", "workflow_dispatch"],
+				refuseForks: true,
+				refuseDependabot: true,
+			});
+			const same = pullRequest("Flots-app/monorepo");
+			expect(run(guard, same).accepted).toBe(true);
+			expect(
+				run(guard, same, { GITHUB_REPOSITORY: "flots-app/MONOREPO" }).accepted,
+			).toBe(true);
+			const other = run(guard, same, {
+				GITHUB_REPOSITORY: "Flots-app/website",
+			});
+			expect(other.accepted).toBe(false);
+			expect(other.stderr).toContain("Flots-app/website");
+			const push = run(guard, { repository }, { GITHUB_EVENT_NAME: "push" });
+			expect(push.accepted).toBe(false);
+			expect(push.stderr).toContain("push");
+		});
+
+		it("refuses every job when the guard file is not one Dokploy writes", () => {
+			const same = pullRequest("Flots-app/monorepo");
+			for (const guard of [
+				"forks refuse\nfirewall off\n",
+				"forks maybe\n",
+				"dependabot\n",
+			]) {
+				expect(run(guard, same).accepted, guard).toBe(false);
+			}
+			// Comments and blank lines are fine, a missing last newline too.
+			expect(run("# x\n\nforks refuse\ndependabot refuse", same).accepted).toBe(
+				true,
+			);
+		});
+	});
+
+	it("writes a guard file the job hook reads, and nothing that could break a line", () => {
+		expect(jobGuardFile(DEFAULT_JOB_GUARD)).toBe(
+			"# Managed by Dokploy: the jobs the runners of this pool accept.\nforks refuse\ndependabot refuse\n",
+		);
+		expect(
+			jobGuardFile({
+				repositories: ["Flots-app/monorepo", "evil/repo\nforks allow"],
+				events: ["push", "push\nforks allow"],
+				refuseForks: true,
+				refuseDependabot: false,
+			}),
+		).toBe(
+			"# Managed by Dokploy: the jobs the runners of this pool accept.\nforks refuse\ndependabot allow\nrepository Flots-app/monorepo\nevent push\n",
+		);
 	});
 
 	it("fails the job when a pool hook fails half-way, as GitHub runs hooks", () => {
@@ -1319,7 +1526,12 @@ apt_update && echo updated`,
 		const startedAt = Date.now();
 		return new Promise<void>((resolve, reject) => {
 			const child = spawn("bash", [hook], {
-				env: { ...process.env, DOKPLOY_RUNNER_SLOT: "4", GITHUB_JOB: "build" },
+				env: {
+					...process.env,
+					DOKPLOY_RUNNER_SLOT: "4",
+					GITHUB_JOB: "build",
+					GITHUB_EVENT_PATH: pushEvent(),
+				},
 			});
 			let output = "";
 			child.stdout.on("data", (chunk) => {
@@ -3570,13 +3782,23 @@ done`);
 			authType: "token",
 			token: "ghp_x",
 		};
-		expect(apiCreateGithubRunnerPool.safeParse(pool).success).toBe(true);
+		const parsed = apiCreateGithubRunnerPool.safeParse(pool);
+		expect(parsed.success).toBe(true);
+		// A pool created without a guard refuses forks and Dependabot.
+		expect(parsed.data?.jobGuard).toEqual(DEFAULT_JOB_GUARD);
+		const guard = (change: object) => ({
+			jobGuard: { ...DEFAULT_JOB_GUARD, ...change },
+		});
 		for (const change of [
 			{ token: "x".repeat(1_001) },
 			{ authType: "app", appId: 1, appPrivateKey: "k".repeat(16_001) },
 			{ runnerEnv: `A=${"x".repeat(32_768)}` },
 			{ runnerEnv: "DEBUG" },
 			{ jobStartedHook: `/${"a".repeat(1_024)}` },
+			guard({ repositories: ["monorepo"] }),
+			guard({ repositories: ["Flots-app/monorepo forks"] }),
+			guard({ events: ["Push"] }),
+			guard({ events: ["push\nforks allow"] }),
 		]) {
 			expect(
 				apiCreateGithubRunnerPool.safeParse({ ...pool, ...change }).success,

@@ -1,9 +1,13 @@
 import { db } from "@dokploy/server/db";
 import {
+	environmentHash,
 	requestTick,
 	rotateRunnerNodeKey,
 } from "@dokploy/server/utils/github-runners/controller";
-import { RUNTIME_VERSION } from "@dokploy/server/utils/github-runners/runtime";
+import {
+	JOB_GUARD_RUNTIME,
+	RUNTIME_VERSION,
+} from "@dokploy/server/utils/github-runners/runtime";
 import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import {
@@ -155,6 +159,12 @@ const pool = (id: string) => ({
 	labels: ["ci"],
 	runnerVersion: null,
 	runnerEnv: "",
+	jobGuard: {
+		repositories: [],
+		events: [],
+		refuseForks: true,
+		refuseDependabot: true,
+	},
 	placement: "fastest",
 	rerunInterruptedJobs: false,
 	autonomyReserve: 1,
@@ -206,9 +216,9 @@ const node = (
 });
 
 /** What `runnerctl status` prints on a Linux machine with the current runtime and no slot. */
-const status = (autonomy: string) =>
+const status = (autonomy: string, runtimeVersion = RUNTIME_VERSION) =>
 	[
-		`runtime version=${RUNTIME_VERSION}`,
+		`runtime version=${runtimeVersion}`,
 		"host cpus=4 memory_kib=8388608 available_kib=4194304 arch=x86_64 load=0.10",
 		"disk total_kib=209715200 free_kib=157286400",
 		"release current=2.330.0",
@@ -375,5 +385,60 @@ describe("review fixes, sixth review", () => {
 			"Connection terminated unexpectedly",
 		);
 		expect(machines["node-k"]?.commands).toEqual([]);
+	});
+});
+
+describe("job guard", () => {
+	const applied = {
+		runtimeVersion: RUNTIME_VERSION,
+		runnerVersion: "2.330.0",
+		cpuPercent: 80,
+		memoryPercent: 80,
+		vmDiskGb: null,
+		cpus: 4,
+		memoryBytes: 8 * 1024 ** 3,
+		envHash: "written-before",
+	};
+	const writes = (commands: string[]) =>
+		commands.flatMap((command) => {
+			const match = command.match(/runnerctl (env|guard)$/);
+			return match ? [match[1]] : [];
+		});
+
+	it("writes the guard with the environment on a runtime that reads it", async () => {
+		const ci = pool("pool-1");
+		vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([
+			node("node-g", ci, { enabled: false, applied }),
+		] as never);
+		const g = machine("node-g", async () => status("autonomyset state=off"));
+		recordUpdates();
+		await tick();
+		expect(writes(g.commands)).toEqual(["env", "guard"]);
+	});
+
+	it("leaves the guard to the runtime update on an older runtime", async () => {
+		const ci = pool("pool-1");
+		vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([
+			node("node-o", ci, {
+				enabled: false,
+				applied: {
+					...applied,
+					runtimeVersion: JOB_GUARD_RUNTIME - 1,
+					envHash: environmentHash(ci as never, JOB_GUARD_RUNTIME - 1),
+				},
+			}),
+		] as never);
+		const o = machine("node-o", async () =>
+			status("autonomyset state=off", JOB_GUARD_RUNTIME - 1),
+		);
+		recordUpdates();
+		await tick();
+		// Its environment is the one written before: nothing to rewrite, and no
+		// `runnerctl guard` that this runtime does not have.
+		expect(writes(o.commands)).toEqual([]);
+		// The same pool on the new runtime: the hash now covers the guard.
+		expect(environmentHash(ci as never, JOB_GUARD_RUNTIME)).not.toBe(
+			environmentHash(ci as never, JOB_GUARD_RUNTIME - 1),
+		);
 	});
 });

@@ -282,6 +282,93 @@ const RerunField = ({ form }: { form: PoolForm }) => (
 	/>
 );
 
+const GuardSwitch = ({
+	form,
+	name,
+	label,
+	description,
+}: {
+	form: PoolForm;
+	name: "guardRefuseForks" | "guardRefuseDependabot";
+	label: string;
+	description: string;
+}) => (
+	<FormField
+		control={form.control}
+		name={name}
+		render={({ field }) => (
+			<FormItem className="flex items-start justify-between gap-4">
+				<div className="space-y-1">
+					<FormLabel>{label}</FormLabel>
+					<FormDescription>{description}</FormDescription>
+				</div>
+				<FormControl>
+					<Switch checked={field.value} onCheckedChange={field.onChange} />
+				</FormControl>
+			</FormItem>
+		)}
+	/>
+);
+
+/** Checked on the machine before each job: a refused job runs nothing. */
+const JobGuardFields = ({ form }: { form: PoolForm }) => (
+	<div className="grid gap-4 rounded-lg border p-3">
+		<div className="space-y-1">
+			<p className="text-sm font-medium">Jobs these runners accept</p>
+			<p className="text-sm text-muted-foreground">
+				Each machine checks the job before its first step, from settings the
+				workflow cannot change. A refused job fails without running anything.
+			</p>
+		</div>
+		<GuardSwitch
+			form={form}
+			name="guardRefuseForks"
+			label="Refuse pull requests from forks"
+			description="Pull requests, and workflow_run runs, whose code comes from another repository."
+		/>
+		<GuardSwitch
+			form={form}
+			name="guardRefuseDependabot"
+			label="Refuse Dependabot jobs"
+			description="Runs Dependabot started, including their re-runs."
+		/>
+		<div className="grid gap-4 sm:grid-cols-2">
+			<FormField
+				control={form.control}
+				name="guardRepositories"
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>Only these repositories</FormLabel>
+						<FormControl>
+							<Input placeholder="Any repository" {...field} />
+						</FormControl>
+						<FormDescription>
+							owner/name, separated by commas: Flots-app/monorepo.
+						</FormDescription>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
+			<FormField
+				control={form.control}
+				name="guardEvents"
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>Only these events</FormLabel>
+						<FormControl>
+							<Input placeholder="Any event" {...field} />
+						</FormControl>
+						<FormDescription>
+							Such as push, pull_request, workflow_dispatch.
+						</FormDescription>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
+		</div>
+	</div>
+);
+
 /** A pinned release older than the latest stops getting jobs 30 days later. */
 const PinnedBehind = ({
 	pinned,
@@ -559,6 +646,7 @@ const PoolFormContent = ({
 						<TargetingFields form={form} pool={pool} access={test.data} />
 					</Step>
 					<div className="grid gap-2">
+						<JobGuardFields form={form} />
 						<RerunField form={form} />
 						<AdvancedFields form={form} pool={pool} />
 					</div>
