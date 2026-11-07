@@ -92,6 +92,7 @@ const RESOURCE_LABELS: Record<string, string> = {
 	server: "Server",
 	githubRunner: "GitHub Runner",
 	firewall: "Firewall",
+	osUpdate: "OS Updates",
 	sshKey: "SSH Key",
 	gitProvider: "Git Provider",
 	notification: "Notification",

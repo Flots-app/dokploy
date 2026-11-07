@@ -68,6 +68,7 @@ const RESOURCE_OPTIONS = [
 	{ value: "server", label: "Remote Servers" },
 	{ value: "githubRunner", label: "GitHub Runners" },
 	{ value: "firewall", label: "Firewalls" },
+	{ value: "osUpdate", label: "OS Updates" },
 	{ value: "sshKey", label: "SSH Keys" },
 	{ value: "gitProvider", label: "Git Providers" },
 	{ value: "notification", label: "Notifications" },
@@ -99,6 +100,7 @@ type AuditResourceType =
 	| "server"
 	| "githubRunner"
 	| "firewall"
+	| "osUpdate"
 	| "sshKey"
 	| "gitProvider"
 	| "notification"

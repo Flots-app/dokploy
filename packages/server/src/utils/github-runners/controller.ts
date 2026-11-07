@@ -49,6 +49,7 @@ import {
 import { nftablesRuleset, pfRuleset, type Ruleset } from "../firewall/backends";
 import { compileFirewall, filters } from "../firewall/model";
 import { sendGithubRunnerNotifications } from "../notifications/github-runners";
+import { rebootCommand } from "../os-updates/apt";
 import {
 	mapWithConcurrency,
 	sequentially,
@@ -3382,10 +3383,10 @@ const finishPatch = async (
 			await startVm(driver, node, log);
 		} else if (result.reboot) {
 			await log("Rebooting the machine to finish them");
-			await driver.guest(
-				"systemd-run --on-active=5 --unit=dokploy-reboot systemctl reboot",
-				{ label: "Reboot", timeoutMs: 30_000 },
-			);
+			await driver.guest(rebootCommand("dokploy-reboot"), {
+				label: "Reboot",
+				timeoutMs: 30_000,
+			});
 			await waitForReboot(node, result.bootId, log);
 		}
 	} catch (cause) {

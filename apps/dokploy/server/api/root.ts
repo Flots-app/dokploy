@@ -25,6 +25,7 @@ import { mountRouter } from "./routers/mount";
 import { mysqlRouter } from "./routers/mysql";
 import { notificationRouter } from "./routers/notification";
 import { organizationRouter } from "./routers/organization";
+import { osUpdateRouter } from "./routers/os-update";
 import { patchRouter } from "./routers/patch";
 import { portRouter } from "./routers/port";
 import { postgresRouter } from "./routers/postgres";
@@ -91,6 +92,7 @@ export const appRouter = createTRPCRouter({
 	serviceMigration: serviceMigrationRouter,
 	githubRunner: githubRunnerRouter,
 	firewall: firewallRouter,
+	osUpdate: osUpdateRouter,
 	settings: settingsRouter,
 	sshKey: sshRouter,
 	stripe: stripeRouter,

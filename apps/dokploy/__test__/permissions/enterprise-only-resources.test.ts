@@ -29,6 +29,7 @@ const ENTERPRISE_RESOURCES = [
 	"server",
 	"githubRunner",
 	"firewall",
+	"osUpdate",
 	"registry",
 	"certificate",
 	"backup",

@@ -32,6 +32,7 @@ export * from "./services/mongo";
 export * from "./services/mount";
 export * from "./services/mysql";
 export * from "./services/notification";
+export * from "./services/os-update";
 export * from "./services/patch";
 export * from "./services/patch-repo";
 export * from "./services/port";
@@ -135,6 +136,10 @@ export * from "./utils/notifications/docker-cleanup";
 export * from "./utils/notifications/dokploy-restart";
 export * from "./utils/notifications/server-threshold";
 export * from "./utils/notifications/utils";
+export {
+	startOsUpdatesController,
+	stopOsUpdatesController,
+} from "./utils/os-updates/controller";
 export * from "./utils/process/execAsync";
 export * from "./utils/process/spawnAsync";
 export * from "./utils/providers/bitbucket";

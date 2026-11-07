@@ -42,6 +42,7 @@ export const notifications = pgTable("notification", {
 	dockerCleanup: boolean("dockerCleanup").notNull().default(false),
 	serverThreshold: boolean("serverThreshold").notNull().default(false),
 	githubRunners: boolean("githubRunners").notNull().default(false),
+	osUpdates: boolean("osUpdates").notNull().default(false),
 	notificationType: notificationType("notificationType").notNull(),
 	createdAt: text("createdAt")
 		.notNull()
@@ -275,6 +276,7 @@ export const apiCreateSlack = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -305,6 +307,7 @@ export const apiCreateTelegram = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -337,6 +340,7 @@ export const apiCreateDiscord = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -370,6 +374,7 @@ export const apiCreateEmail = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -408,6 +413,7 @@ export const apiCreateResend = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -440,6 +446,7 @@ export const apiCreateGotify = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 	})
 	.extend({
 		serverUrl: z.string().min(1),
@@ -476,6 +483,7 @@ export const apiCreateNtfy = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 	})
 	.extend({
 		serverUrl: z.string().min(1),
@@ -509,6 +517,7 @@ export const apiCreateMattermost = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -527,6 +536,7 @@ export const apiCreateMattermost = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	});
 
@@ -562,6 +572,7 @@ export const apiCreateCustom = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -591,6 +602,7 @@ export const apiCreateLark = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -619,6 +631,7 @@ export const apiCreateTeams = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -647,6 +660,7 @@ export const apiCreatePushover = notificationsSchema
 		appDeploy: true,
 		dockerCleanup: true,
 		githubRunners: true,
+		osUpdates: true,
 		serverThreshold: true,
 	})
 	.extend({
@@ -683,6 +697,7 @@ export const apiUpdatePushover = z.object({
 	appDeploy: z.boolean().optional(),
 	dockerCleanup: z.boolean().optional(),
 	githubRunners: z.boolean().optional(),
+	osUpdates: z.boolean().optional(),
 	serverThreshold: z.boolean().optional(),
 });
 

@@ -117,6 +117,11 @@ const RESOURCE_META: Record<string, { label: string; description: string }> = {
 		label: "Firewalls",
 		description: "Manage firewalls and what they apply to",
 	},
+	osUpdate: {
+		label: "OS Updates",
+		description:
+			"Schedule and run the OS updates of the remote servers (as root, over SSH)",
+	},
 	registry: {
 		label: "Registries",
 		description: "Manage Docker image registries",
@@ -350,6 +355,31 @@ const ACTION_META: Record<
 				"Change rules, and attach firewalls to resources (also needs update on the resource)",
 		},
 		delete: { label: "Delete", description: "Delete firewalls" },
+	},
+	osUpdate: {
+		read: {
+			label: "Read",
+			description:
+				"View the servers' pending updates, configurations and history",
+		},
+		create: {
+			label: "Create",
+			description: "Create maintenance configurations",
+		},
+		update: {
+			label: "Update",
+			description:
+				"Change configurations, assign servers to them, toggle periodic assessment",
+		},
+		delete: {
+			label: "Delete",
+			description: "Delete maintenance configurations",
+		},
+		run: {
+			label: "Run",
+			description:
+				"Check now and Install now: runs apt and may reboot servers, as root",
+		},
 	},
 	registry: {
 		read: { label: "Read", description: "View configured Docker registries" },

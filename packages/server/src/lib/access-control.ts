@@ -9,7 +9,7 @@ import { createAccessControl } from "better-auth/plugins/access";
  * The rest are Dokploy-specific resources.
  *
  * Enterprise-only resources (only assignable via custom roles):
- * deployment, envVars, server, githubRunner, firewall, registry, certificate, backup, domain, logs, monitoring
+ * deployment, envVars, server, githubRunner, firewall, osUpdate, registry, certificate, backup, domain, logs, monitoring
  */
 export const statements = {
 	// better-auth organization plugin defaults
@@ -38,6 +38,7 @@ export const statements = {
 	server: ["read", "create", "delete"],
 	githubRunner: ["read", "create", "update", "delete"],
 	firewall: ["read", "create", "update", "delete"],
+	osUpdate: ["read", "create", "update", "delete", "run"],
 	registry: ["read", "create", "delete"],
 	certificate: ["read", "create", "update", "delete"],
 	backup: ["read", "create", "update", "delete", "restore"],
@@ -66,6 +67,7 @@ export const enterpriseOnlyResources = new Set<string>([
 	"server",
 	"githubRunner",
 	"firewall",
+	"osUpdate",
 	"registry",
 	"certificate",
 	"backup",
@@ -107,6 +109,7 @@ export const ownerRole = ac.newRole({
 	server: ["read", "create", "delete"],
 	githubRunner: ["read", "create", "update", "delete"],
 	firewall: ["read", "create", "update", "delete"],
+	osUpdate: ["read", "create", "update", "delete", "run"],
 	registry: ["read", "create", "delete"],
 	certificate: ["read", "create", "update", "delete"],
 	backup: ["read", "create", "update", "delete", "restore"],
@@ -146,6 +149,7 @@ export const adminRole = ac.newRole({
 	server: ["read", "create", "delete"],
 	githubRunner: ["read", "create", "update", "delete"],
 	firewall: ["read", "create", "update", "delete"],
+	osUpdate: ["read", "create", "update", "delete", "run"],
 	registry: ["read", "create", "delete"],
 	certificate: ["read", "create", "update", "delete"],
 	backup: ["read", "create", "update", "delete", "restore"],
@@ -196,6 +200,7 @@ export const memberRole = ac.newRole({
 	server: [],
 	githubRunner: [],
 	firewall: [],
+	osUpdate: [],
 	registry: [],
 	certificate: [],
 	destination: [],
