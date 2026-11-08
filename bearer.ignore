@@ -965,6 +965,12 @@
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
   },
+  "4d8b0b5de12cdd520d6d7d93a625239e_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, apps/dokploy/__test__/server/os-updates.test.ts: not a secret. Made-up proxy credentials in the test that checks run logs never keep them.",
+    "false_positive": true,
+    "ignored_at": "2026-11-08T11:08:19Z"
+  },
   "4e0bae865b7f8b068c184412439c9a8e_0": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -1942,6 +1948,12 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "9830405217e6077e234c2c7d85e4b74d_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/notifications/os-updates.ts: a failed channel is logged with the notification's name and the sender's error, whose message carries the HTTP status or the fetch error, never the webhook URL or token (same as the runner notifications of PR #45).",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
   },
   "9aecaa3208d73ccacce9a09f4e060912_0": {
     "author": "baseline",
@@ -3346,6 +3358,42 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "eed1e45264ad2c1d1becec56bdefb050_0": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: a failed notification is logged with the server's name and the error; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters.",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
+  },
+  "eed1e45264ad2c1d1becec56bdefb050_1": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: a failed run is logged with its id and the error; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters. Run output goes to the run log, redacted, not here.",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
+  },
+  "eed1e45264ad2c1d1becec56bdefb050_2": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: a failed controller tick is logged with the error; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters.",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
+  },
+  "eed1e45264ad2c1d1becec56bdefb050_3": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the controller that takes the lead logs its owner id (host name, process id and a random suffix), so operators see which process runs the updates. No secret is in it.",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
+  },
+  "eed1e45264ad2c1d1becec56bdefb050_4": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the controller that stands by logs its owner id (host name, process id and a random suffix). No secret is in it.",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
+  },
+  "eed1e45264ad2c1d1becec56bdefb050_5": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the startup error tells the operator why the controller waits for the database; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters.",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
   },
   "efcbdfdab6cf40a59f21dd8002e947e5_0": {
     "author": "baseline",

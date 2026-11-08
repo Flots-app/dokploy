@@ -10,6 +10,10 @@ const isDatabaseError = (
 ): error is Error & { cause?: { code?: string } } =>
 	error instanceof Error && "query" in error && "params" in error;
 
+/** What a log may keep of an error: the Postgres error of a failed query. */
+export const loggableError = (error: unknown) =>
+	isDatabaseError(error) ? error.cause : error;
+
 /**
  * The error a runner procedure returns to the browser. Database errors are
  * logged here and never sent: only a unique violation is worth explaining.

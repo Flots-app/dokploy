@@ -30,6 +30,7 @@ import {
 	osUpdateServers,
 } from "@dokploy/server/db/schema";
 import { and, asc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { loggableError } from "../github-runners/errors";
 import { type NodeSession, openNodeSession } from "../github-runners/ssh";
 import {
 	type OsUpdateNotice,
@@ -157,7 +158,7 @@ const releaseLock = (key: string) =>
 
 // ------------------------------------------------------------- run log
 
-/** Credentials in URLs (http://user:password@proxy) never reach the log. */
+/** A user and password in a URL never reach the log. */
 export const redactLogLine = (line: string) =>
 	line
 		.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1***:***@")
@@ -332,7 +333,10 @@ const assessDueServers = async (now: Date, busy: Set<string>) => {
 
 const notify = (organizationId: string, notice: OsUpdateNotice) => {
 	void sendOsUpdateNotifications(organizationId, notice).catch((error) =>
-		console.error(`OS updates notification failed for ${notice.server}`, error),
+		console.error(
+			`OS updates notification failed for ${notice.server}`,
+			loggableError(error),
+		),
 	);
 };
 
@@ -634,7 +638,9 @@ const resumeOrphanedRuns = async (busyServers: Set<string>) => {
 const launch = (runId: string) => {
 	if (state.executing.has(runId)) return;
 	const promise = executeRun(runId)
-		.catch((error) => console.error(`OS update run ${runId} failed`, error))
+		.catch((error) =>
+			console.error(`OS update run ${runId} failed`, loggableError(error)),
+		)
 		.finally(() => state.executing.delete(runId));
 	state.executing.set(runId, promise);
 };
@@ -1255,7 +1261,7 @@ export const tickOsUpdates = async () => {
 		await assessDueServers(now, busy);
 		await purgeHistory(now);
 	} catch (error) {
-		console.error("OS updates: tick failed", error);
+		console.error("OS updates: tick failed", loggableError(error));
 	} finally {
 		state.ticking = false;
 	}
@@ -1285,7 +1291,7 @@ export const startOsUpdatesController = async () => {
 		return;
 	}
 	await heartbeat().catch((error) =>
-		console.error("OS updates controller: no database", error),
+		console.error("OS updates controller: no database", loggableError(error)),
 	);
 	state.heartbeat = setInterval(
 		() =>
