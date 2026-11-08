@@ -14,6 +14,7 @@ import {
 	sendDokployRestartNotifications,
 	setupDirectories,
 	startGithubRunnerController,
+	startOsUpdatesController,
 } from "@dokploy/server";
 import { config } from "dotenv";
 import next from "next";
@@ -76,6 +77,8 @@ void app.prepare().then(async () => {
 				kind: "dokploy",
 				version: packageInfo.version,
 			});
+			// Remote servers are reached over SSH from a self-hosted Dokploy.
+			await startOsUpdatesController();
 		}
 
 		if (!IS_CLOUD) {

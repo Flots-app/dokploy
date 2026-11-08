@@ -4,6 +4,16 @@
  * it. Dokploy only reports it: the administrator updates the OS.
  */
 import type { GithubRunnerOsInfo } from "@dokploy/server/db/schema";
+import {
+	APT_ENVIRONMENT,
+	APT_GET,
+	APT_LISTS_TIME,
+	APT_SIMULATE,
+	aptUpdateRetries,
+	BOOT_ID,
+	CLEAN_FUNCTION,
+	REBOOT_REQUIRED,
+} from "../os-updates/apt";
 import { parseRecords } from "./probe";
 import { sh } from "./runtime";
 import { compareVersions } from "./versions";
@@ -13,7 +23,7 @@ export const OS_SUPPORT_WARNING_MS = 90 * 24 * 60 * 60_000;
 /** Package lists older than this may not show the latest updates. */
 export const STALE_LISTS_MS = 7 * 24 * 60 * 60_000;
 
-const clean = sh`clean() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._+~-'; }`;
+const clean = CLEAN_FUNCTION;
 
 /**
  * Linux (a machine, or the VM of a Mac). Read-only: it counts the updates
@@ -37,12 +47,12 @@ if [ -x /usr/lib/update-notifier/apt-check ]; then
 	*\;*) updates=\${counts%%;*} security=\${counts#*;} ;;
 	esac
 elif command -v apt-get >/dev/null 2>&1; then
-	simulated=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null || true)
+	simulated=$(${APT_SIMULATE} upgrade 2>/dev/null || true)
 	updates=$(printf '%s\n' "$simulated" | grep -c '^Inst ' || true)
 	security=$(printf '%s\n' "$simulated" | grep '^Inst ' | grep -ci security || true)
 fi
-lists=$(stat -c %Y /var/lib/apt/lists 2>/dev/null || true)
-reboot=$([ -f /var/run/reboot-required ] && echo yes || echo no)
+lists=$(${APT_LISTS_TIME} 2>/dev/null || true)
+reboot=${REBOOT_REQUIRED}
 echo "updates pending=$(clean "$updates") security=$(clean "$security") lists=$(clean "$lists") reboot=$reboot"
 `;
 
@@ -380,21 +390,15 @@ export const osStatus = (input: {
  * nothing. Prints whether a reboot is needed.
  */
 export const osPatchScript = () => sh`set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+${APT_ENVIRONMENT}
 command -v apt-get >/dev/null 2>&1 || { echo "error: Dokploy installs OS updates with apt only" >&2; exit 1; }
-apt="apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
-# The package lists lock has no timeout, unlike dpkg's: apt-daily may hold it.
-for attempt in $(seq 1 30); do
-	$apt update -qq && break
-	[ "$attempt" != 30 ] || exit 1
-	sleep 10
-done
+apt="${APT_GET}"
+${aptUpdateRetries()}
 $apt -y -q --with-new-pkgs upgrade
 # Ubuntu's docker.io leaves the old daemon running after an upgrade (and the
 # runtime keeps Docker out of background updates): the machine is drained now.
 if systemctl is-active --quiet docker; then systemctl restart docker; fi
-echo "patched boot=$(cat /proc/sys/kernel/random/boot_id) reboot=$([ -f /var/run/reboot-required ] && echo yes || echo no)"
+echo "patched boot=${BOOT_ID} reboot=${REBOOT_REQUIRED}"
 `;
 
 /** Reads the line osPatchScript ends with. */

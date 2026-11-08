@@ -341,7 +341,10 @@ export const runnerAlerts = (
 	// Planned OS updates take a machine out on purpose: they are not a lack of capacity.
 	const enabled = nodes.filter(
 		(node) =>
-			node.enabled && !settingUp(node) && node.drain?.reason !== "patch",
+			node.enabled &&
+			!settingUp(node) &&
+			node.drain?.reason !== "patch" &&
+			node.drain?.reason !== "os-update",
 	);
 	if (pool.routingVariable && pool.routing?.target === "fallback") {
 		add(

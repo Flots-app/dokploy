@@ -51,6 +51,8 @@ export const updatingMachines = (
 	machines.filter((machine) => {
 		if (machine.githubRunnerNodeId === selfId) return false;
 		if (machine.drain?.reason === "patch") return true;
+		// Out of service for a maintenance window of OS Updates: one less.
+		if (machine.drain?.reason === "os-update") return true;
 		const started = machine.updateState?.inProgress?.startedAt;
 		return started !== undefined && now - Date.parse(started) < UPDATE_STALE_MS;
 	});
@@ -75,7 +77,10 @@ export const rolloutGate = (input: {
 		(machine) => machine.githubRunnerNodeId === selfId,
 	);
 	// OS updates own the machine until they end, "Update now" included.
-	if (input.kind !== "os" && self?.drain?.reason === "patch") {
+	if (
+		(input.kind !== "os" && self?.drain?.reason === "patch") ||
+		self?.drain?.reason === "os-update"
+	) {
 		return { go: false, reason: "OS updates run on this machine first" };
 	}
 	if (input.reason === "requested") return { go: true, canary: false };

@@ -109,6 +109,8 @@ describe("enterprise resources for static roles", () => {
 		expect(perms.githubRunner.update).toBe(false);
 		expect(perms.firewall.read).toBe(false);
 		expect(perms.firewall.update).toBe(false);
+		expect(perms.osUpdate.read).toBe(false);
+		expect(perms.osUpdate.run).toBe(false);
 		expect(perms.registry.read).toBe(false);
 		expect(perms.certificate.read).toBe(false);
 		expect(perms.destination.read).toBe(false);

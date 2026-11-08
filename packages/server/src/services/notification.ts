@@ -78,6 +78,7 @@ export const createSlackNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "slack",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -112,6 +113,7 @@ export const updateSlackNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -175,6 +177,7 @@ export const createTelegramNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "telegram",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -209,6 +212,7 @@ export const updateTelegramNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -272,6 +276,7 @@ export const createDiscordNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "discord",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -306,6 +311,7 @@ export const updateDiscordNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -372,6 +378,7 @@ export const createEmailNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "email",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -406,6 +413,7 @@ export const updateEmailNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -473,6 +481,7 @@ export const createResendNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "resend",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -507,6 +516,7 @@ export const updateResendNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -572,6 +582,7 @@ export const createGotifyNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "gotify",
 				organizationId: organizationId,
 			})
@@ -605,6 +616,7 @@ export const updateGotifyNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 			})
 			.where(eq(notifications.notificationId, input.notificationId))
@@ -668,6 +680,7 @@ export const createNtfyNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "ntfy",
 				organizationId: organizationId,
 			})
@@ -701,6 +714,7 @@ export const updateNtfyNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 			})
 			.where(eq(notifications.notificationId, input.notificationId))
@@ -762,6 +776,7 @@ export const createCustomNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "custom",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -796,6 +811,7 @@ export const updateCustomNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -891,6 +907,7 @@ export const createLarkNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "lark",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -925,6 +942,7 @@ export const updateLarkNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -985,6 +1003,7 @@ export const createTeamsNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "teams",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -1019,6 +1038,7 @@ export const updateTeamsNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -1096,6 +1116,7 @@ export const createMattermostNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				notificationType: "mattermost",
 				organizationId: organizationId,
 				serverThreshold: input.serverThreshold,
@@ -1130,6 +1151,7 @@ export const updateMattermostNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})
@@ -1196,6 +1218,7 @@ export const createPushoverNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				serverThreshold: input.serverThreshold,
 				notificationType: "pushover",
 				organizationId: organizationId,
@@ -1230,6 +1253,7 @@ export const updatePushoverNotification = async (
 				dokployRestart: input.dokployRestart,
 				dockerCleanup: input.dockerCleanup,
 				githubRunners: input.githubRunners,
+				osUpdates: input.osUpdates,
 				organizationId: input.organizationId,
 				serverThreshold: input.serverThreshold,
 			})

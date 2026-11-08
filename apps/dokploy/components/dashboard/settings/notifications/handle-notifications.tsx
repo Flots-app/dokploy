@@ -59,6 +59,7 @@ const notificationBaseSchema = z.object({
 	dokployRestart: z.boolean().default(false),
 	dockerCleanup: z.boolean().default(false),
 	githubRunners: z.boolean().default(false),
+	osUpdates: z.boolean().default(false),
 	serverThreshold: z.boolean().default(false),
 });
 
@@ -361,6 +362,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					volumeBackup: notification.volumeBackup,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					webhookUrl: notification.slack?.webhookUrl,
 					channel: notification.slack?.channel || "",
 					name: notification.name,
@@ -382,6 +384,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "discord") {
@@ -398,6 +401,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "email") {
@@ -418,6 +422,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "resend") {
@@ -435,6 +440,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "gotify") {
@@ -453,6 +459,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 				});
 			} else if (notification.notificationType === "ntfy") {
 				form.reset({
@@ -470,6 +477,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "mattermost") {
@@ -487,6 +495,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "lark") {
@@ -501,6 +510,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					volumeBackup: notification.volumeBackup,
 					serverThreshold: notification.serverThreshold,
 				});
@@ -517,6 +527,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "custom") {
@@ -540,6 +551,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					volumeBackup: notification.volumeBackup,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			} else if (notification.notificationType === "pushover") {
@@ -559,6 +571,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 					name: notification.name,
 					dockerCleanup: notification.dockerCleanup,
 					githubRunners: notification.githubRunners,
+					osUpdates: notification.osUpdates,
 					serverThreshold: notification.serverThreshold,
 				});
 			}
@@ -592,6 +605,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 			volumeBackup,
 			dockerCleanup,
 			githubRunners,
+			osUpdates,
 			serverThreshold,
 		} = data;
 		let promise: Promise<unknown> | null = null;
@@ -608,6 +622,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				slackId: notification?.slackId || "",
 				notificationId: notificationId || "",
 				serverThreshold: serverThreshold,
@@ -626,6 +641,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				telegramId: notification?.telegramId || "",
 				serverThreshold: serverThreshold,
@@ -643,6 +659,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				discordId: notification?.discordId || "",
 				serverThreshold: serverThreshold,
@@ -664,6 +681,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				emailId: notification?.emailId || "",
 				serverThreshold: serverThreshold,
@@ -682,6 +700,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				resendId: notification?.resendId || "",
 				serverThreshold: serverThreshold,
@@ -700,6 +719,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				decoration: data.decoration,
 				notificationId: notificationId || "",
 				gotifyId: notification?.gotifyId || "",
@@ -719,6 +739,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				ntfyId: notification?.ntfyId || "",
 			});
@@ -736,6 +757,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				mattermostId: notification?.mattermostId || "",
 				serverThreshold: serverThreshold,
@@ -752,6 +774,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				larkId: notification?.larkId || "",
 				serverThreshold: serverThreshold,
@@ -768,6 +791,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				notificationId: notificationId || "",
 				teamsId: notification?.teamsId || "",
 				serverThreshold: serverThreshold,
@@ -797,6 +821,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				serverThreshold: serverThreshold,
 				notificationId: notificationId || "",
 				customId: notification?.customId || "",
@@ -821,6 +846,7 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 				name: data.name,
 				dockerCleanup: dockerCleanup,
 				githubRunners: githubRunners,
+				osUpdates: osUpdates,
 				serverThreshold: serverThreshold,
 				notificationId: notificationId || "",
 				pushoverId: notification?.pushoverId || "",
@@ -1986,6 +2012,31 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 														jobs go to GitHub-hosted runners, when a token
 														expires soon, and when a machine is disabled or
 														removed.
+													</FormDescription>
+												</div>
+												<FormControl>
+													<Switch
+														checked={field.value}
+														onCheckedChange={field.onChange}
+													/>
+												</FormControl>
+											</FormItem>
+										)}
+									/>
+								)}
+
+								{!isCloud && (
+									<FormField
+										control={form.control}
+										name="osUpdates"
+										render={({ field }) => (
+											<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-xs gap-2">
+												<div className="space-y-0.5">
+													<FormLabel>OS Updates</FormLabel>
+													<FormDescription>
+														Trigger the action when the OS updates of a server
+														fail or miss their maintenance window, and when they
+														succeed if their configuration asks for it.
 													</FormDescription>
 												</div>
 												<FormControl>

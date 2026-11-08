@@ -29,6 +29,7 @@ import {
 	Package,
 	Palette,
 	PieChart,
+	RefreshCw,
 	Rocket,
 	Server,
 	Shield,
@@ -228,6 +229,15 @@ const MENU: Menu = {
 			// They apply to GitHub runner machines for now, on a self-hosted Dokploy.
 			isEnabled: ({ permissions, isCloud }) =>
 				!isCloud && !!permissions?.firewall.read,
+		},
+		{
+			isSingle: true,
+			title: "OS Updates",
+			url: "/dashboard/os-updates",
+			icon: RefreshCw,
+			// Remote servers are updated over SSH from a self-hosted Dokploy.
+			isEnabled: ({ permissions, isCloud }) =>
+				!isCloud && !!permissions?.osUpdate.read,
 		},
 		{
 			isSingle: true,

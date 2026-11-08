@@ -200,7 +200,9 @@ export const UpdatePolicyFields = ({
 					<span className="block text-xs text-muted-foreground">
 						Linux machines and the VM of a Mac: no new job, the running ones
 						end, then apt upgrade and a reboot if needed, one machine at a time.
-						macOS itself stays with you (it needs its owner or an MDM).
+						A Linux machine in a maintenance configuration of OS Updates follows
+						that configuration instead. macOS itself stays with you (it needs
+						its owner or an MDM).
 					</span>
 				</Label>
 				<Switch

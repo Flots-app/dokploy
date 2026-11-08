@@ -263,12 +263,25 @@ const MachineUsage = ({
 const drainMessage = (machine: RunnerMachine, busy: number) => {
 	const drain = machine.drain;
 	if (!drain) return null;
+	if (drain.reason === "os-update") {
+		if (drain.installingAt) {
+			return "Installing its OS updates (OS Updates maintenance run): it takes jobs again once they are installed.";
+		}
+		const end = drain.abortAt
+			? ` (given up ${formatDistanceToNow(new Date(drain.abortAt), { addSuffix: true })} if they still run)`
+			: "";
+		return busy
+			? `OS updates: no new job, waiting for ${busy} running job${busy > 1 ? "s" : ""}${end}.`
+			: "OS updates: no job runs, the maintenance run starts.";
+	}
 	const action =
 		drain.reason === "apply"
 			? "Applying a new VM size"
 			: drain.reason === "remove"
 				? "Removing"
-				: "Disabling";
+				: drain.reason === "patch"
+					? "Installing the OS updates"
+					: "Disabling";
 	if (drain.mode === "kill") return `${action}: interrupting the running jobs.`;
 	if (!busy) return `${action}: finishing.`;
 	const deadline = drain.deadline
