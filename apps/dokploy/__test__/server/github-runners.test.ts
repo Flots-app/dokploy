@@ -42,11 +42,14 @@ import {
 	describeCleanup,
 	generateMachineKey,
 	limaLogLine,
+	placementMachine,
 	provisionRunnerNode,
+	queuedJobLabels,
 	RUNNER_STOP_TIMEOUT_MS,
 	reconnectDelay,
 	rerouteQueuedRuns,
 	routePool,
+	scanQueuedJobs,
 } from "@dokploy/server/utils/github-runners/controller";
 import {
 	cleanupDue,
@@ -2744,7 +2747,14 @@ describe("routing with a GitHub-hosted fallback", () => {
 		await expect(client.listRepositories()).resolves.toEqual([
 			"Flots-app/monorepo",
 		]);
+		await expect(client.listRepositories("all")).resolves.toEqual([
+			"Flots-app/monorepo",
+			"Flots-app/dokploy",
+		]);
 		await expect(client.listQueuedRuns("someone/else")).rejects.toThrow(
+			"outside this pool",
+		);
+		await expect(client.listRunsInProgress("someone/else")).rejects.toThrow(
 			"outside this pool",
 		);
 	});
@@ -2868,6 +2878,434 @@ describe("fastest-first placement", () => {
 		});
 		// Released only after waiting a minute.
 		expect(fresh.actions).toEqual([]);
+	});
+
+	describe("jobs pinned to a machine", () => {
+		// The production pool: the M4 has room for far more than the M6.
+		const big: PlacementMachine = {
+			id: "big",
+			accepting: true,
+			maxRunners: 3,
+			busy: 0,
+			speed: { single: 1000, multi: 7000 },
+			cpus: 7,
+		};
+		const small: PlacementMachine = {
+			id: "small",
+			accepting: true,
+			maxRunners: 1,
+			busy: 0,
+			speed: { single: 1000, multi: 2000 },
+			cpus: 2,
+		};
+		const idle = { arm: 0, keep: 0 };
+
+		it("waits on the machine a job is pinned to, even with a faster one free", () => {
+			expect(targets([big, small]).small).toEqual(idle);
+			expect(targets([big, { ...small, pinned: 1 }])).toEqual({
+				big: { arm: 3, keep: 3 },
+				small: { arm: 1, keep: 1 },
+			});
+
+			const node = plannerNode({
+				maxRunners: 1,
+				waiting: { arm: 1, keep: 1 },
+			});
+			const waitingSince = slot(1, { since: nowSeconds - 1200 });
+			// No runner yet: one is armed.
+			expect(
+				planNode({ now: NOW, node, slots: [], runners: [] }).actions,
+			).toEqual([{ type: "arm", slot: 1 }]);
+			// Waiting for 20 minutes: it stays until the job is taken.
+			expect(
+				planNode({
+					now: NOW,
+					node,
+					slots: [waitingSince],
+					runners: [ghRunner(1)],
+				}).actions,
+			).toEqual([]);
+			// The job taken, the target falls back and the runner leaves.
+			expect(
+				planNode({
+					now: NOW,
+					node: { ...node, waiting: idle },
+					slots: [waitingSince],
+					runners: [ghRunner(1)],
+				}).actions,
+			).toEqual([
+				{
+					type: "release",
+					slot: 1,
+					runnerId: 101,
+					reason: "a faster machine has room",
+				},
+			]);
+		});
+
+		it("arms one runner per pinned job, within the free slots", () => {
+			const slow: PlacementMachine = {
+				...small,
+				id: "slow",
+				maxRunners: 3,
+				speed: { single: 500, multi: 1500 },
+			};
+			expect(targets([big, slow]).slow).toEqual(idle);
+			expect(targets([big, { ...slow, pinned: 2 }]).slow).toEqual({
+				arm: 2,
+				keep: 2,
+			});
+			expect(targets([big, { ...slow, pinned: 5 }]).slow).toEqual({
+				arm: 3,
+				keep: 3,
+			});
+			expect(targets([big, { ...slow, pinned: 5, busy: 1 }]).slow).toEqual({
+				arm: 2,
+				keep: 2,
+			});
+		});
+
+		it("still respects the limits of the machine", () => {
+			const pinned = { ...small, pinned: 1 };
+			expect(targets([big, { ...pinned, accepting: false }]).small).toEqual(
+				idle,
+			);
+			expect(targets([big, { ...pinned, busy: 1 }]).small).toEqual(idle);
+
+			const arms = (overrides: Partial<PlannerNode>) =>
+				planNode({
+					now: NOW,
+					node: plannerNode({
+						maxRunners: 1,
+						waiting: { arm: 1, keep: 1 },
+						...overrides,
+					}),
+					slots: [],
+					runners: [],
+				}).actions.filter((action) => action.type === "arm");
+			expect(arms({})).toHaveLength(1);
+			// The target of the last tick does not outrank what this tick found.
+			expect(arms({ enabled: false })).toEqual([]);
+			expect(arms({ drain: drain() })).toEqual([]);
+			expect(arms({ admission: { ok: false, reason: "disk" } })).toEqual([]);
+		});
+
+		it("changes nothing where every free slot already waits", () => {
+			const pinned = { ...small, pinned: 1 };
+			expect(targets([pinned])).toEqual(targets([small]));
+			expect(
+				Object.fromEntries(placeWaitingRunners([big, pinned], "spread")),
+			).toEqual(
+				Object.fromEntries(placeWaitingRunners([big, small], "spread")),
+			);
+		});
+
+		describe("from the labels GitHub reports", () => {
+			const machine = (
+				name: string,
+				cpus: number,
+				maxRunners: number,
+				overrides: Record<string, unknown> = {},
+				slots: unknown[] = [],
+			) =>
+				({
+					node: {
+						githubRunnerNodeId: name,
+						name,
+						enabled: true,
+						phase: "ready",
+						drain: null,
+						extraLabels: [],
+						platform: "linux",
+						maxRunners,
+						cpuPercent: 100,
+						memoryPercent: 100,
+						benchmark: null,
+						observed: null,
+						pool: { labels: ["flots-dokploy"] },
+						...overrides,
+					},
+					probe: {
+						host: { cpus, memoryBytes: 16 * GiB, arch: "aarch64" },
+						runtime: { slots },
+					},
+				}) as never;
+			const m4 = machine("m4", 7, 3);
+			const m6 = machine("m6", 2, 1);
+			const pinnedToM6 = [
+				"self-hosted",
+				"Linux",
+				"ARM64",
+				"flots-dokploy",
+				"dokploy-m6",
+			];
+			const pinned = (node: never, labels: string[]) =>
+				placementMachine(node, [], [labels]).pinned;
+			const waitingOnM6 = (node: never, labels = pinnedToM6) =>
+				placeWaitingRunners(
+					[
+						placementMachine(m4, [], [labels]),
+						placementMachine(node, [], [labels]),
+					],
+					"fastest",
+				).get("m6");
+
+			it("counts a job for the machine it names, and no other", () => {
+				expect(pinned(m6, pinnedToM6)).toBe(1);
+				expect(pinned(m4, pinnedToM6)).toBe(0);
+				// GitHub does not care about case.
+				expect(pinned(m6, ["SELF-HOSTED", "Dokploy-M6"])).toBe(1);
+				expect(waitingOnM6(m6)).toEqual({ arm: 1, keep: 1 });
+			});
+
+			it("behaves as before for a job any machine can take", () => {
+				const anywhere = ["self-hosted", "Linux", "ARM64", "flots-dokploy"];
+				expect(pinned(m6, anywhere)).toBe(0);
+				expect(pinned(m4, anywhere)).toBe(0);
+				expect(waitingOnM6(m6, anywhere)).toEqual(idle);
+			});
+
+			it("arms nothing for a machine that does not exist", () => {
+				const unknown = ["self-hosted", "flots-dokploy", "dokploy-m7"];
+				expect(pinned(m6, unknown)).toBe(0);
+				expect(pinned(m4, unknown)).toBe(0);
+				expect(waitingOnM6(m6, unknown)).toEqual(idle);
+			});
+
+			it("arms nothing when the machine lacks another label of the job", () => {
+				// Its runners could never take these: the runner would wait for nothing.
+				expect(pinned(m6, ["self-hosted", "X64", "dokploy-m6"])).toBe(0);
+				expect(pinned(m6, ["self-hosted", "other", "dokploy-m6"])).toBe(0);
+				expect(waitingOnM6(m6, ["self-hosted", "X64", "dokploy-m6"])).toEqual(
+					idle,
+				);
+			});
+
+			it("arms nothing on a machine that does not take jobs", () => {
+				expect(waitingOnM6(machine("m6", 2, 1, { enabled: false }))).toEqual(
+					idle,
+				);
+				expect(waitingOnM6(machine("m6", 2, 1, { phase: "error" }))).toEqual(
+					idle,
+				);
+				expect(waitingOnM6(machine("m6", 2, 1, { drain: drain() }))).toEqual(
+					idle,
+				);
+				// Below the disk reserve.
+				expect(
+					waitingOnM6(
+						machine("m6", 2, 1, {
+							observed: { admission: { ok: false, reason: "disk" } },
+						}),
+					),
+				).toEqual(idle);
+				// At its concurrency limit.
+				expect(
+					waitingOnM6(
+						machine("m6", 2, 1, {}, [
+							{
+								slot: 1,
+								active: "active",
+								runnerName: "dkp-m6-1-aaaaaa",
+								job: runningJob,
+							},
+						]),
+					),
+				).toEqual(idle);
+			});
+		});
+
+		describe("queued jobs scan", () => {
+			const pool = (id: string) =>
+				({ githubRunnerPoolId: id, name: "Lab" }) as never;
+			const job = (status: string, ...labels: string[]) => ({
+				name: "job",
+				status,
+				conclusion: null,
+				runnerName: null,
+				labels,
+				createdAt: null,
+			});
+
+			it("reads every repository, and the runs in progress too", async () => {
+				const visibility: unknown[] = [];
+				const fetched: string[] = [];
+				const jobs: Record<string, ReturnType<typeof job>[]> = {
+					"1": [job("queued", "a")],
+					// Started: its other job waits, but GitHub lists the run in progress.
+					"2": [job("in_progress", "b"), job("queued", "c")],
+					"3": [job("completed", "d"), job("queued", "e")],
+					// Waiting for an approval: no runner can take it yet.
+					"4": [job("waiting", "f")],
+				};
+				const client = {
+					listRepositories: async (value: unknown) => {
+						visibility.push(value);
+						return ["Flots-app/monorepo", "Flots-app/dokploy"];
+					},
+					listQueuedRuns: async (repository: string) =>
+						repository.endsWith("monorepo") ? [{ id: 1 }, { id: 2 }] : [],
+					// Run 2 started between the two calls: it comes back here.
+					listRunsInProgress: async (repository: string) =>
+						repository.endsWith("monorepo")
+							? [{ id: 2 }, { id: 3 }]
+							: [{ id: 4 }],
+					listRunJobs: async (_repository: string, runId: string) => {
+						fetched.push(runId);
+						return jobs[runId];
+					},
+				};
+				await scanQueuedJobs(pool("pool-q1"), client as never);
+				// Public repositories can use the runners too, unlike routing.
+				expect(visibility).toEqual(["all"]);
+				expect(fetched.sort()).toEqual(["1", "2", "3", "4"]);
+				expect(queuedJobLabels("pool-q1").flat().sort()).toEqual([
+					"a",
+					"c",
+					"e",
+				]);
+			});
+
+			it("keeps the last answer of a repository GitHub could not read", async () => {
+				let answer = (repository: string): Promise<unknown[]> =>
+					Promise.resolve(
+						repository.endsWith("gone") || repository.endsWith("flaky")
+							? [{ id: 1 }]
+							: [],
+					);
+				const client = {
+					listRepositories: async () => ["Flots-app/flaky", "Flots-app/gone"],
+					listQueuedRuns: (repository: string) => answer(repository),
+					listRunsInProgress: async () => [],
+					listRunJobs: async (repository: string) => [
+						job("queued", repository),
+					],
+				};
+				const errors = vi
+					.spyOn(console, "error")
+					.mockImplementation(() => undefined);
+				try {
+					await scanQueuedJobs(pool("pool-q2"), client as never);
+					expect(queuedJobLabels("pool-q2").flat().sort()).toEqual([
+						"Flots-app/flaky",
+						"Flots-app/gone",
+					]);
+
+					answer = (repository) =>
+						Promise.reject(
+							repository.endsWith("flaky")
+								? new GithubRunnerApiError("unreachable: timeout", null)
+								: new GithubRunnerApiError("Not Found", 404),
+						);
+					await scanQueuedJobs(pool("pool-q2"), client as never);
+					// A hiccup keeps the answer; a repository that is gone does not.
+					expect(queuedJobLabels("pool-q2").flat()).toEqual([
+						"Flots-app/flaky",
+					]);
+					expect(errors).toHaveBeenCalledTimes(1);
+					// Not forever: GitHub may never answer for that repository again.
+					expect(
+						queuedJobLabels("pool-q2", Date.now() + 5 * 60_000 + 1000),
+					).toEqual([]);
+
+					answer = async () => [];
+					await scanQueuedJobs(pool("pool-q2"), client as never);
+					expect(queuedJobLabels("pool-q2")).toEqual([]);
+				} finally {
+					errors.mockRestore();
+				}
+			});
+
+			it("stops a scan GitHub cannot answer and keeps what it knew", async () => {
+				const repositories = Array.from(
+					{ length: 40 },
+					(_, index) => `Flots-app/repo-${index}`,
+				);
+				const listed: string[] = [];
+				let failing = false;
+				const client = {
+					listRepositories: async () => repositories,
+					listQueuedRuns: async (repository: string) => {
+						if (!failing) return [{ id: 1 }];
+						listed.push(repository);
+						throw new GithubRunnerApiError("unreachable: timeout", null);
+					},
+					listRunsInProgress: async () => [],
+					listRunJobs: async () => [job("queued", "pinned")],
+				};
+				const errors = vi
+					.spyOn(console, "error")
+					.mockImplementation(() => undefined);
+				try {
+					await scanQueuedJobs(pool("pool-q3"), client as never);
+					expect(queuedJobLabels("pool-q3")).toHaveLength(40);
+					failing = true;
+					await scanQueuedJobs(pool("pool-q3"), client as never);
+					expect(listed.length).toBeLessThanOrEqual(3 + 4 - 1);
+					expect(queuedJobLabels("pool-q3")).toHaveLength(40);
+					expect(String(errors.mock.calls[0]?.[0])).toContain("stopped early");
+				} finally {
+					errors.mockRestore();
+				}
+			});
+
+			it("lists the runs in progress with a conditional request", async () => {
+				const sent: { url: string; etag: string | null }[] = [];
+				const client = createGithubRunnerClient(
+					{
+						scope: "organization",
+						owner: "Flots-app",
+						repository: null,
+						runnerGroup: "Default",
+						apiUrl: "https://api.github.com",
+					},
+					{ type: "token", token: "t" },
+					{
+						fetch: async (url, init) => {
+							const etag = new Headers(init?.headers).get("if-none-match");
+							sent.push({ url: String(url), etag });
+							if (etag) return new Response(null, { status: 304 });
+							return json(
+								200,
+								{
+									workflow_runs: [
+										{
+											id: 7,
+											run_attempt: 2,
+											name: "CI",
+											created_at: "2026-11-06T08:00:00Z",
+										},
+									],
+								},
+								{ ETag: '"a"' },
+							);
+						},
+					},
+				);
+				const run = {
+					id: 7,
+					runAttempt: 2,
+					workflow: "CI",
+					createdAt: "2026-11-06T08:00:00Z",
+				};
+				await expect(
+					client.listRunsInProgress("Flots-app/monorepo"),
+				).resolves.toEqual([run]);
+				await expect(
+					client.listRunsInProgress("Flots-app/monorepo"),
+				).resolves.toEqual([run]);
+				expect(sent).toEqual([
+					{
+						url: "https://api.github.com/repos/Flots-app/monorepo/actions/runs?status=in_progress&per_page=50",
+						etag: null,
+					},
+					{
+						url: "https://api.github.com/repos/Flots-app/monorepo/actions/runs?status=in_progress&per_page=50",
+						etag: '"a"',
+					},
+				]);
+			});
+		});
 	});
 
 	it("reads the benchmark", () => {

@@ -129,6 +129,7 @@ import {
 	parsePatchResult,
 } from "./os";
 import {
+	countPinnedJobs,
 	type PlacementMachine,
 	placeWaitingRunners,
 	type WaitingTarget,
@@ -250,6 +251,11 @@ interface ControllerState {
 	lastRerouteScan: Map<string, number>;
 	/** Pools whose reroute scan runs, in the background. */
 	rerouteScans: Set<string>;
+	/** Labels of the jobs waiting for a runner, per repository of each pool. */
+	queuedJobs: Map<string, Map<string, { at: number; labels: string[][] }>>;
+	lastQueuedJobScan: Map<string, number>;
+	/** Pools whose queued jobs are being read, in the background. */
+	queuedJobScans: Set<string>;
 	/** Machines that did not answer: tried again in the background, not by the tick. */
 	reconnects: Map<
 		string,
@@ -328,6 +334,9 @@ shared.__dokployGithubRunners ??= {
 	repositories: new Map(),
 	lastRerouteScan: new Map(),
 	rerouteScans: new Set(),
+	queuedJobs: new Map(),
+	lastQueuedJobScan: new Map(),
+	queuedJobScans: new Set(),
 	reconnects: new Map(),
 	lastBenchmarkAt: new Map(),
 	diskSamples: new Map(),
@@ -381,6 +390,9 @@ state.version ??= null;
 state.startedAt ??= new Date().toISOString();
 state.lastOrphanCheck ??= 0;
 state.rerouteScans ??= new Set();
+state.queuedJobs ??= new Map();
+state.lastQueuedJobScan ??= new Map();
+state.queuedJobScans ??= new Set();
 state.reconnects ??= new Map();
 const OWNER = state.owner;
 
@@ -550,6 +562,9 @@ const ensureLima = async (
 const archLabel = (arch: string) =>
 	arch === "aarch64" || arch === "arm64" ? "ARM64" : "X64";
 
+/** The label that sends a job to this machine and no other. */
+const machineLabel = (node: GithubRunnerNode) => `dokploy-${node.name}`;
+
 /** Labels every runner of the machine is registered with. */
 export const runnerLabels = (
 	pool: GithubRunnerPool,
@@ -562,7 +577,7 @@ export const runnerLabels = (
 		archLabel(arch),
 		...pool.labels,
 		...node.extraLabels,
-		`dokploy-${node.name}`,
+		machineLabel(node),
 	];
 	const seen = new Set<string>();
 	return labels.filter((label) => {
@@ -4147,12 +4162,14 @@ const recoverInterruptedJobs = async (pool: GithubRunnerPool) => {
 // ------------------------------------------------------------- routing
 
 const REPOSITORIES_TTL_MS = 60 * 60_000;
-const REROUTE_SCAN_EVERY_MS = 60_000;
+const QUEUE_SCAN_EVERY_MS = 60_000;
 const REROUTE_FORCE_CANCEL_MS = 3 * 60_000;
 const REROUTE_VERIFY_AFTER_MS = 60_000;
-const REROUTE_SCAN_CONCURRENCY = 4;
+const QUEUE_SCAN_CONCURRENCY = 4;
 /** Failures GitHub may heal from after which a scan stops until the next one. */
-const REROUTE_SCAN_MAX_FAILURES = 3;
+const QUEUE_SCAN_MAX_FAILURES = 3;
+/** The queued jobs of a repository GitHub stopped answering for count this long. */
+const QUEUED_JOBS_TTL_MS = 5 * 60_000;
 
 /**
  * A machine whose runners take jobs: enabled, provisioned, reachable, above its
@@ -4278,7 +4295,7 @@ export const routePool = async (pool: GithubRunnerPool) => {
 	if (
 		routing.target === "fallback" &&
 		routing.syncedValue === routing.value &&
-		now - (state.lastRerouteScan.get(poolId) ?? 0) >= REROUTE_SCAN_EVERY_MS &&
+		now - (state.lastRerouteScan.get(poolId) ?? 0) >= QUEUE_SCAN_EVERY_MS &&
 		!state.rerouteScans.has(poolId)
 	) {
 		state.lastRerouteScan.set(poolId, now);
@@ -4300,13 +4317,15 @@ export const routePool = async (pool: GithubRunnerPool) => {
 const poolRepositories = async (
 	pool: GithubRunnerPool,
 	client: GithubRunnerClient,
+	visibility: "private" | "all" = "private",
 ) => {
-	const cached = state.repositories.get(pool.githubRunnerPoolId);
+	const key = `${pool.githubRunnerPoolId}/${visibility}`;
+	const cached = state.repositories.get(key);
 	if (cached && Date.now() - cached.at < REPOSITORIES_TTL_MS) {
 		return cached.names;
 	}
-	const names = await client.listRepositories();
-	state.repositories.set(pool.githubRunnerPoolId, { at: Date.now(), names });
+	const names = await client.listRepositories(visibility);
+	state.repositories.set(key, { at: Date.now(), names });
 	return names;
 };
 
@@ -4343,9 +4362,9 @@ export const rerouteQueuedRuns = async (
 	};
 	await mapWithConcurrency(
 		repositories,
-		REROUTE_SCAN_CONCURRENCY,
+		QUEUE_SCAN_CONCURRENCY,
 		async (repository) => {
-			if (transient >= REROUTE_SCAN_MAX_FAILURES) return;
+			if (transient >= QUEUE_SCAN_MAX_FAILURES) return;
 			const runs = await client
 				.listQueuedRuns(repository)
 				.catch((error: unknown) => {
@@ -4355,7 +4374,7 @@ export const rerouteQueuedRuns = async (
 			await sequentially(runs, async (run) => {
 				const runId = String(run.id);
 				if (known.has(`${repository}#${runId}`)) return;
-				if (transient >= REROUTE_SCAN_MAX_FAILURES) return;
+				if (transient >= QUEUE_SCAN_MAX_FAILURES) return;
 				const jobs = await client
 					.listRunJobs(repository, runId)
 					.catch((error: unknown) => {
@@ -4400,9 +4419,103 @@ export const rerouteQueuedRuns = async (
 	);
 	if (failures.length) {
 		console.error(
-			`[github-runners] ${pool.name}: the reroute scan could not read ${failures.length} item(s)${transient >= REROUTE_SCAN_MAX_FAILURES ? " and stopped early" : ""}; first: ${failures[0]}`,
+			`[github-runners] ${pool.name}: the reroute scan could not read ${failures.length} item(s)${transient >= QUEUE_SCAN_MAX_FAILURES ? " and stopped early" : ""}; first: ${failures[0]}`,
 		);
 	}
+};
+
+/**
+ * Reads the labels of the jobs waiting for a runner, so that placement can arm
+ * the machine a job is pinned to. GitHub has no list of queued jobs, only runs:
+ * those in progress count too, since one started job is enough to stop listing
+ * a run as queued. A repository GitHub failed to answer for keeps its last
+ * answer for a while: a hiccup must not release the runner a job waits for.
+ */
+export const scanQueuedJobs = async (
+	pool: GithubRunnerPool,
+	client: GithubRunnerClient,
+) => {
+	const poolId = pool.githubRunnerPoolId;
+	const repositories = await poolRepositories(pool, client, "all");
+	const previous = state.queuedJobs.get(poolId);
+	const next = new Map<string, { at: number; labels: string[][] }>();
+	const keepLastAnswer = (repository: string) => {
+		const known = previous?.get(repository);
+		if (known) next.set(repository, known);
+	};
+	const failures: string[] = [];
+	let transient = 0;
+	await mapWithConcurrency(
+		repositories,
+		QUEUE_SCAN_CONCURRENCY,
+		async (repository) => {
+			if (transient >= QUEUE_SCAN_MAX_FAILURES) {
+				keepLastAnswer(repository);
+				return;
+			}
+			try {
+				const runs = [
+					...(await client.listQueuedRuns(repository)),
+					...(await client.listRunsInProgress(repository)),
+				];
+				const labels: string[][] = [];
+				// A run can move from one list to the other between the two calls.
+				await sequentially(
+					[...new Set(runs.map((run) => String(run.id)))],
+					async (runId) => {
+						for (const job of await client.listRunJobs(repository, runId)) {
+							if (job.status === "queued") labels.push(job.labels);
+						}
+					},
+				);
+				next.set(repository, { at: Date.now(), labels });
+			} catch (error) {
+				failures.push(
+					`${repository}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				if (!isPermanentGithubError(error)) {
+					transient++;
+					keepLastAnswer(repository);
+				}
+			}
+		},
+	);
+	state.queuedJobs.set(poolId, next);
+	if (failures.length) {
+		console.error(
+			`[github-runners] ${pool.name}: the queued jobs scan could not read ${failures.length} repositories${transient >= QUEUE_SCAN_MAX_FAILURES ? " and stopped early" : ""}; first: ${failures[0]}`,
+		);
+	}
+};
+
+/** Labels of the jobs the scans saw waiting in a pool. */
+export const queuedJobLabels = (poolId: string, now = Date.now()) =>
+	[...(state.queuedJobs.get(poolId)?.values() ?? [])]
+		.filter((answer) => now - answer.at < QUEUED_JOBS_TTL_MS)
+		.flatMap((answer) => answer.labels);
+
+const startQueuedJobScan = (pool: GithubRunnerPool) => {
+	const poolId = pool.githubRunnerPoolId;
+	const now = Date.now();
+	if (
+		now - (state.lastQueuedJobScan.get(poolId) ?? 0) < QUEUE_SCAN_EVERY_MS ||
+		state.queuedJobScans.has(poolId)
+	) {
+		return;
+	}
+	state.lastQueuedJobScan.set(poolId, now);
+	state.queuedJobScans.add(poolId);
+	// Outside the tick: calls per repository and per run, which a slow or failing
+	// GitHub could stretch to minutes.
+	void poolClient(pool)
+		.then((client) => scanQueuedJobs(pool, client))
+		.catch((error) =>
+			console.error(
+				`[github-runners] ${pool.name}: queued jobs scan failed`,
+				error,
+			),
+		)
+		.finally(() => state.queuedJobScans.delete(poolId));
 };
 
 /** Re-runs the cancelled runs, then checks their jobs left the pool. */
@@ -4636,9 +4749,10 @@ export const clearPoolRouting = async (pool: GithubRunnerPool) => {
 const LIVE_SLOT = new Set(["active", "activating", "reloading"]);
 
 /** A machine as fastest-first placement sees it, before this tick acts. */
-const placementMachine = (
-	observation: Observation,
+export const placementMachine = (
+	observation: Pick<Observation, "node" | "probe">,
 	runners: GithubRunner[],
+	queuedJobs: string[][],
 ): PlacementMachine => {
 	const { node, probe } = observation;
 	const host = probe.host;
@@ -4667,6 +4781,15 @@ const placementMachine = (
 			? { single: node.benchmark.single, multi: node.benchmark.multi }
 			: null,
 		cpus: host ? effectiveBudget(node.platform, host, node).cpus : 1,
+		pinned: countPinnedJobs(
+			queuedJobs,
+			machineLabel(node),
+			runnerLabels(
+				node.pool,
+				node,
+				probe.runtime?.host?.arch ?? host?.arch ?? "x86_64",
+			),
+		),
 	};
 };
 
@@ -4716,10 +4839,17 @@ const tickPool = async (nodes: NodeWithRelations[]) => {
 				);
 			}
 		}
-		// Where runners wait across the pool: only where a new job runs fastest.
+		// Only "fastest" with several machines leaves a machine with room and no
+		// waiting runner: elsewhere every free slot waits, whatever is queued.
+		if (pool.placement === "fastest" && observations.length > 1) {
+			startQueuedJobScan(pool);
+		}
+		const queuedJobs = queuedJobLabels(pool.githubRunnerPoolId);
+		// Where runners wait across the pool: only where a new job runs fastest,
+		// and on the machines queued jobs are pinned to.
 		const waiting = placeWaitingRunners(
 			observations.map((observation) =>
-				placementMachine(observation, runners ?? []),
+				placementMachine(observation, runners ?? [], queuedJobs),
 			),
 			pool.placement,
 		);
