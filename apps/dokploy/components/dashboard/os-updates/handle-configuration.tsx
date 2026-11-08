@@ -13,6 +13,7 @@ import {
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { AlertBlock } from "@/components/shared/alert-block";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -42,6 +43,7 @@ import {
 	invalidPatterns,
 	type OsUpdateConfigurationRow,
 	type OsUpdateServerRow,
+	openWindowWarning,
 } from "./format";
 import { SettingsFields } from "./settings-fields";
 
@@ -339,9 +341,11 @@ const ScheduleFields = ({
 			</div>
 			{parsed.success ? (
 				<p className="text-xs text-muted-foreground">
-					Next windows (your time):{" "}
+					Next windows ({parsed.data.timeZone}):{" "}
 					{upcoming
-						.map((window) => `${dateText(window.start.toISOString())}`)
+						.map((window) =>
+							dateText(window.start.toISOString(), parsed.data.timeZone),
+						)
 						.join(", ") || "none within a year"}
 					. A start time skipped by a daylight saving change moves forward by
 					the change; no install starts in the last 15 minutes of a window.
@@ -434,6 +438,12 @@ const ConfigurationForm = ({
 			...draft.settings.includePackages,
 			...draft.settings.excludePackages,
 		]).length > 0;
+	// Saving starts installs at once when its window is open.
+	const warning =
+		draft.enabled &&
+		(draft.serverIds.length > 0 || (configuration?.hiddenServers ?? 0) > 0)
+			? openWindowWarning(draft.schedule)
+			: null;
 
 	const save = async () => {
 		const input = {
@@ -545,6 +555,7 @@ const ConfigurationForm = ({
 					</p>
 				</fieldset>
 			</div>
+			{warning && <AlertBlock type="warning">{warning}</AlertBlock>}
 			<DialogFooter>
 				<Button variant="outline" onClick={onDone}>
 					Cancel

@@ -364,12 +364,13 @@ const ACTION_META: Record<
 		},
 		create: {
 			label: "Create",
-			description: "Create maintenance configurations",
+			description:
+				"Create maintenance configurations (with servers, also needs Run)",
 		},
 		update: {
 			label: "Update",
 			description:
-				"Change configurations, assign servers to them, toggle periodic assessment",
+				"Change configurations and their servers (a change that makes servers install updates also needs Run)",
 		},
 		delete: {
 			label: "Delete",
@@ -378,7 +379,7 @@ const ACTION_META: Record<
 		run: {
 			label: "Run",
 			description:
-				"Check now and Install now: runs apt and may reboot servers, as root",
+				"Make servers run apt as root and reboot: Check now, Install now, assigning servers, enabling or changing a configuration with servers, daily checks",
 		},
 	},
 	registry: {

@@ -1,6 +1,7 @@
 import { Loader2, RotateCcw, ShieldAlert, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DialogAction } from "@/components/shared/dialog-action";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,16 +21,26 @@ import {
 } from "@/components/ui/table";
 import { api, type RouterOutputs } from "@/utils/api";
 import { errorText } from "../github-runners/format";
-import { dateText, type OsUpdateRunRow, RUN_STATUS } from "./format";
+import {
+	browserTimeZone,
+	cancelRunText,
+	dateText,
+	type OsUpdateRunRow,
+	REBOOT_LABELS,
+	RUN_STATUS,
+	zonedDateText,
+} from "./format";
 
 type RunDetail = RouterOutputs["osUpdate"]["run"];
 
 const RunSummary = ({ run }: { run: RunDetail }) => {
 	const status = RUN_STATUS[run.status];
+	const zone = browserTimeZone();
+	// A window in its schedule's zone, as the configuration reads.
 	const origin =
 		run.trigger === "manual"
 			? `Install now${run.requestedBy ? ` by ${run.requestedBy}` : ""}`
-			: `Window of ${dateText(run.windowStart)}${run.configuration ? ` (${run.configuration.name})` : ""}`;
+			: `Window of ${zonedDateText(run.windowStart, run.configuration?.schedule.timeZone)}${run.configuration ? `, ${run.configuration.name}` : ""}`;
 	return (
 		<>
 			<div className="flex flex-wrap items-center gap-2">
@@ -51,12 +62,12 @@ const RunSummary = ({ run }: { run: RunDetail }) => {
 			)}
 			<dl className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
 				<div>
-					<dt className="text-muted-foreground">Started</dt>
-					<dd>{dateText(run.startedAt)}</dd>
+					<dt className="text-muted-foreground">Started ({zone})</dt>
+					<dd>{dateText(run.startedAt, zone)}</dd>
 				</div>
 				<div>
-					<dt className="text-muted-foreground">Ended</dt>
-					<dd>{dateText(run.finishedAt)}</dd>
+					<dt className="text-muted-foreground">Ended ({zone})</dt>
+					<dd>{dateText(run.finishedAt, zone)}</dd>
 				</div>
 				<div>
 					<dt className="text-muted-foreground">Updates</dt>
@@ -67,7 +78,7 @@ const RunSummary = ({ run }: { run: RunDetail }) => {
 				</div>
 				<div>
 					<dt className="text-muted-foreground">Reboot</dt>
-					<dd>{run.settings.reboot}</dd>
+					<dd>{REBOOT_LABELS[run.settings.reboot]}</dd>
 				</div>
 			</dl>
 		</>
@@ -167,18 +178,17 @@ export const RunDetailsDialog = ({
 	</Dialog>
 );
 
+/** Cancelling is final for the window: confirmed first. */
 const CancelButton = ({ run }: { run: OsUpdateRunRow }) => {
 	const utils = api.useUtils();
 	const cancel = api.osUpdate.cancelRun.useMutation();
+	const server = run.serverName ?? "this server";
 	return (
-		<Button
-			size="icon"
-			variant="ghost"
-			className="size-7"
-			aria-label="Cancel this run"
-			disabled={cancel.isPending}
-			onClick={async (event) => {
-				event.stopPropagation();
+		<DialogAction
+			title={`Cancel the update of ${server}?`}
+			description={cancelRunText(run)}
+			type="destructive"
+			onClick={async () => {
 				try {
 					await cancel.mutateAsync({ osUpdateRunId: run.osUpdateRunId });
 					await Promise.all([
@@ -191,8 +201,16 @@ const CancelButton = ({ run }: { run: OsUpdateRunRow }) => {
 				}
 			}}
 		>
-			<X className="size-3.5" />
-		</Button>
+			<Button
+				size="icon"
+				variant="ghost"
+				className="size-7"
+				aria-label={`Cancel the update of ${server}`}
+				disabled={cancel.isPending}
+			>
+				<X className="size-3.5" />
+			</Button>
+		</DialogAction>
 	);
 };
 
@@ -202,6 +220,7 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 		{ refetchInterval: 5000 },
 	);
 	const [shown, setShown] = useState<OsUpdateRunRow | null>(null);
+	const zone = browserTimeZone();
 	if (isPending) {
 		return (
 			<div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -232,8 +251,8 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 							<TableHead>Server</TableHead>
 							<TableHead>Status</TableHead>
 							<TableHead>Trigger</TableHead>
-							<TableHead>Started</TableHead>
-							<TableHead>Ended</TableHead>
+							<TableHead>Started ({zone})</TableHead>
+							<TableHead>Ended ({zone})</TableHead>
 							<TableHead>Packages</TableHead>
 							<TableHead>Outcome</TableHead>
 							<TableHead />
@@ -243,11 +262,7 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 						{data.map((run) => {
 							const status = RUN_STATUS[run.status];
 							return (
-								<TableRow
-									key={run.osUpdateRunId}
-									className="cursor-pointer"
-									onClick={() => setShown(run)}
-								>
+								<TableRow key={run.osUpdateRunId}>
 									<TableCell className="font-medium">
 										{run.serverName ?? run.serverId}
 									</TableCell>
@@ -268,10 +283,10 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 											: (run.configurationName ?? "Schedule")}
 									</TableCell>
 									<TableCell className="text-xs">
-										{dateText(run.startedAt ?? run.windowStart)}
+										{dateText(run.startedAt ?? run.windowStart, zone)}
 									</TableCell>
 									<TableCell className="text-xs">
-										{dateText(run.finishedAt)}
+										{dateText(run.finishedAt, zone)}
 									</TableCell>
 									<TableCell className="text-xs">
 										{run.packages.length || "—"}
@@ -280,9 +295,19 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 										{run.message ?? ""}
 									</TableCell>
 									<TableCell>
-										{canRun && run.status === "pending" && (
-											<CancelButton run={run} />
-										)}
+										<span className="flex items-center gap-1">
+											<Button
+												size="sm"
+												variant="ghost"
+												aria-label={`Details of the update of ${run.serverName ?? run.serverId}`}
+												onClick={() => setShown(run)}
+											>
+												Details
+											</Button>
+											{canRun && run.status === "pending" && (
+												<CancelButton run={run} />
+											)}
+										</span>
 									</TableCell>
 								</TableRow>
 							);

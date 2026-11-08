@@ -19,14 +19,17 @@ import {
 	CLEAN_FUNCTION,
 	DEBIAN_PACKAGE,
 	parseSimulation,
-	REBOOT_REQUIRED,
 	rebootCommand,
 	type SimulatedPackage,
 } from "./apt";
 
 export const STATE_DIR = "/var/lib/dokploy-os-updates";
-/** Held by every Dokploy OS update script on the server, one at a time. */
-export const LOCK_FILE = "/run/dokploy-os-updates.lock";
+/**
+ * Held by every Dokploy OS update script on the server, one at a time. In
+ * the root-only state directory: a lock other users could open, they could
+ * hold for ever and block the updates.
+ */
+export const LOCK_FILE = `${STATE_DIR}/lock`;
 /** How much of a step's log one read brings back. */
 export const LOG_CHUNK_BYTES = 256 * 1024;
 
@@ -46,6 +49,34 @@ export const stepUnit = (runId: string, step: RunStep) =>
 export const rootShell = (username: string) =>
 	username === "root" ? "bash -s" : "sudo -n bash -s";
 
+/**
+ * Takes the server's lock: a 0600 file in the 0700 state directory, created
+ * in a subshell so that apt's maintainer scripts keep the usual umask.
+ */
+const lockServer = (
+	waitSeconds: number,
+	onBusy: string,
+) => sh`(umask 077 && install -d -m 0700 ${STATE_DIR} && : >>${LOCK_FILE})
+chmod 0700 ${STATE_DIR}
+chmod 0600 ${LOCK_FILE}
+exec 9>>${LOCK_FILE}
+if ! flock -w ${waitSeconds} 9; then ${onBusy}; fi`;
+
+/**
+ * Prints "yes" when the system waits for a reboot: an update asked for it
+ * (/var/run/reboot-required: Ubuntu, unattended-upgrades), or a newer kernel
+ * is installed than the one running, which Debian's kernel packages never
+ * report. A running kernel missing from /boot (a provider's own kernel)
+ * tells nothing.
+ */
+export const REBOOT_PENDING_FUNCTION = sh`reboot_pending() {
+	if [ -f /var/run/reboot-required ]; then echo yes; return; fi
+	local running newest
+	running=$(uname -r)
+	newest=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's|^/boot/vmlinuz-||' | sort -V | tail -n 1)
+	if [ -e "/boot/vmlinuz-$running" ] && [ -n "$newest" ] && [ "$newest" != "$running" ]; then echo yes; else echo no; fi
+}`;
+
 // ------------------------------------------------------------- assessment
 
 /**
@@ -60,6 +91,7 @@ const assessmentBody = (options: {
 	recover: boolean;
 	updateAttempts: number;
 }) => sh`${CLEAN_FUNCTION}
+${REBOOT_PENDING_FUNCTION}
 export LC_ALL=C
 os_id=unknown os_like='' os_version='' os_codename='' pretty=''
 if [ -r /etc/os-release ]; then
@@ -99,7 +131,7 @@ ${aptUpdateRetries(options.updateAttempts)}
 fi
 dpkg_state=ok
 if interrupted; then dpkg_state=interrupted; fi
-echo "state lists=$(clean "$(${APT_LISTS_TIME} 2>/dev/null || true)") refreshed=$refreshed reboot=${REBOOT_REQUIRED} dpkg=$dpkg_state boot=$(clean "${BOOT_ID}")" >&3
+echo "state lists=$(clean "$(${APT_LISTS_TIME} 2>/dev/null || true)") refreshed=$refreshed reboot=$(reboot_pending) dpkg=$dpkg_state boot=$(clean "${BOOT_ID}")" >&3
 if [ -r /var/run/reboot-required.pkgs ]; then
 	echo "reboot-packages $(sort -u /var/run/reboot-required.pkgs | tr -cd 'a-z0-9+.:\n-' | tr '\n' ' ')" >&3
 fi
@@ -120,8 +152,7 @@ echo "--- simulation status=$?" >&3
 export const assessScript = (options: { refresh: boolean }) => sh`set -u
 exec 3>&1 >/dev/null 2>&1
 ${APT_ENVIRONMENT}
-exec 9>${LOCK_FILE}
-if ! flock -w 30 9; then echo "busy" >&3; exit 0; fi
+${lockServer(30, 'echo "busy" >&3; exit 0')}
 ${assessmentBody({ refresh: options.refresh, recover: false, updateAttempts: 12 })}`;
 
 // ------------------------------------------------------------- run steps
@@ -145,8 +176,7 @@ finish() {
 }
 trap finish EXIT
 ${APT_ENVIRONMENT}
-exec 9>${LOCK_FILE}
-if ! flock -w 600 9; then echo "error: another Dokploy OS update held the server for 10 minutes"; exit 1; fi
+${lockServer(600, 'echo "error: another Dokploy OS update held the server for 10 minutes"; exit 1')}
 ${body}`;
 };
 
@@ -185,6 +215,7 @@ export const installStep = (input: {
 		"install",
 		sh`set -e
 export LC_ALL=C
+${REBOOT_PENDING_FUNCTION}
 apt="${APT_GET}"
 if [ "$(date +%s)" -ge ${input.deadline} ]; then
 	echo "==> The maintenance window closed: nothing installed"
@@ -214,11 +245,14 @@ installed() { dpkg-query -W -f='\${binary:Package} \${Version} \${db:Status-Abbr
 installed >"$dir/before"
 docker_before=$(systemctl show -p MainPID --value docker 2>/dev/null || true)
 echo "==> Installing the selected updates (${names.length} allowed, $held other pending update(s) held at their version)"
-$apt -o Dir::Etc::Preferences="$prefs" -y -q --with-new-pkgs upgrade
+upgrade=0
+$apt -o Dir::Etc::Preferences="$prefs" -y -q --with-new-pkgs upgrade || upgrade=$?
+# What changed is recorded even when apt stopped halfway.
 installed >"$dir/after"
 join -a 1 -a 2 -e - -o 0,1.2,2.2 "$dir/before" "$dir/after" | awk '$2 != $3 { print "changed name=" $1 " from=" $2 " to=" $3 }' >&3
+[ "$upgrade" = 0 ] || { echo "error: apt-get upgrade failed (exit $upgrade)"; exit "$upgrade"; }
 docker_after=$(systemctl show -p MainPID --value docker 2>/dev/null || true)
-echo "result status=installed reboot=${REBOOT_REQUIRED} docker-before=$docker_before docker-after=$docker_after" >&3
+echo "result status=installed reboot=$(reboot_pending) docker-before=$docker_before docker-after=$docker_after" >&3
 `,
 	);
 };
@@ -567,28 +601,32 @@ export const parseSwarmManagers = (output: string): SwarmManager[] =>
 	});
 
 /**
- * Whether a manager may reboot without losing the quorum of its Swarm:
- * every other manager is reachable and ready. A lone manager may (its
- * cluster is down while it boots, as any single server).
+ * Whether a manager may reboot without losing the quorum of its Swarm: the
+ * managers left reachable while it boots must stay a strict majority of all
+ * the managers (2 of 3, 3 of 5; never 1 of 2). A lone manager may reboot
+ * (its cluster is down while it boots, as any single server).
  */
 export const swarmRebootCheck = (managers: SwarmManager[]) => {
-	const others = managers.filter((manager) => !manager.self);
-	const down = others.filter(
-		(manager) =>
-			!["Leader", "Reachable"].includes(manager.managerStatus) ||
-			manager.status !== "Ready",
-	);
 	if (!managers.some((manager) => manager.self)) {
 		return {
 			safe: false,
 			reason: "this server is not listed among the Swarm managers",
 		};
 	}
-	if (down.length) {
-		return {
-			safe: false,
-			reason: `the Swarm manager${down.length === 1 ? "" : "s"} ${down.map((manager) => manager.hostname).join(", ")} ${down.length === 1 ? "is" : "are"} not reachable: rebooting would lose the quorum`,
-		};
-	}
-	return { safe: true, reason: null };
+	if (managers.length === 1) return { safe: true, reason: null };
+	const others = managers.filter((manager) => !manager.self);
+	const down = others.filter(
+		(manager) =>
+			!["Leader", "Reachable"].includes(manager.managerStatus) ||
+			manager.status !== "Ready",
+	);
+	const left = others.length - down.length;
+	if (left * 2 > managers.length) return { safe: true, reason: null };
+	const missing = down.length
+		? `, as ${down.map((manager) => manager.hostname).join(", ")} ${down.length === 1 ? "is" : "are"} not reachable`
+		: "";
+	return {
+		safe: false,
+		reason: `rebooting it would leave ${left} of ${managers.length} Swarm managers${missing}: the Swarm would lose its quorum`,
+	};
 };

@@ -1,7 +1,15 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { db } from "@dokploy/server/db";
 import {
 	linuxOsReportScript,
 	osPatchScript,
@@ -11,11 +19,13 @@ import {
 	parseSimulation,
 } from "@dokploy/server/utils/os-updates/apt";
 import {
+	claimRun,
 	logLines,
 	redactLogLine,
 } from "@dokploy/server/utils/os-updates/controller";
 import {
 	DEFAULT_OS_UPDATE_SETTINGS,
+	globMatches,
 	isDockerPackage,
 	matchesPattern,
 	type OsUpdateSettings,
@@ -39,18 +49,21 @@ import {
 	followStepScript,
 	installStep,
 	isSupportedOs,
+	LOCK_FILE,
 	parseAssessment,
 	parseFollow,
 	parseInstallResult,
 	parseSwarm,
 	parseSwarmManagers,
 	prepareStep,
+	REBOOT_PENDING_FUNCTION,
 	rebootScript,
+	STATE_DIR,
 	startStepScript,
 	stepExitCode,
 	swarmRebootCheck,
 } from "@dokploy/server/utils/os-updates/scripts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const schedule = (patch: Partial<OsUpdateSchedule> = {}): OsUpdateSchedule =>
 	osUpdateScheduleSchema.parse({
@@ -878,5 +891,275 @@ echo "held=$held"
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("glob patterns", () => {
+	it("match as globs: * any run of characters, ? one character", () => {
+		expect(globMatches("libssl3t64", "libssl*")).toBe(true);
+		expect(globMatches("libssl", "libssl*")).toBe(true);
+		expect(globMatches("tzdata", "tz?ata")).toBe(true);
+		expect(globMatches("tzdta", "tz?ata")).toBe(false);
+		expect(globMatches("abXcdYef", "ab*cd*ef")).toBe(true);
+		expect(globMatches("abXcdYe", "ab*cd*ef")).toBe(false);
+		expect(globMatches("a", "*")).toBe(true);
+		expect(globMatches("a", "**?**")).toBe(true);
+		expect(globMatches("", "?")).toBe(false);
+		expect(globMatches("aaa", "a*a*a*a")).toBe(false);
+	});
+
+	it("never backtrack exponentially, whatever the wildcards", () => {
+		// "*?" repeated up to the schema's 100 characters, on a long name: a
+		// RegExp built from it took 1.9 s for 10 repetitions, 4 times more for
+		// each one added.
+		const pattern = `${"*?".repeat(49)}z`;
+		expect(
+			osUpdateSettingsSchema.safeParse({ includePackages: [pattern] }).success,
+		).toBe(true);
+		const name = `lib${"a".repeat(200)}`;
+		const started = performance.now();
+		for (let round = 0; round < 50; round++) {
+			expect(matchesPattern(name, pattern)).toBe(false);
+			expect(matchesPattern(`${name}z`, pattern)).toBe(true);
+		}
+		expect(performance.now() - started).toBeLessThan(500);
+	});
+});
+
+describe("Swarm quorum", () => {
+	const manager = (hostname: string, self: boolean, up = true) =>
+		JSON.stringify({
+			Self: self,
+			Hostname: hostname,
+			Status: up ? "Ready" : "Down",
+			ManagerStatus: self ? "Leader" : up ? "Reachable" : "Unreachable",
+		});
+	const check = (...lines: string[]) =>
+		swarmRebootCheck(parseSwarmManagers(lines.join("\n")));
+
+	it("never reboots one of two managers: one left of two is no majority", () => {
+		const result = check(manager("m1", true), manager("m2", false));
+		expect(result.safe).toBe(false);
+		expect(result.reason).toMatch(/leave 1 of 2 Swarm managers/);
+	});
+
+	it("keeps a strict majority of all the managers", () => {
+		const five = (down: number) =>
+			check(
+				manager("m1", true),
+				...["m2", "m3", "m4", "m5"].map((name, index) =>
+					manager(name, false, index >= down),
+				),
+			).safe;
+		// Rebooting m1 leaves 4, 3 or 2 of 5 reachable.
+		expect(five(0)).toBe(true);
+		expect(five(1)).toBe(true);
+		expect(five(2)).toBe(false);
+		expect(check(manager("m1", true)).safe).toBe(true);
+	});
+});
+
+/** A script with the paths it reads moved under `root`. */
+const relocate = (script: string, root: string) =>
+	script
+		.replaceAll("/var/lib/dokploy-os-updates", join(root, "state"))
+		.replaceAll("/var/run/reboot-required", join(root, "reboot-required"))
+		.replaceAll("/boot/", `${join(root, "boot")}/`);
+
+describe("pending reboot", () => {
+	const pending = (running: string, kernels: string[], required = false) => {
+		const root = mkdtempSync(join(tmpdir(), "dokploy-os-reboot-"));
+		try {
+			mkdirSync(join(root, "boot"));
+			for (const kernel of kernels) {
+				writeFileSync(join(root, "boot", `vmlinuz-${kernel}`), "");
+			}
+			if (required) writeFileSync(join(root, "reboot-required"), "");
+			const script = `${relocate(REBOOT_PENDING_FUNCTION, root)}
+uname() { echo ${running}; }
+reboot_pending
+`;
+			return execFileSync("bash", ["-c", script]).toString().trim();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	};
+
+	it("tells a newer kernel installed than the one running (Debian)", () => {
+		expect(
+			pending("6.1.0-25-amd64", ["6.1.0-25-amd64", "6.1.0-26-amd64"]),
+		).toBe("yes");
+		// Versions compare as versions: 10 comes after 9.
+		expect(pending("6.1.0-9-amd64", ["6.1.0-9-amd64", "6.1.0-10-amd64"])).toBe(
+			"yes",
+		);
+		expect(
+			pending("6.1.0-26-amd64", ["6.1.0-25-amd64", "6.1.0-26-amd64"]),
+		).toBe("no");
+	});
+
+	it("follows /var/run/reboot-required, and knows nothing of a kernel not in /boot", () => {
+		expect(pending("6.8.0-45-generic", ["6.8.0-45-generic"], true)).toBe("yes");
+		// A provider's kernel, or a container: no reboot loop.
+		expect(pending("6.8.0-1012-provider", ["6.8.0-45-generic"])).toBe("no");
+		expect(pending("7.0.14-linuxkit", [])).toBe("no");
+	});
+
+	it("is what OS updates report, while the runners keep their own check", () => {
+		expect(assessScript({ refresh: false })).toContain(
+			"reboot=$(reboot_pending)",
+		);
+		expect(scripts().install).toContain("reboot=$(reboot_pending)");
+		expect(linuxOsReportScript()).not.toContain("reboot_pending");
+		expect(osPatchScript()).not.toContain("reboot_pending");
+	});
+});
+
+describe("the server's lock", () => {
+	it("lives in the root-only state directory, created 0600 with the usual umask kept", () => {
+		expect(LOCK_FILE).toBe(`${STATE_DIR}/lock`);
+		for (const script of [
+			assessScript({ refresh: true }),
+			prepareStep("r1"),
+			scripts().install,
+		]) {
+			expect(script).toContain(
+				`(umask 077 && install -d -m 0700 ${STATE_DIR} && : >>${LOCK_FILE})`,
+			);
+			expect(script).toContain(`chmod 0600 ${LOCK_FILE}`);
+			expect(script).toContain(`exec 9>>${LOCK_FILE}`);
+			expect(script).not.toContain("/run/dokploy-os-updates.lock");
+			// apt's maintainer scripts run with the umask they expect.
+			expect(script).not.toMatch(/^umask /m);
+		}
+	});
+
+	it.skipIf(process.platform !== "linux")(
+		"is created 0600 in a 0700 directory",
+		() => {
+			const root = mkdtempSync(join(tmpdir(), "dokploy-os-lock-"));
+			try {
+				const lines = assessScript({ refresh: false }).split("\n");
+				const end = lines.findIndex((line) => line.startsWith("if ! flock"));
+				const script = relocate(lines.slice(0, end).join("\n"), root);
+				spawnSync("bash", ["-c", script]);
+				const mode = (path: string) =>
+					(statSync(path).mode & 0o777).toString(8);
+				expect(mode(join(root, "state"))).toBe("700");
+				expect(mode(join(root, "state", "lock"))).toBe("600");
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+});
+
+describe("claiming a run", () => {
+	const failingUpdate = (error: Error) => {
+		const chain = {
+			set: () => chain,
+			where: () => chain,
+			returning: () => Promise.reject(error),
+		};
+		vi.mocked(db.update).mockImplementationOnce(
+			() => chain as unknown as ReturnType<typeof db.update>,
+		);
+	};
+	const run = { osUpdateRunId: "r1", startedAt: null };
+
+	it("leaves a run another one took to it (unique violation)", async () => {
+		const race = Object.assign(new Error("Failed query"), {
+			query: "update",
+			params: [],
+			cause: { code: "23505" },
+		});
+		failingUpdate(race);
+		await expect(claimRun(run, DEFAULT_OS_UPDATE_SETTINGS)).resolves.toBe(
+			false,
+		);
+	});
+
+	it("lets any other database error reach the tick, which logs it", async () => {
+		const outage = Object.assign(new Error("Failed query"), {
+			query: "update",
+			params: [],
+			cause: { code: "57P01" },
+		});
+		failingUpdate(outage);
+		await expect(claimRun(run, DEFAULT_OS_UPDATE_SETTINGS)).rejects.toBe(
+			outage,
+		);
+	});
+});
+
+describe.skipIf(!modernBash)("install step (bash, apt faked)", () => {
+	/** The whole install step, with apt, dpkg and systemd faked. */
+	const runInstall = (upgrade: "succeeds" | "fails") => {
+		const root = mkdtempSync(join(tmpdir(), "dokploy-os-install-"));
+		try {
+			const run = join(root, "state", "r1");
+			mkdirSync(run, { recursive: true });
+			writeFileSync(
+				join(root, "simulation"),
+				"Inst curl [8.5.0-2ubuntu10.5] (8.5.0-2ubuntu10.6 Ubuntu:24.04/noble-security [amd64])\n",
+			);
+			const outcome =
+				upgrade === "fails"
+					? 'echo "E: Sub-process /usr/bin/dpkg returned an error code (1)"; return 100'
+					: "return 0";
+			writeFileSync(
+				join(root, "step.sh"),
+				relocate(
+					installStep({
+						runId: "r1",
+						allowed: ["curl"],
+						deadline: 4_000_000_000,
+					}),
+					root,
+				),
+			);
+			writeFileSync(
+				join(root, "run.sh"),
+				`apt-get() {
+	case " $* " in
+	*" -s "*) cat "${root}/simulation" ;;
+	*) echo "Unpacking curl"; : >"${root}/upgraded"; ${outcome} ;;
+	esac
+}
+dpkg-query() {
+	if [ -e "${root}/upgraded" ]; then echo "curl 8.5.0-2ubuntu10.6 ii "; else echo "curl 8.5.0-2ubuntu10.5 ii "; fi
+}
+systemctl() { echo 0; }
+flock() { return 0; }
+uname() { echo 6.8.0-45-generic; }
+source "${root}/step.sh"
+`,
+			);
+			spawnSync("bash", [join(root, "run.sh")], { encoding: "utf8" });
+			return parseInstallResult(
+				readFileSync(join(run, "install.result"), "utf8"),
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	};
+
+	it("records what changed and the reboot when apt succeeds", () => {
+		expect(runInstall("succeeds")).toMatchObject({
+			status: "installed",
+			exitCode: 0,
+			rebootRequired: false,
+			changes: [
+				{ name: "curl", from: "8.5.0-2ubuntu10.5", to: "8.5.0-2ubuntu10.6" },
+			],
+		});
+	});
+
+	it("still records what changed when apt fails halfway", () => {
+		const result = runInstall("fails");
+		expect(result?.exitCode).toBe(100);
+		expect(result?.changes).toEqual([
+			{ name: "curl", from: "8.5.0-2ubuntu10.5", to: "8.5.0-2ubuntu10.6" },
+		]);
 	});
 });

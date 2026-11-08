@@ -335,3 +335,40 @@ dpkg --audit
 		2 * 60_000,
 	);
 });
+
+/**
+ * Debian 12 without unattended-upgrades: a new kernel leaves no
+ * /var/run/reboot-required. The assessment tells the pending reboot from the
+ * kernels in /boot (fake ones here: the container runs Docker's kernel).
+ */
+describe.skipIf(!enabled)("pending reboot on a real Debian 12", () => {
+	const assess = (setup: string) => {
+		const result = spawnSync(
+			"docker",
+			["run", "--rm", "-i", "debian:12", "bash", "-s"],
+			{
+				input: `${setup}\n${assessScript({ refresh: false })}`,
+				encoding: "utf8",
+			},
+		);
+		return parseAssessment(result.stdout);
+	};
+
+	it("reports a newer kernel installed than the one running", () => {
+		const newer = assess(
+			"touch /boot/vmlinuz-$(uname -r) /boot/vmlinuz-99.0.0-1-amd64",
+		);
+		expect(newer?.os).toMatchObject({ id: "debian", version: "12" });
+		expect(newer?.supported).toBe(true);
+		expect(newer?.rebootRequired).toBe(true);
+	}, 120_000);
+
+	it("reports nothing when the running kernel is the newest, or not in /boot", () => {
+		expect(assess("touch /boot/vmlinuz-$(uname -r)")?.rebootRequired).toBe(
+			false,
+		);
+		expect(assess("touch /boot/vmlinuz-1.0.0-1-amd64")?.rebootRequired).toBe(
+			false,
+		);
+	}, 120_000);
+});

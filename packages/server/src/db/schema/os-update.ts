@@ -214,6 +214,13 @@ export const osUpdateRuns = pgTable(
 			.where(
 				sql`${table.status} = 'running' AND ${table.trigger} = 'schedule'`,
 			),
+		// One Install now queued or running per server, even for two
+		// requests at the same instant.
+		uniqueIndex("os_update_run_manual_active_unique")
+			.on(table.serverId)
+			.where(
+				sql`${table.trigger} = 'manual' AND ${table.status} IN ('pending', 'running')`,
+			),
 	],
 );
 
@@ -288,6 +295,11 @@ export const apiUpdateOsUpdateConfiguration =
 
 export const apiFindOsUpdateConfiguration = z.object({
 	osUpdateConfigurationId: z.string().min(1),
+});
+
+export const apiSetOsUpdateConfigurationEnabled = z.object({
+	osUpdateConfigurationId: z.string().min(1),
+	enabled: z.boolean(),
 });
 
 export const apiOsUpdateServer = z.object({ serverId: z.string().min(1) });

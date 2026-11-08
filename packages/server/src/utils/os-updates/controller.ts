@@ -33,6 +33,7 @@ import { and, asc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { loggableError } from "../github-runners/errors";
 import { type NodeSession, openNodeSession } from "../github-runners/ssh";
 import {
+	listNames,
 	type OsUpdateNotice,
 	sendOsUpdateNotifications,
 } from "../notifications/os-updates";
@@ -270,12 +271,21 @@ const saveAssessment = (serverId: string, assessment: ServerAssessment) =>
 		})
 		.where(eq(osUpdateServers.serverId, serverId));
 
+/** A server held by another OS update script is asked again after this. */
+const BUSY_RETRY_MS = 60_000;
+export const BUSY_MESSAGE =
+	"Another Dokploy OS update script runs on the server: checked again in a minute";
+
 /** Assesses a server now (refreshing its package lists). */
 export const assessServer = async (serverId: string) => {
 	if (state.assessing.has(serverId)) return;
 	state.assessing.add(serverId);
 	const at = new Date().toISOString();
 	try {
+		const before = await db.query.osUpdateServers.findFirst({
+			where: eq(osUpdateServers.serverId, serverId),
+			columns: { assessmentRequestedAt: true },
+		});
 		await db
 			.update(osUpdateServers)
 			.set({ assessmentTriedAt: at, assessmentRequestedAt: null })
@@ -288,7 +298,17 @@ export const assessServer = async (serverId: string) => {
 				label: "Assessment",
 				timeoutMs: 6 * 60_000,
 			});
-			if (stdout.trim() === "busy") return;
+			if (stdout.trim() === "busy") {
+				// Said, and a Check now stays asked: the next try comes in a minute.
+				await db
+					.update(osUpdateServers)
+					.set({
+						assessmentError: BUSY_MESSAGE,
+						assessmentRequestedAt: before?.assessmentRequestedAt ?? null,
+					})
+					.where(eq(osUpdateServers.serverId, serverId));
+				return;
+			}
 			const assessment = parseAssessment(stdout);
 			if (!assessment) throw new Error("the server sent no readable report");
 			await saveAssessment(serverId, assessment);
@@ -310,6 +330,7 @@ export const assessServer = async (serverId: string) => {
 const assessDueServers = async (now: Date, busy: Set<string>) => {
 	const day = new Date(now.getTime() - ASSESS_EVERY_MS).toISOString();
 	const retry = new Date(now.getTime() - ASSESS_RETRY_MS).toISOString();
+	const busyRetry = new Date(now.getTime() - BUSY_RETRY_MS).toISOString();
 	const rows = await db.query.osUpdateServers.findMany({
 		with: { server: { columns: { serverStatus: true } } },
 	});
@@ -318,7 +339,11 @@ const assessDueServers = async (now: Date, busy: Set<string>) => {
 			row.server?.serverStatus === "active" &&
 			!busy.has(row.serverId) &&
 			!state.assessing.has(row.serverId) &&
-			(row.assessmentRequestedAt !== null ||
+			((row.assessmentRequestedAt !== null &&
+				// Asked after the last try, or a minute after a busy server.
+				(!row.assessmentTriedAt ||
+					row.assessmentTriedAt < row.assessmentRequestedAt ||
+					row.assessmentTriedAt < busyRetry)) ||
 				(row.periodicAssessment &&
 					(!row.assessedAt || row.assessedAt < day) &&
 					(!row.assessmentTriedAt || row.assessmentTriedAt < retry))),
@@ -433,14 +458,17 @@ const planConfiguration = async (
 		.returning({ serverId: osUpdateRuns.serverId });
 	if (!missed.length) return;
 	const recorded = new Set(missed.map((item) => item.serverId));
-	const names = concerned
-		.filter((row) => recorded.has(row.serverId))
-		.map((row) => row.server?.name ?? row.serverId);
+	// A configuration may hold many servers: the notice names a few.
+	const names = listNames(
+		concerned
+			.filter((row) => recorded.has(row.serverId))
+			.map((row) => row.server?.name ?? row.serverId),
+	);
 	notify(configuration.organizationId, {
 		event: "missed",
 		title: `Maintenance window missed: ${configuration.name}`,
-		message: `No Dokploy ran during the window of ${previous.start.toISOString().slice(0, 16).replace("T", " ")} UTC, so ${names.join(", ")} did not install their OS updates. They install them in the next window, or use Install now.`,
-		server: names.join(", "),
+		message: `No Dokploy ran during the window of ${previous.start.toISOString().slice(0, 16).replace("T", " ")} UTC, so ${names} did not install their OS updates. They install them in the next window, or use Install now.`,
+		server: names,
 		configuration: configuration.name,
 		at: now,
 	});
@@ -464,7 +492,14 @@ export const skipClosedOsUpdateRuns = async (now: Date) => {
 
 // ------------------------------------------------------------- runs
 
-const claimRun = async (run: OsUpdateRun, settings: OsUpdateSettings) => {
+export const isUniqueViolation = (error: unknown) =>
+	(error as { cause?: { code?: string } }).cause?.code === "23505" ||
+	(error as { code?: string }).code === "23505";
+
+export const claimRun = async (
+	run: Pick<OsUpdateRun, "osUpdateRunId" | "startedAt">,
+	settings: OsUpdateSettings,
+) => {
 	try {
 		const rows = await db
 			.update(osUpdateRuns)
@@ -484,9 +519,11 @@ const claimRun = async (run: OsUpdateRun, settings: OsUpdateSettings) => {
 			)
 			.returning({ id: osUpdateRuns.osUpdateRunId });
 		return rows.length > 0;
-	} catch {
+	} catch (error) {
 		// Another run took the server or the configuration meanwhile.
-		return false;
+		if (isUniqueViolation(error)) return false;
+		// Anything else stops the tick, which logs it (loggableError).
+		throw error;
 	}
 };
 
@@ -614,15 +651,24 @@ const resumeOrphanedRuns = async (busyServers: Set<string>) => {
 		.returning({
 			id: osUpdateRuns.osUpdateRunId,
 			serverId: osUpdateRuns.serverId,
+			organizationId: osUpdateRuns.organizationId,
+			configurationId: osUpdateRuns.osUpdateConfigurationId,
 			attempts: osUpdateRuns.attempts,
 		});
 	for (const row of rows) busyServers.add(row.serverId);
 	await Promise.all(
 		rows.map(async (row) => {
 			if (row.attempts > MAX_ATTEMPTS) {
-				await finishRun(row.id, {
-					status: "failed",
-					message: `Dokploy stopped during this run ${MAX_ATTEMPTS} times: given up. Check the server, then use Install now.`,
+				const message = `Dokploy stopped during this run ${MAX_ATTEMPTS} times: given up. Check the server, then use Install now.`;
+				await finishRun(row.id, { status: "failed", message });
+				const names = await namesOf(row.serverId, row.configurationId);
+				notify(row.organizationId, {
+					event: "failed",
+					title: `OS updates failed on ${names.server}`,
+					message,
+					server: names.server,
+					configuration: names.configuration,
+					at: new Date(),
 				});
 				return;
 			}
@@ -633,6 +679,26 @@ const resumeOrphanedRuns = async (busyServers: Set<string>) => {
 			launch(row.id);
 		}),
 	);
+};
+
+/** The names a notice shows: the server's, and its configuration's. */
+const namesOf = async (serverId: string, configurationId: string | null) => {
+	const [target, configuration] = await Promise.all([
+		loadServer(serverId),
+		configurationId
+			? db.query.osUpdateConfigurations.findFirst({
+					where: eq(
+						osUpdateConfigurations.osUpdateConfigurationId,
+						configurationId,
+					),
+					columns: { name: true },
+				})
+			: null,
+	]);
+	return {
+		server: target?.name ?? serverId,
+		configuration: configuration?.name ?? null,
+	};
 };
 
 const launch = (runId: string) => {
@@ -1104,7 +1170,7 @@ const executeRun = async (runId: string) => {
 				const check = swarmRebootCheck(parseSwarmManagers(stdout));
 				if (!check.safe) {
 					await complete(
-						`${plural(changes.length, "package")} updated; not rebooted: ${check.reason}. Reboot it once the Swarm is healthy, or wait for the next window.`,
+						`${plural(changes.length, "package")} updated; not rebooted: ${check.reason}. Reboot it by hand when the Swarm can spare it.`,
 					);
 					return;
 				}

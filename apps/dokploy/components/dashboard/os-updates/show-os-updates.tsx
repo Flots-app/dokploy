@@ -58,13 +58,17 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/utils/api";
 import { errorText } from "../github-runners/format";
+import { ConfirmChange } from "./confirm-change";
 import {
+	browserTimeZone,
 	CLASSIFICATION_LABELS,
 	dateText,
 	type OsUpdateConfigurationRow,
 	type OsUpdateServerRow,
+	openWindowWarning,
 	REBOOT_LABELS,
 	RUN_STATUS,
+	zonedDateText,
 } from "./format";
 import { HandleConfiguration } from "./handle-configuration";
 import { InstallNowDialog } from "./install-now";
@@ -90,7 +94,7 @@ const PendingPackagesDialog = ({
 				<DialogHeader>
 					<DialogTitle>Pending updates of {server.name}</DialogTitle>
 					<DialogDescription>
-						As of the last assessment ({dateText(server.assessedAt)}).
+						As of the last assessment ({zonedDateText(server.assessedAt)}).
 					</DialogDescription>
 				</DialogHeader>
 				{packages.length === 0 ? (
@@ -186,6 +190,7 @@ const AssessmentCell = ({ server }: { server: OsUpdateServerRow }) => {
 		return (
 			<span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
 				<Loader2 className="size-3 animate-spin" /> Checking
+				{server.assessmentError ? ` (${server.assessmentError})` : ""}
 			</span>
 		);
 	}
@@ -329,52 +334,77 @@ const AssignSelect = ({
 }) => {
 	const utils = api.useUtils();
 	const assign = api.osUpdate.assign.useMutation();
+	// A configuration whose window is open: confirmed first.
+	const [pending, setPending] = useState<{
+		value: string;
+		warning: string;
+	} | null>(null);
+	const save = async (value: string) => {
+		try {
+			await assign.mutateAsync({
+				serverId: server.serverId,
+				osUpdateConfigurationId: value === NONE ? null : value,
+			});
+			await utils.osUpdate.overview.invalidate();
+		} catch (error) {
+			toast.error(errorText(error, "The server could not be assigned"));
+		}
+	};
 	return (
-		<Select
-			value={server.configuration?.osUpdateConfigurationId ?? NONE}
-			disabled={disabled || assign.isPending}
-			onValueChange={async (value) => {
-				try {
-					await assign.mutateAsync({
-						serverId: server.serverId,
-						osUpdateConfigurationId: value === NONE ? null : value,
-					});
-					await utils.osUpdate.overview.invalidate();
-				} catch (error) {
-					toast.error(errorText(error, "The server could not be assigned"));
-				}
-			}}
-		>
-			<SelectTrigger
-				className="h-8 w-44"
-				aria-label={`Schedule of ${server.name}`}
+		<>
+			<Select
+				value={server.configuration?.osUpdateConfigurationId ?? NONE}
+				disabled={disabled || assign.isPending}
+				onValueChange={(value) => {
+					const target = configurations.find(
+						(item) => item.osUpdateConfigurationId === value,
+					);
+					const warning = target?.enabled
+						? openWindowWarning(target.schedule)
+						: null;
+					if (warning) setPending({ value, warning });
+					else void save(value);
+				}}
 			>
-				<SelectValue />
-			</SelectTrigger>
-			<SelectContent>
-				<SelectItem value={NONE}>No schedule</SelectItem>
-				{configurations.map((configuration) => (
-					<SelectItem
-						key={configuration.osUpdateConfigurationId}
-						value={configuration.osUpdateConfigurationId}
-					>
-						{configuration.name}
-					</SelectItem>
-				))}
-			</SelectContent>
-		</Select>
+				<SelectTrigger
+					className="h-8 w-44"
+					aria-label={`Schedule of ${server.name}`}
+				>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					<SelectItem value={NONE}>No schedule</SelectItem>
+					{configurations.map((configuration) => (
+						<SelectItem
+							key={configuration.osUpdateConfigurationId}
+							value={configuration.osUpdateConfigurationId}
+						>
+							{configuration.name}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+			<ConfirmChange
+				message={
+					pending ? `${server.name} joins it now. ${pending.warning}` : null
+				}
+				onConfirm={() => {
+					if (pending) void save(pending.value);
+				}}
+				onCancel={() => setPending(null)}
+			/>
+		</>
 	);
 };
 
-const windowText = (
-	window: {
-		open: { end: string } | null;
-		next: { start: string } | null;
-	} | null,
-) => {
-	if (!window) return "—";
-	if (window.open) return `open until ${dateText(window.open.end)}`;
-	return window.next ? dateText(window.next.start) : "—";
+/** In the schedule's own time zone, said. */
+const windowText = (configuration: OsUpdateServerRow["configuration"]) => {
+	if (!configuration) return "—";
+	if (!configuration.enabled) return "configuration disabled";
+	const { window, timeZone } = configuration;
+	if (window.open)
+		return `open until ${zonedDateText(window.open.end, timeZone)}`;
+	return window.next ? zonedDateText(window.next.start, timeZone) : "—";
 };
 
 const ServersTable = ({
@@ -396,6 +426,7 @@ const ServersTable = ({
 			</div>
 		);
 	}
+	const zone = browserTimeZone();
 	return (
 		<div className="overflow-x-auto rounded-lg border">
 			<Table>
@@ -405,7 +436,7 @@ const ServersTable = ({
 						<TableHead>Updates</TableHead>
 						<TableHead>Schedule</TableHead>
 						<TableHead>Next window</TableHead>
-						<TableHead>Last run</TableHead>
+						<TableHead>Last run ({zone})</TableHead>
 						<TableHead />
 					</TableRow>
 				</TableHeader>
@@ -438,9 +469,7 @@ const ServersTable = ({
 									/>
 								</TableCell>
 								<TableCell className="text-xs">
-									{server.configuration && !server.configuration.enabled
-										? "configuration disabled"
-										: windowText(server.configuration?.window ?? null)}
+									{windowText(server.configuration)}
 								</TableCell>
 								<TableCell>
 									{last ? (
@@ -451,6 +480,7 @@ const ServersTable = ({
 											<span className="text-muted-foreground">
 												{dateText(
 													last.finishedAt ?? last.startedAt ?? last.createdAt,
+													zone,
 												)}
 											</span>
 										</span>
@@ -487,30 +517,25 @@ const ConfigurationCard = ({
 	canDelete: boolean;
 }) => {
 	const utils = api.useUtils();
-	const update = api.osUpdate.updateConfiguration.useMutation();
+	const setEnabled = api.osUpdate.setEnabled.useMutation();
 	const remove = api.osUpdate.removeConfiguration.useMutation();
 	const [editing, setEditing] = useState(false);
+	// Enabling while its window is open starts installs: confirmed first.
+	const [warning, setWarning] = useState<string | null>(null);
 	const toggle = async (enabled: boolean) => {
 		try {
-			await update.mutateAsync({
+			await setEnabled.mutateAsync({
 				osUpdateConfigurationId: configuration.osUpdateConfigurationId,
-				name: configuration.name,
-				description: configuration.description,
 				enabled,
-				schedule: configuration.schedule,
-				classification: configuration.classification,
-				includePackages: configuration.includePackages,
-				excludePackages: configuration.excludePackages,
-				reboot: configuration.reboot,
-				allowDockerUpdates: configuration.allowDockerUpdates,
-				notifyOnSuccess: configuration.notifyOnSuccess,
-				serverIds: configuration.servers.map((server) => server.serverId),
 			});
 			await utils.osUpdate.overview.invalidate();
 		} catch (error) {
 			toast.error(errorText(error, "The configuration was not saved"));
 		}
 	};
+	const zone = configuration.schedule.timeZone;
+	const hasServers =
+		configuration.servers.length + configuration.hiddenServers > 0;
 	const filters = [
 		configuration.includePackages.length
 			? `only ${configuration.includePackages.join(", ")}`
@@ -540,9 +565,16 @@ const ConfigurationCard = ({
 						<>
 							<Switch
 								checked={configuration.enabled}
-								disabled={update.isPending}
-								aria-label={configuration.enabled ? "Disable" : "Enable"}
-								onCheckedChange={toggle}
+								disabled={setEnabled.isPending}
+								aria-label={`${configuration.name} enabled`}
+								onCheckedChange={(enabled) => {
+									const open =
+										enabled && hasServers
+											? openWindowWarning(configuration.schedule)
+											: null;
+									if (open) setWarning(open);
+									else void toggle(enabled);
+								}}
 							/>
 							<Button
 								size="icon"
@@ -600,16 +632,23 @@ const ConfigurationCard = ({
 				</div>
 				<p className="text-muted-foreground">
 					{configuration.window.open
-						? `Window open until ${dateText(configuration.window.open.end)}`
+						? `Window open until ${zonedDateText(configuration.window.open.end, zone)}`
 						: configuration.window.next
-							? `Next window: ${dateText(configuration.window.next.start)} to ${dateText(configuration.window.next.end)}`
+							? `Next window: ${dateText(configuration.window.next.start, zone)} to ${zonedDateText(configuration.window.next.end, zone)}`
 							: "No upcoming window"}
 					{" · "}
 					{configuration.servers.length
 						? configuration.servers.map((server) => server.name).join(", ")
 						: "no server"}
+					{configuration.hiddenServers > 0 &&
+						`, and ${configuration.hiddenServers} server${configuration.hiddenServers === 1 ? "" : "s"} you cannot access`}
 				</p>
 			</CardContent>
+			<ConfirmChange
+				message={warning}
+				onConfirm={() => void toggle(true)}
+				onCancel={() => setWarning(null)}
+			/>
 			<HandleConfiguration
 				configuration={configuration}
 				servers={servers}

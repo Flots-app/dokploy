@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "os_update_run_manual_active_unique" ON "os_update_run" USING btree ("serverId") WHERE "os_update_run"."trigger" = 'manual' AND "os_update_run"."status" IN ('pending', 'running');

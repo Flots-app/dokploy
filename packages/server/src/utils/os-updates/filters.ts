@@ -56,13 +56,37 @@ export const DEFAULT_OS_UPDATE_SETTINGS: OsUpdateSettings = {
 	allowDockerUpdates: false,
 };
 
-const regexOf = (pattern: string) =>
-	new RegExp(
-		`^${pattern
-			.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-			.replace(/\*/g, ".*")
-			.replace(/\?/g, ".")}$`,
-	);
+/**
+ * Glob matching without a RegExp: a regular expression built from "*?*?…"
+ * backtracks exponentially. On a mismatch after a `*`, only the last `*`
+ * takes one more character, so the work is at most the product of the
+ * lengths (100 × a package name).
+ */
+export const globMatches = (text: string, pattern: string) => {
+	let t = 0;
+	let p = 0;
+	let star = -1;
+	let resume = 0;
+	while (t < text.length) {
+		const symbol = pattern[p];
+		if (symbol === "*") {
+			star = p;
+			resume = t;
+			p += 1;
+		} else if (p < pattern.length && (symbol === "?" || symbol === text[t])) {
+			p += 1;
+			t += 1;
+		} else if (star !== -1) {
+			p = star + 1;
+			resume += 1;
+			t = resume;
+		} else {
+			return false;
+		}
+	}
+	while (pattern[p] === "*") p += 1;
+	return p === pattern.length;
+};
 
 /**
  * Whether a package matches a pattern. A pattern without an architecture
@@ -70,7 +94,7 @@ const regexOf = (pattern: string) =>
  */
 export const matchesPattern = (name: string, pattern: string) => {
 	const target = pattern.includes(":") ? name : (name.split(":")[0] ?? name);
-	return regexOf(pattern).test(target);
+	return globMatches(target, pattern);
 };
 
 const matchesAny = (name: string, patterns: string[]) =>

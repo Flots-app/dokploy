@@ -3,16 +3,20 @@ import {
 	cancelOsUpdateRun,
 	createOsUpdateConfiguration,
 	findOsUpdateRun,
+	getAccessibleServerIds,
 	IS_CLOUD,
 	installOsUpdatesNow,
 	listOsUpdateConfigurations,
 	listOsUpdateRuns,
 	listOsUpdateServers,
+	type OsUpdateAccess,
 	removeOsUpdateConfiguration,
 	requestOsUpdateAssessment,
+	setOsUpdateConfigurationEnabled,
 	setOsUpdatePeriodicAssessment,
 	updateOsUpdateConfiguration,
 } from "@dokploy/server";
+import { checkPermission } from "@dokploy/server/services/permission";
 import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, withPermission } from "@/server/api/trpc";
 import { audit } from "@/server/api/utils/audit";
@@ -25,6 +29,7 @@ import {
 	apiListOsUpdateRuns,
 	apiOsUpdateServer,
 	apiSetOsUpdateAssessment,
+	apiSetOsUpdateConfigurationEnabled,
 	apiUpdateOsUpdateConfiguration,
 } from "@/server/db/schema";
 
@@ -50,26 +55,41 @@ const remove = guard("delete");
 /** Runs commands as root on a server: Check now and Install now. */
 const run = guard("run");
 
+/**
+ * What the member may reach: the servers of their access (a member may be
+ * limited to some), and osUpdate.run, which every change that makes servers
+ * run apt as root needs on top of its own right (the service tells when).
+ */
+const accessOf = async (
+	ctx: Parameters<typeof checkPermission>[0] & {
+		session: { userId: string; activeOrganizationId: string };
+	},
+): Promise<OsUpdateAccess> => ({
+	organizationId: ctx.session.activeOrganizationId,
+	serverIds: await getAccessibleServerIds(ctx.session),
+	requireRun: () => checkPermission(ctx, { osUpdate: ["run"] }),
+});
+
 export const osUpdateRouter = createTRPCRouter({
 	overview: read.query(async ({ ctx }) => {
-		const organizationId = ctx.session.activeOrganizationId;
+		const access = await accessOf(ctx);
 		const [servers, configurations] = await Promise.all([
-			listOsUpdateServers(organizationId),
-			listOsUpdateConfigurations(organizationId),
+			listOsUpdateServers(access),
+			listOsUpdateConfigurations(access),
 		]);
 		return { servers, configurations };
 	}),
 
 	runs: read
 		.input(apiListOsUpdateRuns)
-		.query(({ input, ctx }) =>
-			listOsUpdateRuns(input, ctx.session.activeOrganizationId),
+		.query(async ({ input, ctx }) =>
+			listOsUpdateRuns(input, await accessOf(ctx)),
 		),
 
 	run: read
 		.input(apiFindOsUpdateRun)
-		.query(({ input, ctx }) =>
-			findOsUpdateRun(input.osUpdateRunId, ctx.session.activeOrganizationId),
+		.query(async ({ input, ctx }) =>
+			findOsUpdateRun(input.osUpdateRunId, await accessOf(ctx)),
 		),
 
 	createConfiguration: create
@@ -77,7 +97,7 @@ export const osUpdateRouter = createTRPCRouter({
 		.mutation(async ({ input, ctx }) => {
 			const configuration = await createOsUpdateConfiguration(
 				input,
-				ctx.session.activeOrganizationId,
+				await accessOf(ctx),
 			);
 			await audit(ctx, {
 				action: "create",
@@ -100,7 +120,7 @@ export const osUpdateRouter = createTRPCRouter({
 		.mutation(async ({ input, ctx }) => {
 			const configuration = await updateOsUpdateConfiguration(
 				input,
-				ctx.session.activeOrganizationId,
+				await accessOf(ctx),
 			);
 			await audit(ctx, {
 				action: "update",
@@ -121,12 +141,30 @@ export const osUpdateRouter = createTRPCRouter({
 			return configuration;
 		}),
 
+	/** On or off only: the form's other fields may be stale. */
+	setEnabled: update
+		.input(apiSetOsUpdateConfigurationEnabled)
+		.mutation(async ({ input, ctx }) => {
+			const configuration = await setOsUpdateConfigurationEnabled(
+				input,
+				await accessOf(ctx),
+			);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "osUpdate",
+				resourceId: configuration.osUpdateConfigurationId,
+				resourceName: configuration.name,
+				metadata: { enabled: configuration.enabled },
+			});
+			return configuration;
+		}),
+
 	removeConfiguration: remove
 		.input(apiFindOsUpdateConfiguration)
 		.mutation(async ({ input, ctx }) => {
 			const configuration = await removeOsUpdateConfiguration(
 				input.osUpdateConfigurationId,
-				ctx.session.activeOrganizationId,
+				await accessOf(ctx),
 			);
 			await audit(ctx, {
 				action: "delete",
@@ -142,7 +180,7 @@ export const osUpdateRouter = createTRPCRouter({
 		.mutation(async ({ input, ctx }) => {
 			const { server, configuration } = await assignOsUpdateConfiguration(
 				input,
-				ctx.session.activeOrganizationId,
+				await accessOf(ctx),
 			);
 			await audit(ctx, {
 				action: "update",
@@ -159,7 +197,7 @@ export const osUpdateRouter = createTRPCRouter({
 		.mutation(async ({ input, ctx }) => {
 			const server = await setOsUpdatePeriodicAssessment(
 				input,
-				ctx.session.activeOrganizationId,
+				await accessOf(ctx),
 			);
 			await audit(ctx, {
 				action: "update",
@@ -174,7 +212,7 @@ export const osUpdateRouter = createTRPCRouter({
 	checkNow: run.input(apiOsUpdateServer).mutation(async ({ input, ctx }) => {
 		const server = await requestOsUpdateAssessment(
 			input.serverId,
-			ctx.session.activeOrganizationId,
+			await accessOf(ctx),
 		);
 		await audit(ctx, {
 			action: "run",
@@ -191,7 +229,7 @@ export const osUpdateRouter = createTRPCRouter({
 		.mutation(async ({ input, ctx }) => {
 			const { run: queued, server } = await installOsUpdatesNow(
 				input,
-				ctx.session.activeOrganizationId,
+				await accessOf(ctx),
 				ctx.user.email,
 			);
 			await audit(ctx, {
@@ -205,15 +243,20 @@ export const osUpdateRouter = createTRPCRouter({
 		}),
 
 	cancelRun: run.input(apiFindOsUpdateRun).mutation(async ({ input, ctx }) => {
-		const cancelled = await cancelOsUpdateRun(
+		const { run: cancelled, server } = await cancelOsUpdateRun(
 			input.osUpdateRunId,
-			ctx.session.activeOrganizationId,
+			await accessOf(ctx),
 		);
 		await audit(ctx, {
 			action: "cancel",
 			resourceType: "osUpdate",
-			resourceId: cancelled.osUpdateRunId,
-			resourceName: cancelled.serverId,
+			resourceId: server.serverId,
+			resourceName: server.name,
+			metadata: {
+				run: cancelled.osUpdateRunId,
+				trigger: cancelled.trigger,
+				windowStart: cancelled.windowStart,
+			},
 		});
 		return { ok: true };
 	}),
