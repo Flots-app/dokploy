@@ -67,23 +67,50 @@ export const dateText = (
 	return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}`;
 };
 
+/**
+ * When a run ran: "2026-11-08 14:31 → 14:32", the end's day only when it
+ * differs. "—" for a run that never started (cancelled, missed).
+ */
+export const periodText = (
+	start: string | null | undefined,
+	end: string | null | undefined,
+	timeZone = browserTimeZone(),
+) => {
+	if (!start) return "—";
+	const from = dateText(start, timeZone);
+	if (!end) return from;
+	const to = dateText(end, timeZone);
+	return `${from} → ${to.slice(0, 10) === from.slice(0, 10) ? to.slice(11) : to}`;
+};
+
 /** A date and the zone it is shown in: "2026-11-08 02:00 (Europe/Paris)". */
 export const zonedDateText = (
 	iso: string | null | undefined,
 	timeZone = browserTimeZone(),
 ) => (iso ? `${dateText(iso, timeZone)} (${timeZone})` : "—");
 
+/** How a window's installs end, by the reboot setting. */
+const REBOOT_OUTCOME: Record<keyof typeof REBOOT_LABELS, string> = {
+	"if-required": ", and may reboot",
+	never: " (no reboot)",
+	always: ", then reboot",
+};
+
 /**
  * Said before a change that makes servers install while a window of the
  * schedule is open: they start within a minute, not at the next window.
  * Null when no window is open (or the schedule is not valid yet).
  */
-export const openWindowWarning = (schedule: unknown, now = new Date()) => {
+export const openWindowWarning = (
+	schedule: unknown,
+	reboot: keyof typeof REBOOT_LABELS,
+	now = new Date(),
+) => {
 	const parsed = osUpdateScheduleSchema.safeParse(schedule);
 	if (!parsed.success) return null;
 	const open = openWindow(parsed.data, now);
 	return open
-		? `Its maintenance window is open now, until ${zonedDateText(open.end.toISOString(), parsed.data.timeZone)}: the servers start installing their updates within a minute, and may reboot.`
+		? `Its maintenance window is open now, until ${zonedDateText(open.end.toISOString(), parsed.data.timeZone)}: the servers start installing their updates within a minute${REBOOT_OUTCOME[reboot]}.`
 		: null;
 };
 

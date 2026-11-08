@@ -228,23 +228,31 @@ prefs="$dir/preferences"
 if [ -r /etc/apt/preferences ]; then cat /etc/apt/preferences >"$prefs"; else : >"$prefs"; fi
 # Fails closed: without the simulation, nothing would be pinned.
 simulated=$(${APT_SIMULATE} --with-new-pkgs upgrade) || { echo "error: apt could not simulate the upgrade"; exit 1; }
+# Updates only in the counts: a new package (no installed version) comes
+# with the update that needs it, or not at all.
 held=0
+refused=0
+allowed_updates=0
 while read -r kind name rest; do
 	[ "$kind" = Inst ] || continue
 	base=\${name%%:*}
 	[[ "$base" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || { echo "error: unexpected package name $base"; exit 1; }
-	[ -z "\${allow[$base]:-}" ] || continue
+	if [ -n "\${allow[$base]:-}" ]; then
+		if [[ "$rest" == "["* ]]; then allowed_updates=$((allowed_updates + 1)); fi
+		continue
+	fi
 	if [[ "$rest" =~ ^\[([A-Za-z0-9.+~:-]+)\] ]]; then
 		printf 'Package: %s\nPin: version %s\nPin-Priority: 1001\n\n' "$base" "\${BASH_REMATCH[1]}" >>"$prefs"
+		held=$((held + 1))
 	else
 		printf 'Package: %s\nPin: version *\nPin-Priority: -1\n\n' "$base" >>"$prefs"
+		refused=$((refused + 1))
 	fi
-	held=$((held + 1))
 done <<<"$simulated"
 installed() { dpkg-query -W -f='\${binary:Package} \${Version} \${db:Status-Abbrev}\n' | awk '$3 ~ /^.i/ { print $1, $2 }' | sort; }
 installed >"$dir/before"
 docker_before=$(systemctl show -p MainPID --value docker 2>/dev/null || true)
-echo "==> Installing the selected updates (${names.length} allowed, $held other pending update(s) held at their version)"
+echo "==> Installing the selected updates ($allowed_updates allowed, $held other pending update(s) held at their version$([ "$refused" = 0 ] || echo ", $refused new package(s) not allowed"))"
 upgrade=0
 $apt -o Dir::Etc::Preferences="$prefs" -y -q --with-new-pkgs upgrade || upgrade=$?
 # What changed is recorded even when apt stopped halfway.

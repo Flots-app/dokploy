@@ -26,6 +26,7 @@ import {
 	cancelRunText,
 	dateText,
 	type OsUpdateRunRow,
+	periodText,
 	REBOOT_LABELS,
 	RUN_STATUS,
 	zonedDateText,
@@ -111,10 +112,11 @@ const ChangedPackages = ({ packages }: { packages: RunDetail["packages"] }) => (
 									/>
 								)}
 							</TableCell>
-							<TableCell className="font-mono text-xs">
+							{/* Long Debian versions wrap instead of being cut off. */}
+							<TableCell className="font-mono text-xs whitespace-normal break-all">
 								{item.from ?? "new"}
 							</TableCell>
-							<TableCell className="font-mono text-xs">
+							<TableCell className="font-mono text-xs whitespace-normal break-all">
 								{item.to ?? "removed"}
 							</TableCell>
 						</TableRow>
@@ -151,9 +153,15 @@ const RunDetails = ({ runId }: { runId: string }) => {
 		<div className="grid gap-4 text-sm">
 			<RunSummary run={data} />
 			{data.packages.length > 0 && <ChangedPackages packages={data.packages} />}
-			<pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs">
-				{data.log || "No log yet."}
-			</pre>
+			<div className="grid gap-2">
+				{/* The server writes the log: its times are UTC, not the zone above. */}
+				<p className="font-medium">
+					Log <span className="font-normal text-muted-foreground">(UTC)</span>
+				</p>
+				<pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs">
+					{data.log || "No log yet."}
+				</pre>
+			</div>
 		</div>
 	);
 };
@@ -251,8 +259,7 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 							<TableHead>Server</TableHead>
 							<TableHead>Status</TableHead>
 							<TableHead>Trigger</TableHead>
-							<TableHead>Started ({zone})</TableHead>
-							<TableHead>Ended ({zone})</TableHead>
+							<TableHead>When ({zone})</TableHead>
 							<TableHead>Packages</TableHead>
 							<TableHead>Outcome</TableHead>
 							<TableHead />
@@ -278,21 +285,25 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 										</span>
 									</TableCell>
 									<TableCell className="text-xs text-muted-foreground">
-										{run.trigger === "manual"
-											? "Install now"
-											: (run.configurationName ?? "Schedule")}
+										<span className="block max-w-36 whitespace-normal">
+											{run.trigger === "manual"
+												? "Install now"
+												: (run.configurationName ?? "Schedule")}
+										</span>
 									</TableCell>
 									<TableCell className="text-xs">
-										{dateText(run.startedAt ?? run.windowStart, zone)}
-									</TableCell>
-									<TableCell className="text-xs">
-										{dateText(run.finishedAt, zone)}
+										{periodText(run.startedAt, run.finishedAt, zone)}
 									</TableCell>
 									<TableCell className="text-xs">
 										{run.packages.length || "—"}
 									</TableCell>
-									<TableCell className="max-w-80 truncate text-xs text-muted-foreground">
-										{run.message ?? ""}
+									<TableCell className="text-xs text-muted-foreground">
+										<span
+											className="line-clamp-2 block min-w-40 max-w-64 whitespace-normal"
+											title={run.message ?? undefined}
+										>
+											{run.message ?? ""}
+										</span>
 									</TableCell>
 									<TableCell>
 										<span className="flex items-center gap-1">

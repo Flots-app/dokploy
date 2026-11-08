@@ -8,7 +8,6 @@ import {
 	Pencil,
 	Plus,
 	RefreshCw,
-	ShieldAlert,
 	Trash2,
 } from "lucide-react";
 import { useState } from "react";
@@ -85,9 +84,13 @@ const PendingPackagesDialog = ({
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) => {
-	const packages = (server.assessment?.packages ?? []).filter(
-		(item) => item.from !== null,
-	);
+	// Security updates first: they are the ones a schedule installs by default.
+	const packages = (server.assessment?.packages ?? [])
+		.filter((item) => item.from !== null)
+		.sort(
+			(a, b) =>
+				Number(b.security) - Number(a.security) || a.name.localeCompare(b.name),
+		);
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
@@ -126,13 +129,14 @@ const PendingPackagesDialog = ({
 												</Badge>
 											)}
 										</TableCell>
-										<TableCell className="font-mono text-xs">
+										{/* Long Debian versions wrap instead of pushing From out. */}
+										<TableCell className="font-mono text-xs whitespace-normal break-all">
 											{item.from}
 										</TableCell>
-										<TableCell className="font-mono text-xs">
+										<TableCell className="font-mono text-xs whitespace-normal break-all">
 											{item.to}
 										</TableCell>
-										<TableCell className="text-xs text-muted-foreground">
+										<TableCell className="min-w-40 text-xs whitespace-normal text-muted-foreground">
 											{item.origins}
 										</TableCell>
 									</TableRow>
@@ -196,7 +200,12 @@ const AssessmentCell = ({ server }: { server: OsUpdateServerRow }) => {
 	}
 	if (!assessment) {
 		return server.assessmentError ? (
-			<span className="text-xs text-destructive">{server.assessmentError}</span>
+			<span
+				className="line-clamp-3 text-xs text-destructive"
+				title={server.assessmentError}
+			>
+				{server.assessmentError}
+			</span>
 		) : (
 			<span className="text-xs text-muted-foreground">Not checked yet</span>
 		);
@@ -253,7 +262,7 @@ const ServerActions = ({
 						<MoreHorizontal className="size-4" />
 					</Button>
 				</DropdownMenuTrigger>
-				<DropdownMenuContent align="end">
+				<DropdownMenuContent align="end" className="w-52">
 					{canRun && (
 						<>
 							<DropdownMenuItem
@@ -360,15 +369,16 @@ const AssignSelect = ({
 						(item) => item.osUpdateConfigurationId === value,
 					);
 					const warning = target?.enabled
-						? openWindowWarning(target.schedule)
+						? openWindowWarning(target.schedule, target.reboot)
 						: null;
 					if (warning) setPending({ value, warning });
 					else void save(value);
 				}}
 			>
 				<SelectTrigger
-					className="h-8 w-44"
+					className="h-8 w-52"
 					aria-label={`Schedule of ${server.name}`}
+					title={server.configuration?.name}
 				>
 					<SelectValue />
 				</SelectTrigger>
@@ -397,14 +407,27 @@ const AssignSelect = ({
 	);
 };
 
-/** In the schedule's own time zone, said. */
-const windowText = (configuration: OsUpdateServerRow["configuration"]) => {
+/**
+ * In the schedule's own time zone, said. The date never breaks at its
+ * hyphens: a narrow cell wraps between the words only.
+ */
+const WindowText = ({
+	configuration,
+}: {
+	configuration: OsUpdateServerRow["configuration"];
+}) => {
 	if (!configuration) return "—";
 	if (!configuration.enabled) return "configuration disabled";
 	const { window, timeZone } = configuration;
-	if (window.open)
-		return `open until ${zonedDateText(window.open.end, timeZone)}`;
-	return window.next ? zonedDateText(window.next.start, timeZone) : "—";
+	const at = window.open ? window.open.end : window.next?.start;
+	if (!at) return "—";
+	return (
+		<>
+			{window.open && "open until "}
+			<span className="whitespace-nowrap">{dateText(at, timeZone)}</span>{" "}
+			<span className="text-muted-foreground">({timeZone})</span>
+		</>
+	);
 };
 
 const ServersTable = ({
@@ -458,8 +481,11 @@ const ServersTable = ({
 										{server.serverStatus === "inactive" ? " · inactive" : ""}
 									</span>
 								</TableCell>
-								<TableCell className="max-w-96 whitespace-normal">
-									<AssessmentCell server={server} />
+								<TableCell className="whitespace-normal">
+									{/* Wide enough for its badges and an error on a few lines. */}
+									<div className="min-w-60 max-w-96">
+										<AssessmentCell server={server} />
+									</div>
 								</TableCell>
 								<TableCell>
 									<AssignSelect
@@ -468,8 +494,8 @@ const ServersTable = ({
 										disabled={!canUpdate}
 									/>
 								</TableCell>
-								<TableCell className="text-xs">
-									{windowText(server.configuration)}
+								<TableCell className="min-w-36 text-xs whitespace-normal">
+									<WindowText configuration={server.configuration} />
 								</TableCell>
 								<TableCell>
 									{last ? (
@@ -570,7 +596,10 @@ const ConfigurationCard = ({
 								onCheckedChange={(enabled) => {
 									const open =
 										enabled && hasServers
-											? openWindowWarning(configuration.schedule)
+											? openWindowWarning(
+													configuration.schedule,
+													configuration.reboot,
+												)
 											: null;
 									if (open) setWarning(open);
 									else void toggle(enabled);
@@ -696,7 +725,7 @@ export const ShowOsUpdates = () => {
 							</Button>
 						)}
 					</CardHeader>
-					<CardContent className="grid gap-4">
+					<CardContent className="grid grid-cols-1 gap-4">
 						{error && (
 							<AlertBlock type="error">
 								{errorText(error, "The OS updates could not be loaded")}
@@ -708,7 +737,7 @@ export const ShowOsUpdates = () => {
 							</div>
 						)}
 						{data && (
-							<Tabs defaultValue="servers">
+							<Tabs defaultValue="servers" className="min-w-0">
 								<TabsList>
 									<TabsTrigger value="servers">Servers</TabsTrigger>
 									<TabsTrigger value="configurations">
@@ -716,7 +745,10 @@ export const ShowOsUpdates = () => {
 									</TabsTrigger>
 									<TabsTrigger value="history">History</TabsTrigger>
 								</TabsList>
-								<TabsContent value="servers" className="grid gap-3 pt-2">
+								<TabsContent
+									value="servers"
+									className="grid grid-cols-1 gap-3 pt-2"
+								>
 									{servers.some(
 										(server) =>
 											server.assessment?.packages.some(
@@ -724,11 +756,8 @@ export const ShowOsUpdates = () => {
 											) && !server.configuration,
 									) && (
 										<AlertBlock type="warning">
-											<span className="inline-flex items-center gap-1">
-												<ShieldAlert className="size-4" />
-												Some servers wait for security updates and have no
-												schedule.
-											</span>
+											Some servers wait for security updates and have no
+											schedule.
 										</AlertBlock>
 									)}
 									<ServersTable
@@ -738,7 +767,10 @@ export const ShowOsUpdates = () => {
 										canUpdate={canUpdate}
 									/>
 								</TabsContent>
-								<TabsContent value="configurations" className="grid gap-3 pt-2">
+								<TabsContent
+									value="configurations"
+									className="grid grid-cols-1 gap-3 pt-2"
+								>
 									{configurations.length === 0 ? (
 										<div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
 											No maintenance configuration yet. One says when its
@@ -757,7 +789,7 @@ export const ShowOsUpdates = () => {
 										))
 									)}
 								</TabsContent>
-								<TabsContent value="history" className="pt-2">
+								<TabsContent value="history" className="min-w-0 pt-2">
 									<RunHistory canRun={canRun} />
 								</TabsContent>
 							</Tabs>

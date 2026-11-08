@@ -3,6 +3,7 @@ import {
 	cancelRunText,
 	dateText,
 	openWindowWarning,
+	periodText,
 	REBOOT_LABELS,
 	zonedDateText,
 } from "@/components/dashboard/os-updates/format";
@@ -32,20 +33,47 @@ describe("OS updates page helpers", () => {
 		expect(dateText(null)).toBe("—");
 	});
 
+	it("show when a run ran, without a start it never had", () => {
+		const zone = "Europe/Paris";
+		expect(
+			periodText("2026-11-08T13:31:00Z", "2026-11-08T13:32:00Z", zone),
+		).toBe("2026-11-08 14:31 → 14:32");
+		expect(
+			periodText("2026-11-08T22:50:00Z", "2026-11-09T00:10:00Z", zone),
+		).toBe("2026-11-08 23:50 → 2026-11-09 01:10");
+		expect(periodText("2026-11-08T13:31:00Z", null, zone)).toBe(
+			"2026-11-08 14:31",
+		);
+		// A run cancelled before it started.
+		expect(periodText(null, "2026-11-08T13:40:00Z", zone)).toBe("—");
+	});
+
 	it("warn while a window is open: changes start installs within a minute", () => {
 		// Sunday 2026-11-08 03:00 in Paris.
-		const warning = openWindowWarning(
-			sundayNights,
-			new Date("2026-11-08T02:00:00Z"),
+		const sunday3am = new Date("2026-11-08T02:00:00Z");
+		expect(openWindowWarning(sundayNights, "if-required", sunday3am)).toMatch(
+			/open now, until 2026-11-08 05:00 \(Europe\/Paris\).*within a minute, and may reboot\.$/,
 		);
-		expect(warning).toMatch(
-			/open now, until 2026-11-08 05:00 \(Europe\/Paris\).*within a minute, and may reboot/,
+		// The reboot setting is said as it is, never "may reboot" for never.
+		expect(openWindowWarning(sundayNights, "never", sunday3am)).toMatch(
+			/within a minute \(no reboot\)\.$/,
+		);
+		expect(openWindowWarning(sundayNights, "always", sunday3am)).toMatch(
+			/within a minute, then reboot\.$/,
 		);
 		expect(
-			openWindowWarning(sundayNights, new Date("2026-11-08T05:00:00Z")),
+			openWindowWarning(
+				sundayNights,
+				"if-required",
+				new Date("2026-11-08T05:00:00Z"),
+			),
 		).toBeNull();
 		expect(
-			openWindowWarning({ ...sundayNights, weekdays: [] }, new Date()),
+			openWindowWarning(
+				{ ...sundayNights, weekdays: [] },
+				"if-required",
+				new Date(),
+			),
 		).toBeNull();
 	});
 

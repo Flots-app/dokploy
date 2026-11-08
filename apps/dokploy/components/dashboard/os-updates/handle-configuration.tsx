@@ -215,6 +215,8 @@ const ScheduleFields = ({
 							key={day.value}
 							variant="outline"
 							size="sm"
+							// The days picked read at a glance, not as a hover shade.
+							className="data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:hover:bg-primary/90 data-[state=on]:hover:text-primary-foreground"
 							pressed={value.weekdays.includes(day.value)}
 							onPressedChange={(pressed) =>
 								set({
@@ -442,7 +444,7 @@ const ConfigurationForm = ({
 	const warning =
 		draft.enabled &&
 		(draft.serverIds.length > 0 || (configuration?.hiddenServers ?? 0) > 0)
-			? openWindowWarning(draft.schedule)
+			? openWindowWarning(draft.schedule, draft.settings.reboot)
 			: null;
 
 	const save = async () => {

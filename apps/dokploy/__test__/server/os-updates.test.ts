@@ -841,7 +841,7 @@ dir=${dir}
 ${fakeAptGet}
 ${install.slice(start, end)}done <<<"$simulated"
 cat "$prefs"
-echo "held=$held"
+echo "held=$held refused=$refused allowed=$allowed_updates"
 `;
 			writeFileSync(
 				join(dir, "simulation"),
@@ -865,7 +865,8 @@ echo "held=$held"
 			// Allowed: libssl3t64, libc6 (any architecture), linux-image-generic.
 			expect(result.stdout).not.toContain("Package: libssl3t64\n");
 			expect(result.stdout).not.toContain("Package: libc6\n");
-			expect(result.stdout).toContain("held=4");
+			// Counts updates only: the new kernel image is refused, not held.
+			expect(result.stdout).toContain("held=3 refused=1 allowed=3");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

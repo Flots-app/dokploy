@@ -199,9 +199,13 @@ const loadServer = (serverId: string) =>
 
 /**
  * One SSH connection to a server, opened again after a failure: the server
- * may drop it (network, sshd restarted by an update, reboot).
+ * may drop it (network, sshd restarted by an update, reboot). `say` tells a
+ * run's log when the server stops answering, and when it answers again.
  */
-const connection = (server: ServerRow) => {
+const connection = (
+	server: ServerRow,
+	say?: (line: string) => Promise<void>,
+) => {
 	let session: NodeSession | null = null;
 	const open = async () => {
 		if (!server.sshKey?.privateKey) {
@@ -245,11 +249,22 @@ const connection = (server: ServerRow) => {
 		giveUpMs = UNREACHABLE_GIVE_UP_MS,
 	) => {
 		const giveUp = Date.now() + giveUpMs;
+		let told = false;
+		const tell = (line: string) => say?.(line).catch(() => undefined);
 		for (;;) {
 			try {
-				return await root(script, options);
+				const result = await root(script, options);
+				if (told) await tell(`${server.name} answers again`);
+				return result;
 			} catch (error) {
 				if (Date.now() >= giveUp) throw error;
+				// Once per outage: the run would otherwise look stuck.
+				if (!told) {
+					told = true;
+					await tell(
+						`${error instanceof Error ? error.message : String(error)}: trying again every 10 seconds until ${new Date(giveUp).toISOString().slice(11, 16)} UTC`,
+					);
+				}
 				await sleep(10_000);
 			}
 		}
@@ -874,15 +889,31 @@ const waitForBoot = async (
 const plural = (count: number, word: string) =>
 	`${count} ${word}${count === 1 ? "" : "s"}`;
 
+/** The selected updates of installed packages, without the new packages. */
+const selectedUpdates = (selection: ReturnType<typeof selectPackages>) =>
+	selection.selected.filter((item) => item.from !== null);
+
 const selectionSummary = (
 	assessment: ServerAssessment,
 	selection: ReturnType<typeof selectPackages>,
 ) => {
 	const pending = assessment.packages.filter((item) => item.from !== null);
 	const security = pending.filter((item) => item.security).length;
+	const updates = selectedUpdates(selection);
+	const fresh = selection.selected.filter((item) => item.from === null);
 	const lines = [
-		`${plural(pending.length, "update")} pending (${security} for security): ${selection.selected.length} selected`,
+		`${plural(pending.length, "update")} pending (${security} for security): ${updates.length} selected`,
 	];
+	if (updates.length && fresh.length) {
+		lines.push(
+			`New packages allowed only if a selected update needs them: ${fresh
+				.slice(0, 30)
+				.map((item) => item.name)
+				.join(
+					", ",
+				)}${fresh.length > 30 ? ` and ${fresh.length - 30} more` : ""}`,
+		);
+	}
 	const reasons = new Map<SkipReason, string[]>();
 	for (const item of selection.skipped) {
 		reasons.set(item.reason, [
@@ -947,7 +978,7 @@ const executeRun = async (runId: string) => {
 		}
 		const settings = run.settings;
 		const deadline = Date.parse(run.deadline);
-		ssh = connection(server);
+		ssh = connection(server, log);
 		let progress: OsUpdateRunProgress = run.progress ?? {
 			step: "prepare",
 			logOffset: 0,
@@ -1000,7 +1031,8 @@ const executeRun = async (runId: string) => {
 					}
 					const selection = selectPackages(assessment.packages, settings);
 					await log(selectionSummary(assessment, selection));
-					if (!selection.selected.length) {
+					// New packages alone install nothing: no update would pull them in.
+					if (!selectedUpdates(selection).length) {
 						await log("Nothing to install");
 						rebootRequired = assessment.rebootRequired;
 						break;
