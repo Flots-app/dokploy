@@ -76,7 +76,9 @@ const ownerAccess = async (
 			})
 		).map((row) => row.serverId),
 	),
+	runnerNodeIds: new Set<string>(),
 	requireRun: async () => undefined,
+	requireRunnerUpdate: async () => undefined,
 });
 
 /** Daily 02:00-05:00 UTC. */
@@ -103,6 +105,7 @@ const configurationInput = (
 	schedule: nightly,
 	notifyOnSuccess: false,
 	serverIds,
+	runnerNodeIds: [] as string[],
 	...DEFAULT_OS_UPDATE_SETTINGS,
 	...patch,
 });
@@ -138,7 +141,7 @@ beforeAll(async () => {
 
 afterAll(removeCreatedRows);
 
-describe("migrations 0182 and 0183", () => {
+describe("migrations 0182 to 0184", () => {
 	it("create the OS update tables and their unique indexes", async () => {
 		const tables = await db.execute<{ table_name: string }>(sql`
 			select table_name from information_schema.tables
@@ -148,6 +151,7 @@ describe("migrations 0182 and 0183", () => {
 			"os_update_configuration",
 			"os_update_lock",
 			"os_update_run",
+			"os_update_runner_node",
 			"os_update_server",
 		]);
 		const indexes = await db.execute<{ indexname: string }>(sql`
@@ -157,6 +161,9 @@ describe("migrations 0182 and 0183", () => {
 		expect(indexes.map((row) => row.indexname)).toEqual([
 			"os_update_run_configuration_running_unique",
 			"os_update_run_manual_active_unique",
+			"os_update_run_runner_manual_active_unique",
+			"os_update_run_runner_running_unique",
+			"os_update_run_runner_window_unique",
 			"os_update_run_server_running_unique",
 			"os_update_run_window_unique",
 		]);
@@ -592,7 +599,7 @@ describe("custom roles and server access", () => {
 			(item) => item.name === "shared",
 		);
 		expect(listed?.servers.map((row) => row.name)).toEqual(["mine"]);
-		expect(listed?.hiddenServers).toBe(1);
+		expect(listed?.hiddenMachines).toBe(1);
 		expect(
 			(await restricted.runs({ limit: 50 })).some(
 				(run) => run.serverId === theirs.serverId,

@@ -62,8 +62,12 @@ import {
 	browserTimeZone,
 	CLASSIFICATION_LABELS,
 	dateText,
+	machineActive,
+	machineDetail,
+	machineInput,
+	machineRows,
 	type OsUpdateConfigurationRow,
-	type OsUpdateServerRow,
+	type OsUpdateMachineRow,
 	openWindowWarning,
 	REBOOT_LABELS,
 	RUN_STATUS,
@@ -80,7 +84,7 @@ const PendingPackagesDialog = ({
 	open,
 	onOpenChange,
 }: {
-	server: OsUpdateServerRow;
+	server: OsUpdateMachineRow;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) => {
@@ -156,7 +160,7 @@ const PendingPackagesDialog = ({
 	);
 };
 
-type Assessment = NonNullable<OsUpdateServerRow["assessment"]>;
+type Assessment = NonNullable<OsUpdateMachineRow["assessment"]>;
 
 /** Pending updates, a pending reboot, dpkg and Swarm, as badges. */
 const AssessmentBadges = ({ assessment }: { assessment: Assessment }) => {
@@ -188,7 +192,7 @@ const AssessmentBadges = ({ assessment }: { assessment: Assessment }) => {
 };
 
 /** What the last assessment says, in a cell. */
-const AssessmentCell = ({ server }: { server: OsUpdateServerRow }) => {
+const AssessmentCell = ({ server }: { server: OsUpdateMachineRow }) => {
 	const assessment = server.assessment;
 	if (server.assessmentRequested) {
 		return (
@@ -234,13 +238,13 @@ const AssessmentCell = ({ server }: { server: OsUpdateServerRow }) => {
 	);
 };
 
-const ServerActions = ({
+const MachineActions = ({
 	server,
 	configuration,
 	canRun,
 	canUpdate,
 }: {
-	server: OsUpdateServerRow;
+	server: OsUpdateMachineRow;
 	configuration: OsUpdateConfigurationRow | null;
 	canRun: boolean;
 	canUpdate: boolean;
@@ -249,7 +253,7 @@ const ServerActions = ({
 	const check = api.osUpdate.checkNow.useMutation();
 	const periodic = api.osUpdate.setPeriodicAssessment.useMutation();
 	const [dialog, setDialog] = useState<"install" | "packages" | null>(null);
-	const active = server.serverStatus === "active";
+	const active = machineActive(server);
 	return (
 		<>
 			<DropdownMenu>
@@ -269,7 +273,7 @@ const ServerActions = ({
 								disabled={!active || check.isPending}
 								onSelect={async () => {
 									try {
-										await check.mutateAsync({ serverId: server.serverId });
+										await check.mutateAsync(machineInput(server));
 										await utils.osUpdate.overview.invalidate();
 										toast.success(`Checking the updates of ${server.name}`);
 									} catch (error) {
@@ -302,7 +306,7 @@ const ServerActions = ({
 								onCheckedChange={async (checked) => {
 									try {
 										await periodic.mutateAsync({
-											serverId: server.serverId,
+											...machineInput(server),
 											periodicAssessment: checked,
 										});
 										await utils.osUpdate.overview.invalidate();
@@ -337,7 +341,7 @@ const AssignSelect = ({
 	configurations,
 	disabled,
 }: {
-	server: OsUpdateServerRow;
+	server: OsUpdateMachineRow;
 	configurations: OsUpdateConfigurationRow[];
 	disabled: boolean;
 }) => {
@@ -351,12 +355,12 @@ const AssignSelect = ({
 	const save = async (value: string) => {
 		try {
 			await assign.mutateAsync({
-				serverId: server.serverId,
+				...machineInput(server),
 				osUpdateConfigurationId: value === NONE ? null : value,
 			});
 			await utils.osUpdate.overview.invalidate();
 		} catch (error) {
-			toast.error(errorText(error, "The server could not be assigned"));
+			toast.error(errorText(error, "The machine could not be assigned"));
 		}
 	};
 	return (
@@ -396,7 +400,9 @@ const AssignSelect = ({
 			</Select>
 			<ConfirmChange
 				message={
-					pending ? `${server.name} joins it now. ${pending.warning}` : null
+					pending
+						? `${server.name} joins it now.${server.kind === "runner" ? " It stops taking jobs once its window opens, until its updates are installed." : ""} ${pending.warning}`
+						: null
 				}
 				onConfirm={() => {
 					if (pending) void save(pending.value);
@@ -414,7 +420,7 @@ const AssignSelect = ({
 const WindowText = ({
 	configuration,
 }: {
-	configuration: OsUpdateServerRow["configuration"];
+	configuration: OsUpdateMachineRow["configuration"];
 }) => {
 	if (!configuration) return "—";
 	if (!configuration.enabled) return "configuration disabled";
@@ -430,13 +436,13 @@ const WindowText = ({
 	);
 };
 
-const ServersTable = ({
+const MachinesTable = ({
 	servers,
 	configurations,
 	canRun,
 	canUpdate,
 }: {
-	servers: OsUpdateServerRow[];
+	servers: OsUpdateMachineRow[];
 	configurations: OsUpdateConfigurationRow[];
 	canRun: boolean;
 	canUpdate: boolean;
@@ -444,8 +450,9 @@ const ServersTable = ({
 	if (!servers.length) {
 		return (
 			<div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-				No remote server yet: add one in Remote Servers. The Dokploy server
-				itself is not updated from here.
+				No remote server yet: add one in Remote Servers. Linux GitHub runner
+				machines show here too. The Dokploy server itself is not updated from
+				here.
 			</div>
 		);
 	}
@@ -455,7 +462,7 @@ const ServersTable = ({
 			<Table>
 				<TableHeader>
 					<TableRow>
-						<TableHead>Server</TableHead>
+						<TableHead>Machine</TableHead>
 						<TableHead>Updates</TableHead>
 						<TableHead>Schedule</TableHead>
 						<TableHead>Next window</TableHead>
@@ -473,12 +480,11 @@ const ServersTable = ({
 							) ?? null;
 						const last = server.lastRun;
 						return (
-							<TableRow key={server.serverId}>
+							<TableRow key={server.key}>
 								<TableCell>
 									<span className="block font-medium">{server.name}</span>
-									<span className="text-xs text-muted-foreground">
-										{server.ipAddress}
-										{server.serverStatus === "inactive" ? " · inactive" : ""}
+									<span className="block min-w-44 max-w-60 text-xs whitespace-normal text-muted-foreground">
+										{machineDetail(server)}
 									</span>
 								</TableCell>
 								<TableCell className="whitespace-normal">
@@ -515,7 +521,7 @@ const ServersTable = ({
 									)}
 								</TableCell>
 								<TableCell>
-									<ServerActions
+									<MachineActions
 										server={server}
 										configuration={configuration}
 										canRun={canRun}
@@ -538,7 +544,7 @@ const ConfigurationCard = ({
 	canDelete,
 }: {
 	configuration: OsUpdateConfigurationRow;
-	servers: OsUpdateServerRow[];
+	servers: OsUpdateMachineRow[];
 	canUpdate: boolean;
 	canDelete: boolean;
 }) => {
@@ -561,7 +567,14 @@ const ConfigurationCard = ({
 	};
 	const zone = configuration.schedule.timeZone;
 	const hasServers =
-		configuration.servers.length + configuration.hiddenServers > 0;
+		configuration.servers.length +
+			configuration.runnerNodes.length +
+			configuration.hiddenMachines >
+		0;
+	const names = [
+		...configuration.servers.map((server) => server.name),
+		...configuration.runnerNodes.map((node) => `${node.name} (runner)`),
+	];
 	const filters = [
 		configuration.includePackages.length
 			? `only ${configuration.includePackages.join(", ")}`
@@ -618,7 +631,7 @@ const ConfigurationCard = ({
 					{canDelete && (
 						<DialogAction
 							title={`Delete ${configuration.name}?`}
-							description="Its servers keep their history but have no schedule any more: they install nothing until you assign them again."
+							description="Its machines keep their history but have no schedule any more: they install nothing until you assign them again."
 							type="destructive"
 							onClick={async () => {
 								try {
@@ -666,11 +679,9 @@ const ConfigurationCard = ({
 							? `Next window: ${dateText(configuration.window.next.start, zone)} to ${zonedDateText(configuration.window.next.end, zone)}`
 							: "No upcoming window"}
 					{" · "}
-					{configuration.servers.length
-						? configuration.servers.map((server) => server.name).join(", ")
-						: "no server"}
-					{configuration.hiddenServers > 0 &&
-						`, and ${configuration.hiddenServers} server${configuration.hiddenServers === 1 ? "" : "s"} you cannot access`}
+					{names.length ? names.join(", ") : "no machine"}
+					{configuration.hiddenMachines > 0 &&
+						`, and ${configuration.hiddenMachines} machine${configuration.hiddenMachines === 1 ? "" : "s"} you cannot access`}
 				</p>
 			</CardContent>
 			<ConfirmChange
@@ -698,7 +709,7 @@ export const ShowOsUpdates = () => {
 	const canUpdate = Boolean(permissions?.osUpdate.update);
 	const canDelete = Boolean(permissions?.osUpdate.delete);
 	const canRun = Boolean(permissions?.osUpdate.run);
-	const servers = data?.servers ?? [];
+	const servers = data ? machineRows(data) : [];
 	const configurations = data?.configurations ?? [];
 
 	return (
@@ -712,10 +723,12 @@ export const ShowOsUpdates = () => {
 								OS Updates
 							</CardTitle>
 							<CardDescription>
-								Keep the remote servers patched: choose when they may install
-								their updates (Ubuntu and Debian, through apt), and Dokploy
-								installs them in that window, one server at a time, rebooting
-								when an update asks for it.
+								Keep the remote servers and the Linux GitHub runner machines
+								patched: choose when they may install their updates (Ubuntu and
+								Debian, through apt), and Dokploy installs them in that window,
+								one machine at a time, rebooting when an update asks for it. A
+								runner machine stops taking jobs first, and installs once its
+								running jobs end.
 							</CardDescription>
 						</div>
 						{canCreate && (
@@ -739,7 +752,7 @@ export const ShowOsUpdates = () => {
 						{data && (
 							<Tabs defaultValue="servers" className="min-w-0">
 								<TabsList>
-									<TabsTrigger value="servers">Servers</TabsTrigger>
+									<TabsTrigger value="servers">Machines</TabsTrigger>
 									<TabsTrigger value="configurations">
 										Configurations ({configurations.length})
 									</TabsTrigger>
@@ -756,11 +769,11 @@ export const ShowOsUpdates = () => {
 											) && !server.configuration,
 									) && (
 										<AlertBlock type="warning">
-											Some servers wait for security updates and have no
+											Some machines wait for security updates and have no
 											schedule.
 										</AlertBlock>
 									)}
-									<ServersTable
+									<MachinesTable
 										servers={servers}
 										configurations={configurations}
 										canRun={canRun}
@@ -774,7 +787,7 @@ export const ShowOsUpdates = () => {
 									{configurations.length === 0 ? (
 										<div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
 											No maintenance configuration yet. One says when its
-											servers may install updates (a weekly night, say) and
+											machines may install updates (a weekly night, say) and
 											which ones.
 										</div>
 									) : (

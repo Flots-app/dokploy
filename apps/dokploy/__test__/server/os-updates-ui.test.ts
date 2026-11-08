@@ -81,7 +81,7 @@ describe("OS updates page helpers", () => {
 		expect(
 			cancelRunText({
 				trigger: "schedule",
-				serverName: "web-1",
+				machineName: "web-1",
 				configurationName: "Weekly security",
 			}),
 		).toBe(
@@ -90,7 +90,7 @@ describe("OS updates page helpers", () => {
 		expect(
 			cancelRunText({
 				trigger: "manual",
-				serverName: "web-1",
+				machineName: "web-1",
 				configurationName: null,
 			}),
 		).toMatch(/does not install the updates of this Install now/);

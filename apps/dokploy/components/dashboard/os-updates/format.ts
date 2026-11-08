@@ -6,6 +6,11 @@ import type { RouterOutputs } from "@/utils/api";
 
 export type OsUpdateOverview = RouterOutputs["osUpdate"]["overview"];
 export type OsUpdateServerRow = OsUpdateOverview["servers"][number];
+export type OsUpdateRunnerNodeRow = OsUpdateOverview["runnerNodes"][number];
+/** A row of the machines table: a server, or a Linux GitHub runner machine. */
+export type OsUpdateMachineRow =
+	| (OsUpdateServerRow & { kind: "server"; key: string })
+	| (OsUpdateRunnerNodeRow & { kind: "runner"; key: string });
 export type OsUpdateConfigurationRow =
 	OsUpdateOverview["configurations"][number];
 export type OsUpdateRunRow = RouterOutputs["osUpdate"]["runs"][number];
@@ -117,13 +122,58 @@ export const openWindowWarning = (
 /** What cancelling a run that has not started means for its server. */
 export const cancelRunText = (run: {
 	trigger: "schedule" | "manual";
-	serverName: string | null;
+	status?: string;
+	machineName: string | null;
 	configurationName: string | null;
 }) => {
-	const server = run.serverName ?? "The server";
+	const server = run.machineName ?? "The server";
+	// A runner machine waiting for its jobs: back to work at once.
+	const back = run.status === "running" ? " It takes jobs again at once." : "";
 	return run.trigger === "schedule"
-		? `${server} installs nothing in this window: it waits for the next window${run.configurationName ? ` of ${run.configurationName}` : ""}, or for Install now. This cannot be undone.`
-		: `${server} does not install the updates of this Install now. You can start another one.`;
+		? `${server} installs nothing in this window: it waits for the next window${run.configurationName ? ` of ${run.configurationName}` : ""}, or for Install now.${back} This cannot be undone.`
+		: `${server} does not install the updates of this Install now.${back} You can start another one.`;
+};
+
+/** Servers first, then runner machines, as one list. */
+export const machineRows = (overview: {
+	servers: OsUpdateServerRow[];
+	runnerNodes: OsUpdateRunnerNodeRow[];
+}): OsUpdateMachineRow[] => [
+	...overview.servers.map((row) => ({
+		...row,
+		kind: "server" as const,
+		key: `server:${row.serverId}`,
+	})),
+	...overview.runnerNodes.map((row) => ({
+		...row,
+		kind: "runner" as const,
+		key: `runner:${row.githubRunnerNodeId}`,
+	})),
+];
+
+/** How the API names the machine of a row. */
+export const machineInput = (row: OsUpdateMachineRow) =>
+	row.kind === "server"
+		? { serverId: row.serverId }
+		: { githubRunnerNodeId: row.githubRunnerNodeId };
+
+/** OS updates may work on it now (Check now, Install now). */
+export const machineActive = (row: OsUpdateMachineRow) =>
+	row.kind === "server" ? row.serverStatus === "active" : row.active;
+
+/** The line under its name: its address, or its pool and state. */
+export const machineDetail = (row: OsUpdateMachineRow) => {
+	if (row.kind === "server") {
+		return `${row.ipAddress}${row.serverStatus === "inactive" ? " · inactive" : ""}`;
+	}
+	const state = row.osUpdate
+		? row.osUpdate.installing
+			? "installing its OS updates"
+			: `drained for its OS updates${row.jobs ? `, ${row.jobs} job${row.jobs === 1 ? "" : "s"} running` : ""}`
+		: !row.enabled
+			? "disabled"
+			: row.phase;
+	return `GitHub runner · ${row.poolName} · ${state}`;
 };
 
 /** One package name or pattern per line (or separated by commas or spaces). */

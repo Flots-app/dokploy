@@ -41,8 +41,9 @@ import { errorText } from "../github-runners/format";
 import {
 	dateText,
 	invalidPatterns,
+	machineDetail,
 	type OsUpdateConfigurationRow,
-	type OsUpdateServerRow,
+	type OsUpdateMachineRow,
 	openWindowWarning,
 } from "./format";
 import { SettingsFields } from "./settings-fields";
@@ -98,6 +99,7 @@ interface Draft {
 	settings: OsUpdateSettings;
 	notifyOnSuccess: boolean;
 	serverIds: string[];
+	runnerNodeIds: string[];
 }
 
 /** Sundays from 02:00 to 05:00 in the browser's time zone, security only. */
@@ -119,6 +121,7 @@ const emptyDraft = (): Draft => ({
 	settings: DEFAULT_OS_UPDATE_SETTINGS,
 	notifyOnSuccess: false,
 	serverIds: [],
+	runnerNodeIds: [],
 });
 
 const fromConfiguration = (row: OsUpdateConfigurationRow): Draft => ({
@@ -135,6 +138,7 @@ const fromConfiguration = (row: OsUpdateConfigurationRow): Draft => ({
 	},
 	notifyOnSuccess: row.notifyOnSuccess,
 	serverIds: row.servers.map((server) => server.serverId),
+	runnerNodeIds: row.runnerNodes.map((node) => node.githubRunnerNodeId),
 });
 
 /** The next `count` windows of a schedule. */
@@ -361,50 +365,59 @@ const ScheduleFields = ({
 	);
 };
 
-/** The servers a configuration applies to. */
-const ServerChoices = ({
-	servers,
+/** The machines a configuration applies to: servers, then runner machines. */
+const MachineChoices = ({
+	machines,
 	configurationId,
 	value,
 	onChange,
 }: {
-	servers: OsUpdateServerRow[];
+	machines: OsUpdateMachineRow[];
 	configurationId: string | null;
-	value: string[];
-	onChange: (value: string[]) => void;
+	value: { serverIds: string[]; runnerNodeIds: string[] };
+	onChange: (value: { serverIds: string[]; runnerNodeIds: string[] }) => void;
 }) => {
-	if (servers.length === 0) {
+	if (machines.length === 0) {
 		return (
 			<p className="text-sm text-muted-foreground">No remote server yet.</p>
 		);
 	}
-	const selected = new Set(value);
+	const selected = new Set([
+		...value.serverIds.map((id) => `server:${id}`),
+		...value.runnerNodeIds.map((id) => `runner:${id}`),
+	]);
+	const toggle = (machine: OsUpdateMachineRow, checked: boolean) => {
+		const list =
+			machine.kind === "server" ? value.serverIds : value.runnerNodeIds;
+		const id =
+			machine.kind === "server" ? machine.serverId : machine.githubRunnerNodeId;
+		const next = checked ? [...list, id] : list.filter((item) => item !== id);
+		onChange(
+			machine.kind === "server"
+				? { ...value, serverIds: next }
+				: { ...value, runnerNodeIds: next },
+		);
+	};
 	return (
 		<div className="grid gap-2 sm:grid-cols-2">
-			{servers.map((server) => {
+			{machines.map((machine) => {
 				const elsewhere =
-					server.configuration &&
-					server.configuration.osUpdateConfigurationId !== configurationId
-						? server.configuration.name
+					machine.configuration &&
+					machine.configuration.osUpdateConfigurationId !== configurationId
+						? machine.configuration.name
 						: null;
-				const id = `os-configuration-server-${server.serverId}`;
+				const id = `os-configuration-${machine.key.replace(":", "-")}`;
 				return (
-					<div key={server.serverId} className="flex items-start gap-2">
+					<div key={machine.key} className="flex items-start gap-2">
 						<Checkbox
 							id={id}
-							checked={selected.has(server.serverId)}
-							onCheckedChange={(checked) =>
-								onChange(
-									checked
-										? [...value, server.serverId]
-										: value.filter((item) => item !== server.serverId),
-								)
-							}
+							checked={selected.has(machine.key)}
+							onCheckedChange={(checked) => toggle(machine, checked === true)}
 						/>
 						<Label htmlFor={id} className="block font-normal">
-							{server.name}
+							{machine.name}
 							<span className="block text-xs text-muted-foreground">
-								{server.ipAddress}
+								{machineDetail(machine)}
 								{elsewhere ? ` · leaves ${elsewhere}` : ""}
 							</span>
 						</Label>
@@ -421,7 +434,7 @@ const ConfigurationForm = ({
 	onDone,
 }: {
 	configuration: OsUpdateConfigurationRow | null;
-	servers: OsUpdateServerRow[];
+	servers: OsUpdateMachineRow[];
 	onDone: () => void;
 }) => {
 	const utils = api.useUtils();
@@ -443,7 +456,8 @@ const ConfigurationForm = ({
 	// Saving starts installs at once when its window is open.
 	const warning =
 		draft.enabled &&
-		(draft.serverIds.length > 0 || (configuration?.hiddenServers ?? 0) > 0)
+		(draft.serverIds.length + draft.runnerNodeIds.length > 0 ||
+			(configuration?.hiddenMachines ?? 0) > 0)
 			? openWindowWarning(draft.schedule, draft.settings.reboot)
 			: null;
 
@@ -456,6 +470,7 @@ const ConfigurationForm = ({
 			...draft.settings,
 			notifyOnSuccess: draft.notifyOnSuccess,
 			serverIds: draft.serverIds,
+			runnerNodeIds: draft.runnerNodeIds,
 		};
 		try {
 			if (configuration) {
@@ -470,7 +485,7 @@ const ConfigurationForm = ({
 			toast.success(
 				configuration
 					? `${input.name} saved`
-					: `${input.name} created: its servers update in its windows`,
+					: `${input.name} created: its machines update in its windows`,
 			);
 			onDone();
 		} catch (error) {
@@ -543,17 +558,23 @@ const ConfigurationForm = ({
 					/>
 				</div>
 				<fieldset className="grid gap-2">
-					<legend className="mb-2 text-sm font-medium">Servers</legend>
-					<ServerChoices
-						servers={servers}
+					<legend className="mb-2 text-sm font-medium">Machines</legend>
+					<MachineChoices
+						machines={servers}
 						configurationId={configuration?.osUpdateConfigurationId ?? null}
-						value={draft.serverIds}
-						onChange={(serverIds) => set({ serverIds })}
+						value={{
+							serverIds: draft.serverIds,
+							runnerNodeIds: draft.runnerNodeIds,
+						}}
+						onChange={set}
 					/>
 					<p className="text-xs text-muted-foreground">
-						The servers of a configuration update one at a time, Swarm managers
-						last. The Dokploy server itself is not listed: rebooting it would
-						stop Dokploy during the run.
+						The machines of a configuration update one at a time, Swarm managers
+						last. A GitHub runner machine stops taking jobs when its turn comes
+						and installs once its running jobs end (never interrupted): a long
+						job delays the machines after it, and jobs still running at the end
+						of the window leave it as it was. The Dokploy server itself is not
+						listed: rebooting it would stop Dokploy during the run.
 					</p>
 				</fieldset>
 			</div>
@@ -578,7 +599,7 @@ export const HandleConfiguration = ({
 	onOpenChange,
 }: {
 	configuration: OsUpdateConfigurationRow | null;
-	servers: OsUpdateServerRow[];
+	servers: OsUpdateMachineRow[];
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) => (
@@ -591,8 +612,8 @@ export const HandleConfiguration = ({
 						: "New maintenance configuration"}
 				</DialogTitle>
 				<DialogDescription>
-					When its servers may install their OS updates, which ones, and whether
-					they reboot.
+					When its machines may install their OS updates, which ones, and
+					whether they reboot.
 				</DialogDescription>
 			</DialogHeader>
 			{open && (
