@@ -1,0 +1,5 @@
+DROP INDEX "os_update_run_runner_manual_active_unique";--> statement-breakpoint
+ALTER TABLE "os_update_run" ADD COLUMN "kind" text DEFAULT 'install' NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "os_update_run_handoff_active_unique" ON "os_update_run" USING btree ("githubRunnerNodeId") WHERE "os_update_run"."kind" = 'handoff' AND "os_update_run"."status" IN ('pending', 'running');--> statement-breakpoint
+CREATE UNIQUE INDEX "os_update_run_runner_manual_active_unique" ON "os_update_run" USING btree ("githubRunnerNodeId") WHERE "os_update_run"."trigger" = 'manual' AND "os_update_run"."kind" = 'install' AND "os_update_run"."status" IN ('pending', 'running');--> statement-breakpoint
+ALTER TABLE "os_update_run" ADD CONSTRAINT "os_update_run_kind" CHECK ("os_update_run"."kind" IN ('install', 'handoff'));

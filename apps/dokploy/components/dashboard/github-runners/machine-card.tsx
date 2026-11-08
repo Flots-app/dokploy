@@ -263,6 +263,14 @@ const MachineUsage = ({
 const drainMessage = (machine: RunnerMachine, busy: number) => {
 	const drain = machine.drain;
 	if (!drain) return null;
+	if (drain.reason === "os-update" && drain.handoff) {
+		if (drain.installingAt) {
+			return "Handed to its owner for a macOS update (OS Updates): it takes jobs again once macOS reports another version.";
+		}
+		return busy
+			? `macOS update: no new job, waiting for ${busy} running job${busy > 1 ? "s" : ""} before the hand-off to its owner.`
+			: "macOS update: no job runs, handed to its owner in a moment.";
+	}
 	if (drain.reason === "os-update") {
 		if (drain.installingAt) {
 			return "Installing its OS updates (OS Updates maintenance run): it takes jobs again once they are installed.";

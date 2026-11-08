@@ -4,9 +4,11 @@ import {
 	createOsUpdateConfiguration,
 	findOsUpdateRun,
 	getAccessibleServerIds,
+	handOffMacos,
 	IS_CLOUD,
 	installOsUpdatesNow,
 	listOsUpdateConfigurations,
+	listOsUpdateMacs,
 	listOsUpdateRunnerNodes,
 	listOsUpdateRuns,
 	listOsUpdateServers,
@@ -29,6 +31,7 @@ import {
 	apiCreateOsUpdateConfiguration,
 	apiFindOsUpdateConfiguration,
 	apiFindOsUpdateRun,
+	apiHandOffMacos,
 	apiInstallOsUpdatesNow,
 	apiListOsUpdateRuns,
 	apiOsUpdateMachine,
@@ -121,12 +124,13 @@ const auditTarget = (target: {
 export const osUpdateRouter = createTRPCRouter({
 	overview: read.query(async ({ ctx }) => {
 		const access = await accessOf(ctx);
-		const [servers, runnerNodes, configurations] = await Promise.all([
+		const [servers, runnerNodes, macs, configurations] = await Promise.all([
 			listOsUpdateServers(access),
 			listOsUpdateRunnerNodes(access),
+			listOsUpdateMacs(access),
 			listOsUpdateConfigurations(access),
 		]);
-		return { servers, runnerNodes, configurations };
+		return { servers, runnerNodes, macs, configurations };
 	}),
 
 	runs: read
@@ -299,6 +303,32 @@ export const osUpdateRouter = createTRPCRouter({
 			});
 			return queued;
 		}),
+
+	/**
+	 * Takes a Mac out of service while its owner updates macOS: Dokploy
+	 * installs nothing on macOS, it gives the Mac back once it reports
+	 * another version.
+	 */
+	handOffMacos: run.input(apiHandOffMacos).mutation(async ({ input, ctx }) => {
+		const { run: queued, machine } = await handOffMacos(
+			input,
+			await accessOf(ctx),
+			ctx.user.email,
+		);
+		const target = auditTarget(machine);
+		await audit(ctx, {
+			action: "run",
+			resourceType: "osUpdate",
+			...target,
+			metadata: {
+				...target.metadata,
+				handoff: true,
+				run: queued.osUpdateRunId,
+				maxHours: input.maxHours,
+			},
+		});
+		return queued;
+	}),
 
 	cancelRun: run.input(apiFindOsUpdateRun).mutation(async ({ input, ctx }) => {
 		const { run: cancelled, machine } = await cancelOsUpdateRun(

@@ -141,7 +141,7 @@ beforeAll(async () => {
 
 afterAll(removeCreatedRows);
 
-describe("migrations 0182 to 0184", () => {
+describe("migrations 0182 to 0185", () => {
 	it("create the OS update tables and their unique indexes", async () => {
 		const tables = await db.execute<{ table_name: string }>(sql`
 			select table_name from information_schema.tables
@@ -160,6 +160,7 @@ describe("migrations 0182 to 0184", () => {
 			order by indexname`);
 		expect(indexes.map((row) => row.indexname)).toEqual([
 			"os_update_run_configuration_running_unique",
+			"os_update_run_handoff_active_unique",
 			"os_update_run_manual_active_unique",
 			"os_update_run_runner_manual_active_unique",
 			"os_update_run_runner_running_unique",

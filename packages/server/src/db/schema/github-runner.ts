@@ -104,6 +104,11 @@ export interface GithubRunnerDrain {
 	abortAt?: string | null;
 	/** With reason "os-update": the run (os_update_run) holding the machine. */
 	osUpdateRunId?: string;
+	/**
+	 * With reason "os-update": a hand-off of a Mac to its owner for a macOS
+	 * update, not an install by Dokploy.
+	 */
+	handoff?: boolean;
 	/** With reason "os-update": no runner left on the machine since then. */
 	drainedAt?: string | null;
 	/**

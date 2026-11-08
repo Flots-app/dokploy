@@ -59,6 +59,14 @@ export const osUpdateTrigger = pgEnum("osUpdateTrigger", [
 ]);
 
 /**
+ * install: Dokploy installs updates; handoff: a Mac handed to its owner for
+ * a macOS update (Dokploy drains it, installs nothing, and gives it back
+ * once macOS reports another version). Text, not an enum: a new enum value
+ * cannot be used by the index of the migration adding it.
+ */
+export type OsUpdateRunKind = "install" | "handoff";
+
+/**
  * A maintenance configuration: when the servers assigned to it may install
  * their OS updates, and which ones.
  */
@@ -156,7 +164,11 @@ export const osUpdateRunnerNodes = pgTable("os_update_runner_node", {
 /** Where a run stands, so another Dokploy process can resume it. */
 export interface OsUpdateRunProgress {
 	/** drain: a runner machine waits for its jobs to end (runner machines only). */
-	step: "drain" | "prepare" | "install" | "reboot";
+	/**
+	 * drain: a runner machine waits for its jobs to end (runner machines only);
+	 * handoff: a Mac waits for its owner's macOS update (hand-offs only).
+	 */
+	step: "drain" | "prepare" | "install" | "reboot" | "handoff";
 	/** Bytes of the current step's log already copied. */
 	logOffset: number;
 	/** Packages the install step may change. */
@@ -166,6 +178,16 @@ export interface OsUpdateRunProgress {
 	rebootRequestedAt: string | null;
 	/** Runner machines: when the run took the machine out of service. */
 	drainStartedAt?: string | null;
+	/** Hand-offs: macOS as it was when the hand-off started. */
+	macos?: MacosVersion | null;
+}
+
+/** What `sw_vers` says of a Mac. */
+export interface MacosVersion {
+	version: string;
+	build: string;
+	/** Rapid Security Responses, e.g. "(a)"; empty without one. */
+	extra: string;
 }
 
 export interface OsUpdateRunPackage extends PackageChange {
@@ -199,6 +221,7 @@ export const osUpdateRuns = pgTable(
 			{ onDelete: "set null" },
 		),
 		trigger: osUpdateTrigger("trigger").notNull(),
+		kind: text("kind").$type<OsUpdateRunKind>().notNull().default("install"),
 		status: osUpdateRunStatus("status").notNull().default("pending"),
 		/** Scheduled runs: the window they belong to. */
 		windowStart: text("windowStart"),
@@ -274,8 +297,15 @@ export const osUpdateRuns = pgTable(
 		uniqueIndex("os_update_run_runner_manual_active_unique")
 			.on(table.githubRunnerNodeId)
 			.where(
-				sql`${table.trigger} = 'manual' AND ${table.status} IN ('pending', 'running')`,
+				sql`${table.trigger} = 'manual' AND ${table.kind} = 'install' AND ${table.status} IN ('pending', 'running')`,
 			),
+		// One hand-off at a time per Mac.
+		uniqueIndex("os_update_run_handoff_active_unique")
+			.on(table.githubRunnerNodeId)
+			.where(
+				sql`${table.kind} = 'handoff' AND ${table.status} IN ('pending', 'running')`,
+			),
+		check("os_update_run_kind", sql`${table.kind} IN ('install', 'handoff')`),
 	],
 );
 
@@ -407,6 +437,13 @@ export const apiAssignOsUpdateConfiguration = z
 export const apiSetOsUpdateAssessment = z
 	.object({ ...machineFields, periodicAssessment: z.boolean() })
 	.refine(oneMachine, ONE_MACHINE);
+
+/** A Mac handed to its owner for a macOS update. */
+export const apiHandOffMacos = z.object({
+	githubRunnerNodeId: z.string().min(1),
+	/** Given back after this long when macOS did not change. */
+	maxHours: z.number().int().min(1).max(72).default(24),
+});
 
 /** A one-time installation, outside any window. */
 export const apiInstallOsUpdatesNow = osUpdateSettingsSchema
