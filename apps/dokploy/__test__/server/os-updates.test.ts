@@ -809,6 +809,12 @@ const modernBash = (() => {
 	}
 })();
 
+/**
+ * The recorded simulation answers in place of the host's apt-get: a Linux CI
+ * machine has its own pending updates.
+ */
+const fakeAptGet = `apt-get() { cat "$dir/simulation"; }`;
+
 describe.skipIf(!modernBash)("install step pins (bash, without apt)", () => {
 	// The pin loop of the install step, run on a recorded simulation.
 	it("pins every pending update that is not allowed", () => {
@@ -819,7 +825,7 @@ describe.skipIf(!modernBash)("install step pins (bash, without apt)", () => {
 		try {
 			const script = `set -euo pipefail
 dir=${dir}
-simulated=$(cat ${join(dir, "simulation")})
+${fakeAptGet}
 ${install.slice(start, end)}done <<<"$simulated"
 cat "$prefs"
 echo "held=$held"
@@ -861,7 +867,7 @@ echo "held=$held"
 			writeFileSync(join(dir, "simulation"), "Inst Evil$x [1] (2 x [all])\n");
 			writeFileSync(
 				join(dir, "pins.sh"),
-				`set -euo pipefail\ndir=${dir}\nsimulated=$(cat ${join(dir, "simulation")})\n${install.slice(start, end)}done <<<"$simulated"\necho reached\n`,
+				`set -euo pipefail\ndir=${dir}\n${fakeAptGet}\n${install.slice(start, end)}done <<<"$simulated"\necho reached\n`,
 			);
 			const result = spawnSync("bash", [join(dir, "pins.sh")], {
 				encoding: "utf8",
