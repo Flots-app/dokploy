@@ -40,6 +40,12 @@ vulnerabilities:
       - "pkg:golang/google.golang.org/grpc@v1.72.2"
     expired_at: 2026-11-21
     statement: "Image baseline, upgrade required: Railpack 0.15.4 (grpc v1.68.1) and Docker 28.5.2 dockerd (grpc v1.72.2) -> grpc 1.79.3"
+  # Published 2026-11-05, after the baseline: no pack release has the fix yet.
+  - id: CVE-2026-105769
+    purls:
+      - "pkg:golang/github.com/chainguard-dev/kaniko@v1.25.5"
+    expired_at: 2026-11-21
+    statement: "Upgrade pack once a release ships kaniko >= 1.25.20: pack 0.39.1 bundles kaniko v1.25.5, and the latest pack (v0.40.10) and its main branch still pin v1.25.16. The flaw leaks an Azure (Entra ID) token the build holds; Flots builds run on Hetzner without Azure credentials"
   - id: CVE-2026-33845
     purls:
       - "pkg:deb/debian/libgnutls30@3.7.9-2%2Bdeb12u4?arch=amd64&distro=debian-12.11"

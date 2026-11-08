@@ -97,9 +97,15 @@ export interface GithubRunnerClient {
 	listRunJobs: (repository: string, runId: string) => Promise<WorkflowRunJob[]>;
 	forceCancelRun: (repository: string, runId: string) => Promise<void>;
 	cancelRun: (repository: string, runId: string) => Promise<void>;
-	/** Private repositories the pool may route jobs for ("owner/name"). */
-	listRepositories: () => Promise<string[]>;
+	/**
+	 * Repositories of the pool target ("owner/name"), not archived. Jobs are only
+	 * routed for private ones, which alone read an organization variable; public
+	 * ones can use the runners too.
+	 */
+	listRepositories: (visibility?: "private" | "all") => Promise<string[]>;
 	listQueuedRuns: (repository: string) => Promise<QueuedRun[]>;
+	/** Runs with a job started: GitHub no longer lists them as queued, whatever their other jobs do. */
+	listRunsInProgress: (repository: string) => Promise<QueuedRun[]>;
 	/** Writes the Actions variable of the pool target (organization: private repositories). */
 	setVariable: (name: string, value: string) => Promise<void>;
 	deleteVariable: (name: string) => Promise<void>;
@@ -770,7 +776,9 @@ export const createGithubRunnerClient = (
 		}
 	};
 
-	const listRepositories: GithubRunnerClient["listRepositories"] = async () => {
+	const listRepositories: GithubRunnerClient["listRepositories"] = async (
+		visibility = "private",
+	) => {
 		if (target.scope === "repository") {
 			return [`${target.owner}/${target.repository}`];
 		}
@@ -778,7 +786,7 @@ export const createGithubRunnerClient = (
 		const repositories = await octokit
 			.paginate(
 				octokit.rest.repos.listForOrg,
-				{ org: target.owner, type: "private", per_page: 100 },
+				{ org: target.owner, type: visibility, per_page: 100 },
 				(response, done) => {
 					if (++pages >= 20) done();
 					return response.data;
@@ -788,13 +796,16 @@ export const createGithubRunnerClient = (
 				throw apiError(error, `/orgs/${owner}/repos`);
 			});
 		return repositories
-			.filter((repo) => repo.private && !repo.archived)
+			.filter(
+				(repo) => (visibility === "all" || repo.private) && !repo.archived,
+			)
 			.map((repo) => repo.full_name);
 	};
 
-	const listQueuedRuns: GithubRunnerClient["listQueuedRuns"] = async (
-		repository,
-	) => {
+	const listRuns = async (
+		repository: string,
+		status: "queued" | "in_progress",
+	): Promise<QueuedRun[]> => {
 		const [repoOwner, name] = repository.split("/");
 		if (
 			repoOwner?.toLowerCase() !== target.owner.toLowerCase() ||
@@ -815,7 +826,7 @@ export const createGithubRunnerClient = (
 			}[];
 		}>(
 			"GET",
-			`/repos/${owner}/${encodeURIComponent(name)}/actions/runs?status=queued&per_page=50`,
+			`/repos/${owner}/${encodeURIComponent(name)}/actions/runs?status=${status}&per_page=50`,
 			undefined,
 			{ etag: true },
 		);
@@ -835,7 +846,8 @@ export const createGithubRunnerClient = (
 		cancelRun: async (repository, runId) =>
 			post(`${runPath(repository, runId)}/cancel`),
 		listRepositories,
-		listQueuedRuns,
+		listQueuedRuns: (repository) => listRuns(repository, "queued"),
+		listRunsInProgress: (repository) => listRuns(repository, "in_progress"),
 		setVariable,
 		deleteVariable,
 		canManageVariables: async () => {

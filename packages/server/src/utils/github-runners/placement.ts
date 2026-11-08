@@ -2,7 +2,8 @@
  * Fastest-first placement. GitHub hands a queued job to any idle runner with
  * its labels, so Dokploy decides where jobs land by choosing where runners
  * wait: only on the slots where a new job would run fastest. When those are
- * taken, the next best slots are armed at the next tick.
+ * taken, the next best slots are armed at the next tick. A job pinned to one
+ * machine is the exception: no other runner can take it, however fast.
  */
 
 /** Cores a typical CI job keeps busy: a job alone on a big machine gains little beyond. */
@@ -41,7 +42,27 @@ export interface PlacementMachine {
 	speed: MachineSpeed | null;
 	/** CPUs of the budget, used until the machine is measured. */
 	cpus: number;
+	/** Queued jobs only this machine can take (see `countPinnedJobs`). */
+	pinned?: number;
 }
+
+/**
+ * Queued jobs pinned to a machine: they ask for its own label, and for nothing
+ * its runners lack, which is what GitHub requires to hand them a job. GitHub
+ * compares labels without regard to case.
+ */
+export const countPinnedJobs = (
+	queuedJobs: string[][],
+	machineLabel: string,
+	runnerLabels: string[],
+) => {
+	const own = machineLabel.toLowerCase();
+	const carried = new Set(runnerLabels.map((label) => label.toLowerCase()));
+	return queuedJobs.filter((labels) => {
+		const asked = labels.map((label) => label.toLowerCase());
+		return asked.includes(own) && asked.every((label) => carried.has(label));
+	}).length;
+};
 
 /**
  * How fast a job runs as the k-th job at once on a machine: its share of the
@@ -64,7 +85,8 @@ export interface WaitingTarget {
  * How many runners should wait on each machine. "spread" arms every free slot
  * (lowest wait, jobs land anywhere); "fastest" only the slots about as fast as
  * the best free slot of the other machines. Within one machine there is no
- * choice to make, so a machine alone arms all its free slots.
+ * choice to make, so a machine alone arms all its free slots. Whatever the
+ * speed, a machine with room waits for the jobs pinned to it.
  */
 export const placeWaitingRunners = (
 	machines: PlacementMachine[],
@@ -94,7 +116,13 @@ export const placeWaitingRunners = (
 		return count;
 	};
 	const arm = new Map(
-		open.map((machine) => [machine.id, fastEnough(machine, ARM_WITHIN)]),
+		open.map((machine) => [
+			machine.id,
+			Math.max(
+				fastEnough(machine, ARM_WITHIN),
+				Math.min(machine.pinned ?? 0, machine.maxRunners - machine.busy),
+			),
+		]),
 	);
 	// Keep a couple of runners waiting, on the fastest of the remaining slots.
 	let total = [...arm.values()].reduce((sum, value) => sum + value, 0);
