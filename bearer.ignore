@@ -3373,23 +3373,29 @@
   },
   "eed1e45264ad2c1d1becec56bdefb050_2": {
     "author": "s1nyx (Claude Code)",
-    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: a failed controller tick is logged with the error; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters.",
+    "comment": "PR #58, packages/server/src/utils/os-updates/controller.ts: a runner machine that could not be given back to GitHub Runners after its run is logged with its name and the error; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters.",
     "false_positive": false,
-    "ignored_at": "2026-11-08T11:08:19Z"
+    "ignored_at": "2026-11-08T17:19:59Z"
   },
   "eed1e45264ad2c1d1becec56bdefb050_3": {
     "author": "s1nyx (Claude Code)",
-    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the controller that takes the lead logs its owner id (host name, process id and a random suffix), so operators see which process runs the updates. No secret is in it.",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: a failed controller tick is logged with the error; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters.",
     "false_positive": false,
     "ignored_at": "2026-11-08T11:08:19Z"
   },
   "eed1e45264ad2c1d1becec56bdefb050_4": {
     "author": "s1nyx (Claude Code)",
-    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the controller that stands by logs its owner id (host name, process id and a random suffix). No secret is in it.",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the controller that takes the lead logs its owner id (host name, process id and a random suffix), so operators see which process runs the updates. No secret is in it.",
     "false_positive": false,
     "ignored_at": "2026-11-08T11:08:19Z"
   },
   "eed1e45264ad2c1d1becec56bdefb050_5": {
+    "author": "s1nyx (Claude Code)",
+    "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the controller that stands by logs its owner id (host name, process id and a random suffix). No secret is in it.",
+    "false_positive": false,
+    "ignored_at": "2026-11-08T11:08:19Z"
+  },
+  "eed1e45264ad2c1d1becec56bdefb050_6": {
     "author": "s1nyx (Claude Code)",
     "comment": "PR #57, packages/server/src/utils/os-updates/controller.ts: the startup error tells the operator why the controller waits for the database; logs the Postgres error of a failed query through loggableError, never the Drizzle error and its parameters.",
     "false_positive": false,
