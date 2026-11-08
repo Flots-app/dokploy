@@ -153,7 +153,14 @@
 - [x] Merge the job guard of GitHub runner pools (forks, Dependabot, other
   repositories and events refused on the machine, runtime v11) in
   [Flots-app/dokploy#54](https://github.com/Flots-app/dokploy/pull/54).
-- [ ] Publish `v0.29.14-flots.17` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.17` from `canary` and deploy it to production.
+- [x] Arm the machine a queued job is pinned to in
+  [Flots-app/dokploy#56](https://github.com/Flots-app/dokploy/pull/56).
+- [x] Merge the scheduled OS updates of the remote servers in
+  [Flots-app/dokploy#57](https://github.com/Flots-app/dokploy/pull/57), with
+  the Linux GitHub runner machines from
+  [Flots-app/dokploy#58](https://github.com/Flots-app/dokploy/pull/58).
+- [ ] Publish `v0.29.14-flots.18` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
