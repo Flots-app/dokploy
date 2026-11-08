@@ -11,6 +11,13 @@
  *   last step (the steps run detached on the server, see scripts.ts);
  * - servers are assessed every 24 hours, and on demand.
  *
+ * Linux GitHub runner machines are handled as servers, with one more step
+ * first: the run drains the machine (no new job, the running ones end, never
+ * interrupted) through the runner controller, installs once it is empty,
+ * then gives it back whatever the outcome (see runner-drain.ts). It reaches
+ * them with the host key pinned at their enrollment, as the runner
+ * controller does.
+ *
  * The Dokploy server itself is not managed: rebooting it, or restarting its
  * Docker, would stop the process that drives the run.
  */
@@ -19,19 +26,26 @@ import { randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { db } from "@dokploy/server/db";
 import {
+	githubRunnerNodes,
 	type OsUpdateConfiguration,
 	type OsUpdateRun,
+	type OsUpdateRunnerNode,
 	type OsUpdateRunPackage,
 	type OsUpdateRunProgress,
 	type OsUpdateServer,
 	osUpdateConfigurations,
 	osUpdateLocks,
+	osUpdateRunnerNodes,
 	osUpdateRuns,
 	osUpdateServers,
 } from "@dokploy/server/db/schema";
 import { and, asc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { loggableError } from "../github-runners/errors";
-import { type NodeSession, openNodeSession } from "../github-runners/ssh";
+import {
+	closeSharedSessions,
+	type NodeSession,
+	openNodeSession,
+} from "../github-runners/ssh";
 import {
 	listNames,
 	type OsUpdateNotice,
@@ -45,6 +59,13 @@ import {
 	type SkipReason,
 	selectPackages,
 } from "./filters";
+import {
+	isOsUpdateDrain,
+	markOsUpdateInstalling,
+	releaseOsUpdateDrain,
+	sleepUntilDrainNews,
+	startOsUpdateDrain,
+} from "./runner-drain";
 import { openWindow, previousWindow } from "./schedule";
 import {
 	assessScript,
@@ -102,6 +123,8 @@ const READY_TIMEOUT_MS = 10 * 60_000;
 const SWARM_LOCK_TTL_S = 120;
 const HISTORY_RETENTION_MS = 180 * 24 * 60 * 60_000;
 const MAX_RUN_LOG = 256_000;
+/** A run waiting for its runner machine to empty looks again this often. */
+const DRAIN_POLL_MS = 5_000;
 
 interface ControllerState {
 	owner: string;
@@ -111,7 +134,7 @@ interface ControllerState {
 	ticking: boolean;
 	/** Runs this process executes. */
 	executing: Map<string, Promise<void>>;
-	/** Servers this process assesses. */
+	/** Machines this process assesses (keyOf). */
 	assessing: Set<string>;
 	lastPurge: number;
 }
@@ -187,7 +210,41 @@ const appendRunLog = async (runId: string, text: string) => {
 		.where(eq(osUpdateRuns.osUpdateRunId, runId));
 };
 
-// ------------------------------------------------------------- SSH
+// ------------------------------------------------------------- machines
+
+/** What a run is for: a remote server, or a Linux GitHub runner machine. */
+export type OsUpdateMachine =
+	| { kind: "server"; id: string }
+	| { kind: "runner"; id: string };
+
+/** The machine of a run (one of its two ids is set, a constraint says so). */
+export const machineOf = (row: {
+	serverId: string | null;
+	githubRunnerNodeId: string | null;
+}): OsUpdateMachine =>
+	row.serverId !== null
+		? { kind: "server", id: row.serverId }
+		: { kind: "runner", id: row.githubRunnerNodeId ?? "" };
+
+/** A key for sets of machines: a server and a runner machine never collide. */
+export const keyOf = (machine: OsUpdateMachine) =>
+	`${machine.kind}:${machine.id}`;
+
+/** The columns of a run (or a row) that name the machine. */
+const machineColumns = (machine: OsUpdateMachine) =>
+	machine.kind === "server"
+		? { serverId: machine.id }
+		: { githubRunnerNodeId: machine.id };
+
+/**
+ * A runner machine OS updates may work on: Linux, set up (ready, draining
+ * for another reason, or stopped by an operator).
+ */
+export const isManagedRunnerNode = (
+	node: { platform: string; phase: string } | null | undefined,
+) =>
+	node?.platform === "linux" &&
+	["ready", "draining", "stopped"].includes(node.phase);
 
 type ServerRow = NonNullable<Awaited<ReturnType<typeof loadServer>>>;
 
@@ -197,28 +254,90 @@ const loadServer = (serverId: string) =>
 		with: { sshKey: true },
 	});
 
+const loadRunnerNode = (nodeId: string) =>
+	db.query.githubRunnerNodes.findFirst({
+		where: eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+		with: { sshKey: true },
+	});
+
+/** How Dokploy reaches a machine over SSH. */
+interface SshTarget {
+	machine: OsUpdateMachine;
+	name: string;
+	host: string;
+	port: number;
+	username: string;
+	privateKey: string | null;
+	/**
+	 * Runner machines: pinned at their enrollment, and required. Servers:
+	 * none, as every other SSH command of Dokploy on its servers.
+	 */
+	hostKeyFingerprint: string | null;
+}
+
+const serverTarget = (server: ServerRow): SshTarget => ({
+	machine: { kind: "server", id: server.serverId },
+	name: server.name,
+	host: server.ipAddress,
+	port: server.port,
+	username: server.username,
+	privateKey: server.sshKey?.privateKey ?? null,
+	hostKeyFingerprint: null,
+});
+
+const loadTarget = async (
+	machine: OsUpdateMachine,
+): Promise<SshTarget | null> => {
+	if (machine.kind === "server") {
+		const server = await loadServer(machine.id);
+		return server ? serverTarget(server) : null;
+	}
+	const node = await loadRunnerNode(machine.id);
+	if (!node) return null;
+	return {
+		machine,
+		name: node.name,
+		host: node.host,
+		port: node.port,
+		username: node.username,
+		// Its own key (enrolled machines) first, as the runner controller.
+		privateKey: node.sshPrivateKey ?? node.sshKey?.privateKey ?? null,
+		hostKeyFingerprint: node.hostKeyFingerprint,
+	};
+};
+
+// ------------------------------------------------------------- SSH
+
+/** What Dokploy lacks to reach a machine: waiting changes nothing. */
+class SetupError extends Error {}
+
 /**
- * One SSH connection to a server, opened again after a failure: the server
+ * One SSH connection to a machine, opened again after a failure: the machine
  * may drop it (network, sshd restarted by an update, reboot). `say` tells a
- * run's log when the server stops answering, and when it answers again.
+ * run's log when the machine stops answering, and when it answers again.
  */
 const connection = (
-	server: ServerRow,
+	target: SshTarget,
 	say?: (line: string) => Promise<void>,
 ) => {
 	let session: NodeSession | null = null;
 	const open = async () => {
-		if (!server.sshKey?.privateKey) {
-			throw new Error(`${server.name} has no SSH key in Dokploy`);
+		if (!target.privateKey) {
+			throw new SetupError(`${target.name} has no SSH key in Dokploy`);
+		}
+		if (target.machine.kind === "runner" && !target.hostKeyFingerprint) {
+			// Root over SSH to a runner machine: only the machine it enrolled.
+			throw new SetupError(
+				`${target.name} has no pinned host key: Dokploy pins it when it first reaches the machine (GitHub Runners), and runs OS updates on a runner machine only with it`,
+			);
 		}
 		session ??= await openNodeSession({
-			name: server.name,
-			host: server.ipAddress,
-			port: server.port,
-			username: server.username,
-			privateKey: server.sshKey.privateKey,
-			// As every other SSH command of Dokploy on its servers.
-			hostKeyFingerprint: null,
+			name: target.name,
+			host: target.host,
+			port: target.port,
+			username: target.username,
+			privateKey: target.privateKey,
+			hostKeyFingerprint: target.hostKeyFingerprint,
 		});
 		return session;
 	};
@@ -233,7 +352,7 @@ const connection = (
 	) => {
 		const current = await open();
 		try {
-			return await current.run(rootShell(server.username), {
+			return await current.run(rootShell(target.username), {
 				input: script.endsWith("\n") ? script : `${script}\n`,
 				...options,
 			});
@@ -242,7 +361,7 @@ const connection = (
 			throw error;
 		}
 	};
-	/** As root, retried while the server does not answer, up to `giveUpMs`. */
+	/** As root, retried while the machine does not answer, up to `giveUpMs`. */
 	const patient = async (
 		script: string,
 		options: { label: string; timeoutMs: number },
@@ -254,10 +373,10 @@ const connection = (
 		for (;;) {
 			try {
 				const result = await root(script, options);
-				if (told) await tell(`${server.name} answers again`);
+				if (told) await tell(`${target.name} answers again`);
 				return result;
 			} catch (error) {
-				if (Date.now() >= giveUp) throw error;
+				if (Date.now() >= giveUp || error instanceof SetupError) throw error;
 				// Once per outage: the run would otherwise look stuck.
 				if (!told) {
 					told = true;
@@ -276,38 +395,63 @@ type Connection = ReturnType<typeof connection>;
 
 // ------------------------------------------------------------- assessment
 
-const saveAssessment = (serverId: string, assessment: ServerAssessment) =>
-	db
-		.update(osUpdateServers)
-		.set({
-			assessment,
-			assessedAt: new Date().toISOString(),
-			assessmentError: null,
-		})
-		.where(eq(osUpdateServers.serverId, serverId));
+/** What OS updates keep for a machine, whichever table holds it. */
+type MachineState = Partial<
+	Omit<OsUpdateServer, "serverId" | "osUpdateConfigurationId">
+>;
 
-/** A server held by another OS update script is asked again after this. */
+const updateMachineState = (machine: OsUpdateMachine, values: MachineState) =>
+	machine.kind === "server"
+		? db
+				.update(osUpdateServers)
+				.set(values)
+				.where(eq(osUpdateServers.serverId, machine.id))
+		: db
+				.update(osUpdateRunnerNodes)
+				.set(values)
+				.where(eq(osUpdateRunnerNodes.githubRunnerNodeId, machine.id));
+
+const findMachineState = (
+	machine: OsUpdateMachine,
+): Promise<OsUpdateServer | OsUpdateRunnerNode | undefined> =>
+	machine.kind === "server"
+		? db.query.osUpdateServers.findFirst({
+				where: eq(osUpdateServers.serverId, machine.id),
+			})
+		: db.query.osUpdateRunnerNodes.findFirst({
+				where: eq(osUpdateRunnerNodes.githubRunnerNodeId, machine.id),
+			});
+
+const saveAssessment = (
+	machine: OsUpdateMachine,
+	assessment: ServerAssessment,
+) =>
+	updateMachineState(machine, {
+		assessment,
+		assessedAt: new Date().toISOString(),
+		assessmentError: null,
+	});
+
+/** A machine held by another OS update script is asked again after this. */
 const BUSY_RETRY_MS = 60_000;
 export const BUSY_MESSAGE =
 	"Another Dokploy OS update script runs on the server: checked again in a minute";
 
-/** Assesses a server now (refreshing its package lists). */
-export const assessServer = async (serverId: string) => {
-	if (state.assessing.has(serverId)) return;
-	state.assessing.add(serverId);
+/** Assesses a machine now (refreshing its package lists). */
+export const assessMachine = async (machine: OsUpdateMachine) => {
+	const key = keyOf(machine);
+	if (state.assessing.has(key)) return;
+	state.assessing.add(key);
 	const at = new Date().toISOString();
 	try {
-		const before = await db.query.osUpdateServers.findFirst({
-			where: eq(osUpdateServers.serverId, serverId),
-			columns: { assessmentRequestedAt: true },
+		const before = await findMachineState(machine);
+		await updateMachineState(machine, {
+			assessmentTriedAt: at,
+			assessmentRequestedAt: null,
 		});
-		await db
-			.update(osUpdateServers)
-			.set({ assessmentTriedAt: at, assessmentRequestedAt: null })
-			.where(eq(osUpdateServers.serverId, serverId));
-		const server = await loadServer(serverId);
-		if (!server) return;
-		const ssh = connection(server);
+		const target = await loadTarget(machine);
+		if (!target) return;
+		const ssh = connection(target);
 		try {
 			const { stdout } = await ssh.root(assessScript({ refresh: true }), {
 				label: "Assessment",
@@ -315,45 +459,64 @@ export const assessServer = async (serverId: string) => {
 			});
 			if (stdout.trim() === "busy") {
 				// Said, and a Check now stays asked: the next try comes in a minute.
-				await db
-					.update(osUpdateServers)
-					.set({
-						assessmentError: BUSY_MESSAGE,
-						assessmentRequestedAt: before?.assessmentRequestedAt ?? null,
-					})
-					.where(eq(osUpdateServers.serverId, serverId));
+				await updateMachineState(machine, {
+					assessmentError: BUSY_MESSAGE,
+					assessmentRequestedAt: before?.assessmentRequestedAt ?? null,
+				});
 				return;
 			}
 			const assessment = parseAssessment(stdout);
 			if (!assessment) throw new Error("the server sent no readable report");
-			await saveAssessment(serverId, assessment);
+			await saveAssessment(machine, assessment);
 		} finally {
 			ssh.reset();
 		}
 	} catch (error) {
-		await db
-			.update(osUpdateServers)
-			.set({ assessmentError: messageOf(error) })
-			.where(eq(osUpdateServers.serverId, serverId))
+		await updateMachineState(machine, { assessmentError: messageOf(error) })
+			.then(() => undefined)
 			.catch(() => undefined);
 	} finally {
-		state.assessing.delete(serverId);
+		state.assessing.delete(key);
 	}
 };
 
+/** Assesses a server now (refreshing its package lists). */
+export const assessServer = (serverId: string) =>
+	assessMachine({ kind: "server", id: serverId });
+
 /** Due assessments: requested, or periodic ones older than 24 hours. */
-const assessDueServers = async (now: Date, busy: Set<string>) => {
+const assessDueMachines = async (now: Date, busy: Set<string>) => {
 	const day = new Date(now.getTime() - ASSESS_EVERY_MS).toISOString();
 	const retry = new Date(now.getTime() - ASSESS_RETRY_MS).toISOString();
 	const busyRetry = new Date(now.getTime() - BUSY_RETRY_MS).toISOString();
-	const rows = await db.query.osUpdateServers.findMany({
-		with: { server: { columns: { serverStatus: true } } },
-	});
+	const [servers, runnerNodes] = await Promise.all([
+		db.query.osUpdateServers.findMany({
+			with: { server: { columns: { serverStatus: true } } },
+		}),
+		db.query.osUpdateRunnerNodes.findMany({
+			with: { node: { columns: { platform: true, phase: true } } },
+		}),
+	]);
+	const rows = [
+		...servers.map((row) => ({
+			...row,
+			machine: { kind: "server", id: row.serverId } as OsUpdateMachine,
+			active: row.server?.serverStatus === "active",
+		})),
+		...runnerNodes.map((row) => ({
+			...row,
+			machine: {
+				kind: "runner",
+				id: row.githubRunnerNodeId,
+			} as OsUpdateMachine,
+			active: isManagedRunnerNode(row.node),
+		})),
+	];
 	const due = rows.filter(
 		(row) =>
-			row.server?.serverStatus === "active" &&
-			!busy.has(row.serverId) &&
-			!state.assessing.has(row.serverId) &&
+			row.active &&
+			!busy.has(keyOf(row.machine)) &&
+			!state.assessing.has(keyOf(row.machine)) &&
 			((row.assessmentRequestedAt !== null &&
 				// Asked after the last try, or a minute after a busy server.
 				(!row.assessmentTriedAt ||
@@ -365,7 +528,7 @@ const assessDueServers = async (now: Date, busy: Set<string>) => {
 	);
 	const room = MAX_ASSESSMENTS - state.assessing.size;
 	for (const row of due.slice(0, Math.max(0, room))) {
-		void assessServer(row.serverId);
+		void assessMachine(row.machine);
 	}
 };
 
@@ -400,13 +563,16 @@ export const settingsOf = (
 });
 
 /**
- * Gives every assigned server a run for the open window, and records the
- * last window as missed for the servers that had none.
+ * Gives every assigned machine a run for the open window, and records the
+ * last window as missed for the machines that had none.
  */
 export const planOsUpdateWindows = async (now: Date) => {
 	const configurations = await db.query.osUpdateConfigurations.findMany({
 		where: eq(osUpdateConfigurations.enabled, true),
-		with: { servers: { with: { server: { columns: { name: true } } } } },
+		with: {
+			servers: { with: { server: { columns: { name: true } } } },
+			runnerNodes: { with: { node: { columns: { name: true } } } },
+		},
 	});
 	await sequentially(configurations, (configuration) =>
 		planConfiguration(configuration, now),
@@ -416,10 +582,25 @@ export const planOsUpdateWindows = async (now: Date) => {
 const planConfiguration = async (
 	configuration: OsUpdateConfiguration & {
 		servers: (OsUpdateServer & { server: { name: string } | null })[];
+		runnerNodes: (OsUpdateRunnerNode & { node: { name: string } | null })[];
 	},
 	now: Date,
 ) => {
-	const assigned = configuration.servers.filter((row) => row.assignedAt);
+	const assigned = [
+		...configuration.servers.map((row) => ({
+			machine: { kind: "server", id: row.serverId } as OsUpdateMachine,
+			assignedAt: row.assignedAt,
+			name: row.server?.name ?? row.serverId,
+		})),
+		...configuration.runnerNodes.map((row) => ({
+			machine: {
+				kind: "runner",
+				id: row.githubRunnerNodeId,
+			} as OsUpdateMachine,
+			assignedAt: row.assignedAt,
+			name: row.node?.name ?? row.githubRunnerNodeId,
+		})),
+	].filter((row) => row.assignedAt);
 	if (!assigned.length) return;
 	const open = openWindow(configuration.schedule, now);
 	if (open) {
@@ -428,7 +609,7 @@ const planConfiguration = async (
 			.values(
 				assigned.map((row) => ({
 					organizationId: configuration.organizationId,
-					serverId: row.serverId,
+					...machineColumns(row.machine),
 					osUpdateConfigurationId: configuration.osUpdateConfigurationId,
 					trigger: "schedule" as const,
 					windowStart: open.start.toISOString(),
@@ -457,7 +638,7 @@ const planConfiguration = async (
 		.values(
 			concerned.map((row) => ({
 				organizationId: configuration.organizationId,
-				serverId: row.serverId,
+				...machineColumns(row.machine),
 				osUpdateConfigurationId: configuration.osUpdateConfigurationId,
 				trigger: "schedule" as const,
 				status: "missed" as const,
@@ -470,14 +651,17 @@ const planConfiguration = async (
 			})),
 		)
 		.onConflictDoNothing()
-		.returning({ serverId: osUpdateRuns.serverId });
+		.returning({
+			serverId: osUpdateRuns.serverId,
+			githubRunnerNodeId: osUpdateRuns.githubRunnerNodeId,
+		});
 	if (!missed.length) return;
-	const recorded = new Set(missed.map((item) => item.serverId));
+	const recorded = new Set(missed.map((item) => keyOf(machineOf(item))));
 	// A configuration may hold many servers: the notice names a few.
 	const names = listNames(
 		concerned
-			.filter((row) => recorded.has(row.serverId))
-			.map((row) => row.server?.name ?? row.serverId),
+			.filter((row) => recorded.has(keyOf(row.machine)))
+			.map((row) => row.name),
 	);
 	notify(configuration.organizationId, {
 		event: "missed",
@@ -542,13 +726,16 @@ export const claimRun = async (
 	}
 };
 
-/** Starts the pending runs whose server and configuration are free. */
-const startPendingRuns = async (busyServers: Set<string>) => {
+/** Starts the pending runs whose machine and configuration are free. */
+const startPendingRuns = async (busy: Set<string>) => {
 	const [pending, running] = await Promise.all([
 		db.query.osUpdateRuns.findMany({
 			where: eq(osUpdateRuns.status, "pending"),
 			with: {
 				server: { columns: { name: true, serverStatus: true } },
+				runnerNode: {
+					columns: { name: true, platform: true, phase: true, observed: true },
+				},
 				configuration: true,
 			},
 			orderBy: [asc(osUpdateRuns.createdAt)],
@@ -556,6 +743,7 @@ const startPendingRuns = async (busyServers: Set<string>) => {
 		db
 			.select({
 				serverId: osUpdateRuns.serverId,
+				githubRunnerNodeId: osUpdateRuns.githubRunnerNodeId,
 				configurationId: osUpdateRuns.osUpdateConfigurationId,
 				trigger: osUpdateRuns.trigger,
 			})
@@ -567,26 +755,63 @@ const startPendingRuns = async (busyServers: Set<string>) => {
 			.filter((run) => run.trigger === "schedule" && run.configurationId)
 			.map((run) => run.configurationId),
 	);
-	for (const run of running) busyServers.add(run.serverId);
+	for (const run of running) busy.add(keyOf(machineOf(run)));
 	if (!pending.length) return;
-	const assessments = new Map(
-		(
-			await db.query.osUpdateServers.findMany({
-				where: inArray(
-					osUpdateServers.serverId,
-					pending.map((run) => run.serverId),
-				),
-				columns: {
-					serverId: true,
-					assessment: true,
-					osUpdateConfigurationId: true,
-				},
-			})
-		).map((row) => [row.serverId, row]),
+	const serverIds = pending.flatMap((run) =>
+		run.serverId ? [run.serverId] : [],
 	);
-	// Swarm managers last, then by name: the other nodes go first.
-	const order = (run: (typeof pending)[number]) =>
-		`${assessments.get(run.serverId)?.assessment?.swarm?.manager ? 1 : 0}:${run.server?.name ?? ""}`;
+	const nodeIds = pending.flatMap((run) =>
+		run.githubRunnerNodeId ? [run.githubRunnerNodeId] : [],
+	);
+	const [serverStates, nodeStates] = await Promise.all([
+		serverIds.length
+			? db.query.osUpdateServers.findMany({
+					where: inArray(osUpdateServers.serverId, serverIds),
+					columns: {
+						serverId: true,
+						assessment: true,
+						osUpdateConfigurationId: true,
+					},
+				})
+			: [],
+		nodeIds.length
+			? db.query.osUpdateRunnerNodes.findMany({
+					where: inArray(osUpdateRunnerNodes.githubRunnerNodeId, nodeIds),
+					columns: {
+						githubRunnerNodeId: true,
+						assessment: true,
+						osUpdateConfigurationId: true,
+					},
+				})
+			: [],
+	]);
+	const states = new Map<
+		string,
+		{
+			assessment: ServerAssessment | null;
+			osUpdateConfigurationId: string | null;
+		}
+	>([
+		...serverStates.map(
+			(row) => [keyOf({ kind: "server", id: row.serverId }), row] as const,
+		),
+		...nodeStates.map(
+			(row) =>
+				[keyOf({ kind: "runner", id: row.githubRunnerNodeId }), row] as const,
+		),
+	]);
+	// Swarm managers last, then by name: the other nodes go first. Runner
+	// machines running fewer jobs go first: they empty sooner.
+	const order = (run: (typeof pending)[number]) => {
+		const machine = machineOf(run);
+		if (machine.kind === "runner") {
+			const jobs = (run.runnerNode?.observed?.slots ?? []).filter(
+				(slot) => slot.state === "busy",
+			).length;
+			return `0:${String(jobs).padStart(2, "0")}:${run.runnerNode?.name ?? ""}`;
+		}
+		return `${states.get(keyOf(machine))?.assessment?.swarm?.manager ? 1 : 0}:${run.server?.name ?? ""}`;
+	};
 	pending.sort((a, b) =>
 		a.trigger !== b.trigger
 			? a.trigger === "manual"
@@ -596,25 +821,32 @@ const startPendingRuns = async (busyServers: Set<string>) => {
 	);
 	// One after the other: each claim changes what the next one may take.
 	await sequentially(pending, async (run) => {
-		if (busyServers.has(run.serverId) || state.assessing.has(run.serverId)) {
-			return;
-		}
+		const machine = machineOf(run);
+		const key = keyOf(machine);
+		if (busy.has(key) || state.assessing.has(key)) return;
 		if (
 			run.trigger === "schedule" &&
 			busyConfigurations.has(run.osUpdateConfigurationId)
 		) {
 			return;
 		}
+		const unavailable =
+			machine.kind === "server"
+				? run.server?.serverStatus !== "active"
+					? "The server is inactive in Dokploy: nothing was installed."
+					: null
+				: !isManagedRunnerNode(run.runnerNode)
+					? "The runner machine is not set up, or in error: nothing was installed."
+					: null;
 		const skip =
-			run.server?.serverStatus !== "active"
-				? "The server is inactive in Dokploy: nothing was installed."
-				: run.trigger === "schedule" && !run.configuration?.enabled
-					? "The configuration was disabled or deleted before this server's turn: nothing was installed."
-					: run.trigger === "schedule" &&
-							assessments.get(run.serverId)?.osUpdateConfigurationId !==
-								run.osUpdateConfigurationId
-						? "The server left the configuration before its turn: nothing was installed."
-						: null;
+			unavailable ??
+			(run.trigger === "schedule" && !run.configuration?.enabled
+				? `The configuration was disabled or deleted before this ${machine.kind === "server" ? "server" : "machine"}'s turn: nothing was installed.`
+				: run.trigger === "schedule" &&
+						states.get(key)?.osUpdateConfigurationId !==
+							run.osUpdateConfigurationId
+					? `The ${machine.kind === "server" ? "server" : "machine"} left the configuration before its turn: nothing was installed.`
+					: null);
 		if (skip) {
 			await db
 				.update(osUpdateRuns)
@@ -637,7 +869,7 @@ const startPendingRuns = async (busyServers: Set<string>) => {
 				? settingsOf(run.configuration)
 				: run.settings;
 		if (!(await claimRun(run, settings))) return;
-		busyServers.add(run.serverId);
+		busy.add(key);
 		if (run.trigger === "schedule") {
 			busyConfigurations.add(run.osUpdateConfigurationId);
 		}
@@ -649,7 +881,7 @@ const startPendingRuns = async (busyServers: Set<string>) => {
  * Runs whose process stopped (their lease expired): this process resumes
  * them, from their last step.
  */
-const resumeOrphanedRuns = async (busyServers: Set<string>) => {
+const resumeOrphanedRuns = async (busy: Set<string>) => {
 	const rows = await db
 		.update(osUpdateRuns)
 		.set({
@@ -666,17 +898,22 @@ const resumeOrphanedRuns = async (busyServers: Set<string>) => {
 		.returning({
 			id: osUpdateRuns.osUpdateRunId,
 			serverId: osUpdateRuns.serverId,
+			githubRunnerNodeId: osUpdateRuns.githubRunnerNodeId,
 			organizationId: osUpdateRuns.organizationId,
 			configurationId: osUpdateRuns.osUpdateConfigurationId,
 			attempts: osUpdateRuns.attempts,
 		});
-	for (const row of rows) busyServers.add(row.serverId);
+	for (const row of rows) busy.add(keyOf(machineOf(row)));
 	await Promise.all(
 		rows.map(async (row) => {
+			const machine = machineOf(row);
 			if (row.attempts > MAX_ATTEMPTS) {
-				const message = `Dokploy stopped during this run ${MAX_ATTEMPTS} times: given up. Check the server, then use Install now.`;
+				const message = `Dokploy stopped during this run ${MAX_ATTEMPTS} times: given up. Check the ${machine.kind === "server" ? "server" : "machine"}, then use Install now.`;
 				await finishRun(row.id, { status: "failed", message });
-				const names = await namesOf(row.serverId, row.configurationId);
+				if (machine.kind === "runner") {
+					await releaseOsUpdateDrain(machine.id, row.id);
+				}
+				const names = await namesOf(machine, row.configurationId);
 				notify(row.organizationId, {
 					event: "failed",
 					title: `OS updates failed on ${names.server}`,
@@ -696,10 +933,13 @@ const resumeOrphanedRuns = async (busyServers: Set<string>) => {
 	);
 };
 
-/** The names a notice shows: the server's, and its configuration's. */
-const namesOf = async (serverId: string, configurationId: string | null) => {
+/** The names a notice shows: the machine's, and its configuration's. */
+const namesOf = async (
+	machine: OsUpdateMachine,
+	configurationId: string | null,
+) => {
 	const [target, configuration] = await Promise.all([
-		loadServer(serverId),
+		loadTarget(machine),
 		configurationId
 			? db.query.osUpdateConfigurations.findFirst({
 					where: eq(
@@ -711,7 +951,7 @@ const namesOf = async (serverId: string, configurationId: string | null) => {
 			: null,
 	]);
 	return {
-		server: target?.name ?? serverId,
+		server: target?.name ?? machine.id,
 		configuration: configuration?.name ?? null,
 	};
 };
@@ -732,6 +972,10 @@ const saveProgress = (runId: string, progress: OsUpdateRunProgress) =>
 		.set({ progress })
 		.where(eq(osUpdateRuns.osUpdateRunId, runId));
 
+/**
+ * Ends a running run. False when it no longer runs: cancelled meanwhile (a
+ * runner machine's run, while it waited for the jobs to end).
+ */
 const finishRun = async (
 	runId: string,
 	outcome: {
@@ -739,7 +983,7 @@ const finishRun = async (
 		message: string;
 	},
 ) => {
-	await db
+	const rows = await db
 		.update(osUpdateRuns)
 		.set({
 			status: outcome.status,
@@ -748,8 +992,16 @@ const finishRun = async (
 			lockedBy: null,
 			lockedUntil: null,
 		})
-		.where(eq(osUpdateRuns.osUpdateRunId, runId));
+		.where(
+			and(
+				eq(osUpdateRuns.osUpdateRunId, runId),
+				eq(osUpdateRuns.status, "running"),
+			),
+		)
+		.returning({ id: osUpdateRuns.osUpdateRunId });
+	if (!rows.length) return false;
 	await appendRunLog(runId, outcome.message);
+	return true;
 };
 
 class StepLostError extends Error {}
@@ -829,11 +1081,11 @@ const bootIdOf = async (ssh: Connection) => {
 const waitForBoot = async (
 	ssh: Connection,
 	bootId: string,
-	expect: { docker: boolean; manager: boolean },
+	expect: { docker: boolean; manager: boolean; noun: string },
 	log: (line: string) => Promise<void>,
 	since: number,
 ) => {
-	const { manager } = expect;
+	const { manager, noun } = expect;
 	const deadline = since + REBOOT_TIMEOUT_MS;
 	for (;;) {
 		try {
@@ -844,12 +1096,12 @@ const waitForBoot = async (
 		}
 		if (Date.now() >= deadline) {
 			throw new Error(
-				`The server did not come back within ${REBOOT_TIMEOUT_MS / 60_000} minutes of its reboot`,
+				`The ${noun} did not come back within ${REBOOT_TIMEOUT_MS / 60_000} minutes of its reboot`,
 			);
 		}
 		await sleep(10_000);
 	}
-	await log("The server is back");
+	await log(`The ${noun} is back`);
 	const ready = Date.now() + READY_TIMEOUT_MS;
 	for (;;) {
 		const { stdout } = await ssh.patient(dockerStatusScript(), {
@@ -934,7 +1186,168 @@ const selectionSummary = (
 	return lines.join("\n");
 };
 
-/** The whole run: prepare, install, reboot, assess again. */
+type HoldOutcome =
+	/** Empty: the run may install. With the progress it recorded. */
+	| { kind: "drained"; progress: OsUpdateRunProgress }
+	/** Nothing to do: the machine was never taken out of service. */
+	| { kind: "nothing"; message: string }
+	| { kind: "skipped"; message: string }
+	/** Cancelled by a user while the jobs ran (the run is no longer running). */
+	| { kind: "cancelled" };
+
+/**
+ * Takes a runner machine out of service for the run, and waits until it is
+ * empty: no new job from the start, the running jobs end on their own (never
+ * interrupted). Assessed first, so that a machine with nothing to install
+ * keeps taking jobs. Given up, with nothing installed, when the jobs still
+ * run at the install limit of the window. The run gives the machine back in
+ * every case (executeRun).
+ */
+const holdRunnerMachine = async (input: {
+	runId: string;
+	machine: OsUpdateMachine;
+	name: string;
+	ssh: Connection;
+	settings: OsUpdateSettings;
+	deadline: number;
+	progress: OsUpdateRunProgress;
+	log: (line: string) => Promise<void>;
+}): Promise<HoldOutcome> => {
+	const { runId, machine, name, ssh, settings, log } = input;
+	const limit = input.deadline - INSTALL_RESERVE_MS;
+	let progress = input.progress;
+	let started = Boolean(progress.drainStartedAt);
+	if (!started) {
+		// What it waits for, before any job is held back for it.
+		const { stdout } = await ssh.patient(assessScript({ refresh: true }), {
+			label: "Assessment",
+			timeoutMs: 6 * 60_000,
+		});
+		const assessment =
+			stdout.trim() === "busy" ? null : parseAssessment(stdout);
+		if (assessment) {
+			await saveAssessment(machine, assessment);
+			if (!assessment.supported) {
+				throw new Error(unsupportedMessage(assessment.os));
+			}
+			const selection = selectPackages(assessment.packages, settings);
+			const reboot =
+				settings.reboot === "always" ||
+				(settings.reboot === "if-required" && assessment.rebootRequired);
+			if (
+				!selectedUpdates(selection).length &&
+				!reboot &&
+				!assessment.dpkgInterrupted
+			) {
+				await log(selectionSummary(assessment, selection));
+				return {
+					kind: "nothing",
+					message: `Nothing to install${assessment.rebootRequired ? "; a reboot is pending (reboot setting: never)" : ""}: ${name} kept taking jobs.`,
+				};
+			}
+		}
+		if (Date.now() >= limit) {
+			return {
+				kind: "skipped",
+				message:
+					"The maintenance window closed before the machine could be drained: nothing was installed.",
+			};
+		}
+		// Recorded first: a user may cancel the run while the jobs end.
+		progress = {
+			...progress,
+			step: "drain",
+			drainStartedAt: new Date().toISOString(),
+		};
+		const saved = await db
+			.update(osUpdateRuns)
+			.set({ progress })
+			.where(
+				and(
+					eq(osUpdateRuns.osUpdateRunId, runId),
+					eq(osUpdateRuns.status, "running"),
+				),
+			)
+			.returning({ id: osUpdateRuns.osUpdateRunId });
+		if (!saved.length) return { kind: "cancelled" };
+	}
+	let told: string | null = null;
+	const tell = async (line: string) => {
+		if (line === told) return;
+		told = line;
+		await log(line);
+	};
+	for (;;) {
+		const current = await db.query.osUpdateRuns.findFirst({
+			where: eq(osUpdateRuns.osUpdateRunId, runId),
+			columns: { status: true },
+		});
+		if (current?.status !== "running") return { kind: "cancelled" };
+		const node = await loadRunnerNode(machine.id);
+		if (!node) throw new Error("The runner machine no longer exists");
+		const ours =
+			isOsUpdateDrain(node.drain) && node.drain.osUpdateRunId === runId;
+		if (!ours && started) {
+			return {
+				kind: "skipped",
+				message: `${name} was put back to work, disabled or removed before its jobs ended: nothing was installed.`,
+			};
+		}
+		if (!ours) {
+			if (!isManagedRunnerNode(node)) {
+				return {
+					kind: "skipped",
+					message: `${name} is ${node.phase === "error" ? "in error" : "not set up"} in GitHub Runners: nothing was installed.`,
+				};
+			}
+			if (
+				await startOsUpdateDrain({
+					nodeId: machine.id,
+					runId,
+					abortAt: new Date(limit),
+				})
+			) {
+				started = true;
+				await tell(
+					`${name} takes no new job: the updates are installed once its running jobs end (given up at ${new Date(limit).toISOString().slice(11, 16)} UTC otherwise)`,
+				);
+				continue;
+			}
+			// Another drain (an operator, the runner controller's updates).
+			await tell(
+				`${name} is busy with another action (${node.drain?.reason ?? node.phase}): waiting for it to end`,
+			);
+		} else if (node.drain?.drainedAt) {
+			return { kind: "drained", progress };
+		} else {
+			const jobs = (node.observed?.slots ?? []).filter(
+				(slot) => slot.state === "busy",
+			).length;
+			await tell(
+				node.observed?.reachable === false
+					? `${name} does not answer the runner controller: waiting for it`
+					: jobs
+						? `Waiting for ${plural(jobs, "running job")} to end`
+						: "Waiting for the runner controller to find the machine empty",
+			);
+		}
+		if (Date.now() >= limit) {
+			return {
+				kind: "skipped",
+				message: started
+					? `Jobs still ran on ${name} (or it did not answer) when the maintenance window closed: nothing was installed, and it takes jobs again.`
+					: `${name} was busy with another action until the maintenance window closed: nothing was installed.`,
+			};
+		}
+		await sleepUntilDrainNews(DRAIN_POLL_MS);
+	}
+};
+
+/**
+ * The whole run: prepare, install, reboot, assess again. A runner machine is
+ * drained first (holdRunnerMachine), and given back at the end, whatever
+ * happened.
+ */
 const executeRun = async (runId: string) => {
 	const renew = setInterval(() => {
 		void db
@@ -958,14 +1371,23 @@ const executeRun = async (runId: string) => {
 	let run: OsUpdateRun | undefined;
 	let serverName = runId;
 	let configurationName: string | null = null;
+	/** This process runs it: it gives a runner machine back at the end. */
+	let machine: OsUpdateMachine | null = null;
 	try {
 		run = await db.query.osUpdateRuns.findFirst({
 			where: eq(osUpdateRuns.osUpdateRunId, runId),
 		});
 		if (!run || run.status !== "running" || run.lockedBy !== OWNER) return;
-		const server = await loadServer(run.serverId);
-		if (!server) throw new Error("The server no longer exists");
-		serverName = server.name;
+		machine = machineOf(run);
+		const target = await loadTarget(machine);
+		if (!target) {
+			throw new Error(
+				machine.kind === "server"
+					? "The server no longer exists"
+					: "The runner machine no longer exists",
+			);
+		}
+		serverName = target.name;
 		if (run.osUpdateConfigurationId) {
 			const configuration = await db.query.osUpdateConfigurations.findFirst({
 				where: eq(
@@ -978,9 +1400,10 @@ const executeRun = async (runId: string) => {
 		}
 		const settings = run.settings;
 		const deadline = Date.parse(run.deadline);
-		ssh = connection(server, log);
+		const noun = machine.kind === "server" ? "server" : "machine";
+		ssh = connection(target, log);
 		let progress: OsUpdateRunProgress = run.progress ?? {
-			step: "prepare",
+			step: machine.kind === "runner" ? "drain" : "prepare",
 			logOffset: 0,
 			allowed: null,
 			bootId: null,
@@ -988,8 +1411,64 @@ const executeRun = async (runId: string) => {
 		};
 		if (run.attempts === 1 && !run.progress) {
 			await log(
-				`${run.trigger === "manual" ? "Install now" : "Maintenance window"} on ${server.name}: ${settings.classification === "security" ? "security updates" : "all updates"}, reboot ${settings.reboot}, Docker packages ${settings.allowDockerUpdates ? "allowed" : "held"}; no install starts after ${new Date(deadline - INSTALL_RESERVE_MS).toISOString().slice(0, 16).replace("T", " ")} UTC`,
+				`${run.trigger === "manual" ? "Install now" : "Maintenance window"} on ${target.name}${machine.kind === "runner" ? " (GitHub runner machine)" : ""}: ${settings.classification === "security" ? "security updates" : "all updates"}, reboot ${settings.reboot}, Docker packages ${settings.allowDockerUpdates ? "allowed" : "held"}; no install starts after ${new Date(deadline - INSTALL_RESERVE_MS).toISOString().slice(0, 16).replace("T", " ")} UTC`,
 			);
+		}
+
+		// ---- runner machines: drained first, jobs never interrupted
+		if (progress.step === "drain") {
+			const held = await holdRunnerMachine({
+				runId,
+				machine,
+				name: target.name,
+				ssh,
+				settings,
+				deadline,
+				progress,
+				log,
+			});
+			if (held.kind === "cancelled") {
+				await log("Cancelled while the jobs ended: nothing was installed");
+				return;
+			}
+			if (held.kind === "nothing") {
+				await complete(held.message);
+				return;
+			}
+			if (held.kind === "skipped") {
+				await finishRun(runId, { status: "skipped", message: held.message });
+				return;
+			}
+			// From here on the run installs: no cancel, and the machine stays
+			// out of service until the run gives it back.
+			const next: OsUpdateRunProgress = {
+				...held.progress,
+				step: "prepare",
+				logOffset: 0,
+			};
+			const moved = await db
+				.update(osUpdateRuns)
+				.set({ progress: next })
+				.where(
+					and(
+						eq(osUpdateRuns.osUpdateRunId, runId),
+						eq(osUpdateRuns.status, "running"),
+					),
+				)
+				.returning({ id: osUpdateRuns.osUpdateRunId });
+			if (!moved.length) {
+				await log("Cancelled while the jobs ended: nothing was installed");
+				return;
+			}
+			if (!(await markOsUpdateInstalling(machine.id, runId))) {
+				await finishRun(runId, {
+					status: "skipped",
+					message: `${target.name} was put back to work, disabled or removed before the install: nothing was installed.`,
+				});
+				return;
+			}
+			progress = next;
+			await log(`${target.name} runs no job any more: installing`);
 		}
 
 		let assessment: ServerAssessment | null = null;
@@ -1014,7 +1493,7 @@ const executeRun = async (runId: string) => {
 					});
 					progress = { ...progress, step: "prepare" };
 					assessment = parseAssessment(prepared);
-					if (assessment) await saveAssessment(server.serverId, assessment);
+					if (assessment) await saveAssessment(machine, assessment);
 					if (assessment && !assessment.supported) {
 						throw new Error(unsupportedMessage(assessment.os));
 					}
@@ -1080,13 +1559,8 @@ const executeRun = async (runId: string) => {
 				}
 				installed = parseInstallResult(result);
 				if (!installed) throw new Error("The install step left no result");
-				// Resumed: the prepare step's assessment was saved with the server.
-				assessment ??=
-					(
-						await db.query.osUpdateServers.findFirst({
-							where: eq(osUpdateServers.serverId, server.serverId),
-						})
-					)?.assessment ?? null;
+				// Resumed: the prepare step's assessment was saved with the machine.
+				assessment ??= (await findMachineState(machine))?.assessment ?? null;
 				const security = new Map(
 					(assessment?.packages ?? []).map((item) => [
 						item.name.split(":")[0],
@@ -1133,12 +1607,7 @@ const executeRun = async (runId: string) => {
 			}
 			// Docker and Swarm, as the server reported them before the install.
 			const current =
-				assessment ??
-				(
-					await db.query.osUpdateServers.findFirst({
-						where: eq(osUpdateServers.serverId, server.serverId),
-					})
-				)?.assessment;
+				assessment ?? (await findMachineState(machine))?.assessment;
 			manager =
 				current?.swarm?.manager === true && (current.swarm.managers ?? 1) > 1;
 			dockerRan = current?.docker?.active === true;
@@ -1217,8 +1686,8 @@ const executeRun = async (runId: string) => {
 			await saveProgress(runId, progress);
 			await log(
 				settings.reboot === "always"
-					? "Rebooting the server (reboot setting: always)"
-					: "Rebooting the server: an update asks for it",
+					? `Rebooting the ${noun} (reboot setting: always)`
+					: `Rebooting the ${noun}: an update asks for it`,
 			);
 			await ssh.root(rebootScript(runId), {
 				label: "Reboot",
@@ -1227,11 +1696,7 @@ const executeRun = async (runId: string) => {
 			ssh.reset();
 		} else {
 			// Resumed while the server rebooted.
-			const current = (
-				await db.query.osUpdateServers.findFirst({
-					where: eq(osUpdateServers.serverId, server.serverId),
-				})
-			)?.assessment;
+			const current = (await findMachineState(machine))?.assessment;
 			manager =
 				current?.swarm?.manager === true && (current.swarm.managers ?? 1) > 1;
 			dockerRan = current?.docker?.active === true;
@@ -1253,27 +1718,30 @@ const executeRun = async (runId: string) => {
 			await waitForBoot(
 				ssh,
 				progress.bootId ?? "",
-				{ docker: dockerRan, manager },
+				{ docker: dockerRan, manager, noun },
 				log,
 				Date.parse(progress.rebootRequestedAt ?? new Date().toISOString()),
 			);
 		} finally {
 			if (renewSwarm) clearInterval(renewSwarm);
 		}
+		// The runner controller's connection died with the reboot: it opens a
+		// new one at its next tick instead of failing a probe on the old one.
+		if (machine.kind === "runner") closeSharedSessions(target);
 		await db
 			.update(osUpdateRuns)
 			.set({ rebooted: true })
 			.where(eq(osUpdateRuns.osUpdateRunId, runId));
 		await complete(
-			`${changes.length ? `${plural(changes.length, "package")} updated` : "Nothing installed"}, and the server rebooted.`,
+			`${changes.length ? `${plural(changes.length, "package")} updated` : "Nothing installed"}, and the ${noun} rebooted.`,
 		);
 	} catch (error) {
 		const message = redactLogLine(messageOf(error));
-		await finishRun(runId, {
+		const failed = await finishRun(runId, {
 			status: "failed",
 			message: `Failed: ${message}`,
-		}).catch(() => undefined);
-		if (run) {
+		}).catch(() => false);
+		if (run && failed) {
 			notify(run.organizationId, {
 				event: "failed",
 				title: `OS updates failed on ${serverName}`,
@@ -1287,11 +1755,27 @@ const executeRun = async (runId: string) => {
 		clearInterval(renew);
 		if (swarmLock) await releaseLock(swarmLock).catch(() => undefined);
 		ssh?.reset();
+		// Back to work, whatever happened: installed, failed, skipped,
+		// cancelled. Only the run's own drain goes.
+		if (machine?.kind === "runner") {
+			const given = await releaseOsUpdateDrain(machine.id, runId).catch(
+				(error) => {
+					console.error(
+						`OS updates: ${serverName} not given back to GitHub Runners (the runner controller does it)`,
+						loggableError(error),
+					);
+					return false;
+				},
+			);
+			if (given) {
+				await log(`${serverName} takes jobs again`).catch(() => undefined);
+			}
+		}
 	}
 
-	/** Success: the files of the run go, the server is assessed again. */
+	/** Success: the files of the run go, the machine is assessed again. */
 	async function complete(message: string) {
-		if (!run || !ssh) return;
+		if (!run || !ssh || !machine) return;
 		await ssh
 			.root(cleanupRunScript(runId), { label: "Cleanup", timeoutMs: 30_000 })
 			.catch(() => undefined);
@@ -1301,11 +1785,11 @@ const executeRun = async (runId: string) => {
 				timeoutMs: 2 * 60_000,
 			});
 			const assessment = parseAssessment(stdout);
-			if (assessment) await saveAssessment(run.serverId, assessment);
+			if (assessment) await saveAssessment(machine, assessment);
 		} catch {
 			// The next periodic assessment tells.
 		}
-		await finishRun(runId, { status: "succeeded", message });
+		if (!(await finishRun(runId, { status: "succeeded", message }))) return;
 		const configuration = run.osUpdateConfigurationId
 			? await db.query.osUpdateConfigurations.findFirst({
 					where: eq(
@@ -1356,7 +1840,7 @@ export const tickOsUpdates = async () => {
 		await planOsUpdateWindows(now);
 		await skipClosedOsUpdateRuns(now);
 		await startPendingRuns(busy);
-		await assessDueServers(now, busy);
+		await assessDueMachines(now, busy);
 		await purgeHistory(now);
 	} catch (error) {
 		console.error("OS updates: tick failed", loggableError(error));

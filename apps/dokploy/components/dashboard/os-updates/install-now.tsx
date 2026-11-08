@@ -20,8 +20,9 @@ import { api } from "@/utils/api";
 import { errorText } from "../github-runners/format";
 import {
 	invalidPatterns,
+	machineInput,
 	type OsUpdateConfigurationRow,
-	type OsUpdateServerRow,
+	type OsUpdateMachineRow,
 } from "./format";
 import { SettingsFields } from "./settings-fields";
 
@@ -30,7 +31,7 @@ const InstallForm = ({
 	configuration,
 	onDone,
 }: {
-	server: OsUpdateServerRow;
+	server: OsUpdateMachineRow;
 	configuration: OsUpdateConfigurationRow | null;
 	onDone: () => void;
 }) => {
@@ -56,7 +57,7 @@ const InstallForm = ({
 	const submit = async () => {
 		try {
 			await install.mutateAsync({
-				serverId: server.serverId,
+				...machineInput(server),
 				...settings,
 				maxDurationMinutes: Math.round(hours * 60),
 			});
@@ -95,6 +96,8 @@ const InstallForm = ({
 					<p className="text-xs text-muted-foreground">
 						Like the end of a maintenance window: the run gives up instead of
 						starting the install or the reboot later than this.
+						{server.kind === "runner" &&
+							" A runner machine still running jobs then takes jobs again, with nothing installed."}
 					</p>
 				</div>
 			</div>
@@ -118,7 +121,7 @@ export const InstallNowDialog = ({
 	open,
 	onOpenChange,
 }: {
-	server: OsUpdateServerRow;
+	server: OsUpdateMachineRow;
 	configuration: OsUpdateConfigurationRow | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -130,6 +133,8 @@ export const InstallNowDialog = ({
 				<DialogDescription>
 					Runs once, outside any window: it refreshes the package lists,
 					installs the updates you pick, then reboots if you allow it.
+					{server.kind === "runner" &&
+						" The machine stops taking jobs first: the install starts once its running jobs end, which are never interrupted."}
 				</DialogDescription>
 			</DialogHeader>
 			{open && (

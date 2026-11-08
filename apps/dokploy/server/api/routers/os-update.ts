@@ -7,6 +7,7 @@ import {
 	IS_CLOUD,
 	installOsUpdatesNow,
 	listOsUpdateConfigurations,
+	listOsUpdateRunnerNodes,
 	listOsUpdateRuns,
 	listOsUpdateServers,
 	type OsUpdateAccess,
@@ -16,8 +17,11 @@ import {
 	setOsUpdatePeriodicAssessment,
 	updateOsUpdateConfiguration,
 } from "@dokploy/server";
+import { db } from "@dokploy/server/db";
+import { githubRunnerNodes } from "@dokploy/server/db/schema";
 import { checkPermission } from "@dokploy/server/services/permission";
 import { TRPCError } from "@trpc/server";
+import { eq } from "drizzle-orm";
 import { createTRPCRouter, withPermission } from "@/server/api/trpc";
 import { audit } from "@/server/api/utils/audit";
 import {
@@ -27,7 +31,7 @@ import {
 	apiFindOsUpdateRun,
 	apiInstallOsUpdatesNow,
 	apiListOsUpdateRuns,
-	apiOsUpdateServer,
+	apiOsUpdateMachine,
 	apiSetOsUpdateAssessment,
 	apiSetOsUpdateConfigurationEnabled,
 	apiUpdateOsUpdateConfiguration,
@@ -55,29 +59,74 @@ const remove = guard("delete");
 /** Runs commands as root on a server: Check now and Install now. */
 const run = guard("run");
 
+/** Whether the member holds a permission, without throwing. */
+const allowed = (
+	ctx: Parameters<typeof checkPermission>[0],
+	permissions: Parameters<typeof checkPermission>[1],
+) =>
+	checkPermission(ctx, permissions).then(
+		() => true,
+		() => false,
+	);
+
 /**
  * What the member may reach: the servers of their access (a member may be
- * limited to some), and osUpdate.run, which every change that makes servers
- * run apt as root needs on top of its own right (the service tells when).
+ * limited to some), the runner machines when they may see GitHub runners,
+ * osUpdate.run, which every change that makes machines run apt as root needs
+ * on top of its own right, and githubRunner.update, which every change that
+ * takes runner machines out of service needs (the service tells when).
  */
 const accessOf = async (
 	ctx: Parameters<typeof checkPermission>[0] & {
 		session: { userId: string; activeOrganizationId: string };
 	},
-): Promise<OsUpdateAccess> => ({
-	organizationId: ctx.session.activeOrganizationId,
-	serverIds: await getAccessibleServerIds(ctx.session),
-	requireRun: () => checkPermission(ctx, { osUpdate: ["run"] }),
+): Promise<OsUpdateAccess> => {
+	const organizationId = ctx.session.activeOrganizationId;
+	const [serverIds, seesRunners] = await Promise.all([
+		getAccessibleServerIds(ctx.session),
+		// Self-hosted only, as OS updates (the router checks it first).
+		allowed(ctx, { githubRunner: ["read"] }),
+	]);
+	const runnerNodeIds = seesRunners
+		? new Set(
+				(
+					await db
+						.select({ id: githubRunnerNodes.githubRunnerNodeId })
+						.from(githubRunnerNodes)
+						.where(eq(githubRunnerNodes.organizationId, organizationId))
+				).map((row) => row.id),
+			)
+		: new Set<string>();
+	return {
+		organizationId,
+		serverIds,
+		runnerNodeIds,
+		requireRun: () => checkPermission(ctx, { osUpdate: ["run"] }),
+		requireRunnerUpdate: () =>
+			checkPermission(ctx, { githubRunner: ["update"] }),
+	};
+};
+
+/** What the audit log names: the server, or the runner machine. */
+const auditTarget = (target: {
+	id: string;
+	name: string;
+	machine: { kind: "server" | "runner" };
+}) => ({
+	resourceId: target.id,
+	resourceName: target.name,
+	metadata: { machine: target.machine.kind },
 });
 
 export const osUpdateRouter = createTRPCRouter({
 	overview: read.query(async ({ ctx }) => {
 		const access = await accessOf(ctx);
-		const [servers, configurations] = await Promise.all([
+		const [servers, runnerNodes, configurations] = await Promise.all([
 			listOsUpdateServers(access),
+			listOsUpdateRunnerNodes(access),
 			listOsUpdateConfigurations(access),
 		]);
-		return { servers, configurations };
+		return { servers, runnerNodes, configurations };
 	}),
 
 	runs: read
@@ -110,6 +159,7 @@ export const osUpdateRouter = createTRPCRouter({
 					reboot: configuration.reboot,
 					allowDockerUpdates: configuration.allowDockerUpdates,
 					servers: input.serverIds,
+					runnerNodes: input.runnerNodeIds,
 				},
 			});
 			return configuration;
@@ -136,6 +186,7 @@ export const osUpdateRouter = createTRPCRouter({
 					reboot: configuration.reboot,
 					allowDockerUpdates: configuration.allowDockerUpdates,
 					servers: input.serverIds,
+					runnerNodes: input.runnerNodeIds,
 				},
 			});
 			return configuration;
@@ -178,16 +229,19 @@ export const osUpdateRouter = createTRPCRouter({
 	assign: update
 		.input(apiAssignOsUpdateConfiguration)
 		.mutation(async ({ input, ctx }) => {
-			const { server, configuration } = await assignOsUpdateConfiguration(
+			const { machine, configuration } = await assignOsUpdateConfiguration(
 				input,
 				await accessOf(ctx),
 			);
+			const target = auditTarget(machine);
 			await audit(ctx, {
 				action: "update",
 				resourceType: "osUpdate",
-				resourceId: server.serverId,
-				resourceName: server.name,
-				metadata: { configuration: configuration?.name ?? null },
+				...target,
+				metadata: {
+					...target.metadata,
+					configuration: configuration?.name ?? null,
+				},
 			});
 			return { ok: true };
 		}),
@@ -195,31 +249,31 @@ export const osUpdateRouter = createTRPCRouter({
 	setPeriodicAssessment: update
 		.input(apiSetOsUpdateAssessment)
 		.mutation(async ({ input, ctx }) => {
-			const server = await setOsUpdatePeriodicAssessment(
+			const machine = await setOsUpdatePeriodicAssessment(
 				input,
 				await accessOf(ctx),
 			);
+			const target = auditTarget(machine);
 			await audit(ctx, {
 				action: "update",
 				resourceType: "osUpdate",
-				resourceId: server.serverId,
-				resourceName: server.name,
-				metadata: { periodicAssessment: input.periodicAssessment },
+				...target,
+				metadata: {
+					...target.metadata,
+					periodicAssessment: input.periodicAssessment,
+				},
 			});
 			return { ok: true };
 		}),
 
-	checkNow: run.input(apiOsUpdateServer).mutation(async ({ input, ctx }) => {
-		const server = await requestOsUpdateAssessment(
-			input.serverId,
-			await accessOf(ctx),
-		);
+	checkNow: run.input(apiOsUpdateMachine).mutation(async ({ input, ctx }) => {
+		const machine = await requestOsUpdateAssessment(input, await accessOf(ctx));
+		const target = auditTarget(machine);
 		await audit(ctx, {
 			action: "run",
 			resourceType: "osUpdate",
-			resourceId: server.serverId,
-			resourceName: server.name,
-			metadata: { assessment: true },
+			...target,
+			metadata: { ...target.metadata, assessment: true },
 		});
 		return { ok: true };
 	}),
@@ -227,32 +281,37 @@ export const osUpdateRouter = createTRPCRouter({
 	installNow: run
 		.input(apiInstallOsUpdatesNow)
 		.mutation(async ({ input, ctx }) => {
-			const { run: queued, server } = await installOsUpdatesNow(
+			const { run: queued, machine } = await installOsUpdatesNow(
 				input,
 				await accessOf(ctx),
 				ctx.user.email,
 			);
+			const target = auditTarget(machine);
 			await audit(ctx, {
 				action: "run",
 				resourceType: "osUpdate",
-				resourceId: server.serverId,
-				resourceName: server.name,
-				metadata: { run: queued.osUpdateRunId, settings: queued.settings },
+				...target,
+				metadata: {
+					...target.metadata,
+					run: queued.osUpdateRunId,
+					settings: queued.settings,
+				},
 			});
 			return queued;
 		}),
 
 	cancelRun: run.input(apiFindOsUpdateRun).mutation(async ({ input, ctx }) => {
-		const { run: cancelled, server } = await cancelOsUpdateRun(
+		const { run: cancelled, machine } = await cancelOsUpdateRun(
 			input.osUpdateRunId,
 			await accessOf(ctx),
 		);
+		const target = auditTarget(machine);
 		await audit(ctx, {
 			action: "cancel",
 			resourceType: "osUpdate",
-			resourceId: server.serverId,
-			resourceName: server.name,
+			...target,
 			metadata: {
+				...target.metadata,
 				run: cancelled.osUpdateRunId,
 				trigger: cancelled.trigger,
 				windowStart: cancelled.windowStart,

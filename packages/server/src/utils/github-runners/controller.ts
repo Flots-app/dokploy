@@ -24,6 +24,7 @@ import {
 	githubRunnerOperations,
 	githubRunnerPools,
 	githubRunnerReroutes,
+	osUpdateRunnerNodes,
 } from "@dokploy/server/db/schema";
 import {
 	and,
@@ -50,6 +51,16 @@ import { nftablesRuleset, pfRuleset, type Ruleset } from "../firewall/backends";
 import { compileFirewall, filters } from "../firewall/model";
 import { sendGithubRunnerNotifications } from "../notifications/github-runners";
 import { rebootCommand } from "../os-updates/apt";
+import {
+	assertNotInstallingOsUpdates,
+	isOsUpdateDrain,
+	isOsUpdateInstalling,
+	notInstallingOsUpdates,
+	osUpdateInstallingMessage,
+	releaseOsUpdateDrain,
+	settleOsUpdateDrain,
+	staleOsUpdateDrains,
+} from "../os-updates/runner-drain";
 import {
 	mapWithConcurrency,
 	sequentially,
@@ -1236,6 +1247,7 @@ export const provisionRunnerNode = async (
 	if (tasks.has(nodeId)) {
 		throw new Error("Another task is running on this machine");
 	}
+	assertNotInstallingOsUpdates(node);
 	const operation = await createOperation(
 		node,
 		"provision",
@@ -1322,6 +1334,9 @@ export const disableRunnerNode = async (
 			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 		return null;
 	}
+	// A drain for OS updates that installs keeps the machine: disabled, it
+	// could be enabled again before the reboot.
+	assertNotInstallingOsUpdates(node);
 	const operation = await createOperation(
 		node,
 		"disable",
@@ -1334,7 +1349,7 @@ export const disableRunnerNode = async (
 	const now = new Date();
 	// A new drain does not wait for the retry delay of a previous one.
 	state.drainRetryAt.delete(nodeId);
-	await db
+	const disabled = await db
 		.update(githubRunnerNodes)
 		.set({
 			enabled: false,
@@ -1352,7 +1367,19 @@ export const disableRunnerNode = async (
 				operationId: operation.githubRunnerOperationId,
 			},
 		})
-		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		.where(
+			and(
+				eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+				notInstallingOsUpdates(),
+			),
+		)
+		.returning({ id: githubRunnerNodes.githubRunnerNodeId });
+	if (!disabled.length) {
+		// An OS update run started installing meanwhile.
+		const message = osUpdateInstallingMessage(node.name);
+		await finishOperation(operation.githubRunnerOperationId, "error", message);
+		throw new Error(message);
+	}
 	await appendOperationLog(
 		operation.githubRunnerOperationId,
 		options.mode === "kill"
@@ -1375,6 +1402,8 @@ export const enableRunnerNode = async (
 			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 		return provisionRunnerNode(nodeId, userId);
 	}
+	// Taking jobs during the install of OS updates: the reboot would kill them.
+	assertNotInstallingOsUpdates(node);
 	const operation = await createOperation(
 		node,
 		"enable",
@@ -1382,10 +1411,21 @@ export const enableRunnerNode = async (
 		userId,
 		{ supersede: true },
 	);
-	await db
+	const enabled = await db
 		.update(githubRunnerNodes)
 		.set({ enabled: true, drain: null })
-		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		.where(
+			and(
+				eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+				notInstallingOsUpdates(),
+			),
+		)
+		.returning({ id: githubRunnerNodes.githubRunnerNodeId });
+	if (!enabled.length) {
+		const message = osUpdateInstallingMessage(node.name);
+		await finishOperation(operation.githubRunnerOperationId, "error", message);
+		throw new Error(message);
+	}
 	if (node.phase === "ready" || node.phase === "draining") {
 		await db
 			.update(githubRunnerNodes)
@@ -1597,6 +1637,9 @@ export const removeRunnerNode = async (
 			.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
 		return null;
 	}
+	// Uninstalling the runtime while apt runs: the removal waits for the run
+	// (a forced removal, for a machine that is gone, does not).
+	assertNotInstallingOsUpdates(node);
 	const operation = await createOperation(
 		node,
 		"remove",
@@ -1625,7 +1668,25 @@ export const removeRunnerNode = async (
 				uninstall: options.uninstall,
 			},
 		})
-		.where(eq(githubRunnerNodes.githubRunnerNodeId, nodeId));
+		.where(
+			and(
+				eq(githubRunnerNodes.githubRunnerNodeId, nodeId),
+				notInstallingOsUpdates(),
+			),
+		)
+		.returning({ id: githubRunnerNodes.githubRunnerNodeId })
+		.then((rows) => {
+			if (rows.length) return;
+			throw new Error(osUpdateInstallingMessage(node.name));
+		})
+		.catch(async (error) => {
+			await finishOperation(
+				operation.githubRunnerOperationId,
+				"error",
+				error instanceof Error ? error.message : String(error),
+			);
+			throw error;
+		});
 	await appendOperationLog(
 		operation.githubRunnerOperationId,
 		options.mode === "kill"
@@ -3222,6 +3283,18 @@ const patchableOs = (node: GithubRunnerNode) =>
 		? (node.osReport?.guest ?? null)
 		: (node.osReport?.host ?? null);
 
+/** The machine follows a maintenance configuration of OS Updates. */
+const inOsUpdateConfiguration = async (nodeId: string) =>
+	Boolean(
+		await db.query.osUpdateRunnerNodes.findFirst({
+			where: and(
+				eq(osUpdateRunnerNodes.githubRunnerNodeId, nodeId),
+				isNotNull(osUpdateRunnerNodes.osUpdateConfigurationId),
+			),
+			columns: { githubRunnerNodeId: true },
+		}),
+	);
+
 /**
  * Starts the OS updates of a machine: it stops taking jobs, its jobs end, then
  * completeDrain installs the updates and reboots if needed (finishPatch).
@@ -3654,7 +3727,8 @@ const actOnNode = async (
 				runtime.runtimeVersion < RUNTIME_VERSION &&
 				(phase === "ready" || phase === "draining") &&
 				// OS updates own the machine until they end.
-				node.drain?.reason !== "patch"
+				node.drain?.reason !== "patch" &&
+				node.drain?.reason !== "os-update"
 			) {
 				const decision = decide({
 					required: runtime.runtimeVersion < MIN_RUNTIME_VERSION,
@@ -3736,7 +3810,9 @@ const actOnNode = async (
 							node.updateState?.patchedAt ??
 							"1970-01-01",
 					) >
-					PATCH_EVERY_MS
+					PATCH_EVERY_MS &&
+				// A maintenance configuration of OS Updates patches it instead.
+				!(await inOsUpdateConfiguration(nodeId))
 			) {
 				const decision = updateDecision({
 					policy,
@@ -3917,6 +3993,24 @@ const actOnNode = async (
 				node.platform === "macos" &&
 				probe.vm !== null &&
 				probe.vm.status !== "Running");
+		// An OS update run holds the machine: empty, it is handed to the run,
+		// which installs and gives it back. Nothing for completeDrain to do.
+		if (isOsUpdateDrain(node.drain)) {
+			const handed = await settleOsUpdateDrain({
+				nodeId,
+				drain: node.drain,
+				drained,
+				runtime: probe.runtimeError ? null : runtime,
+				autonomyRuntime: AUTONOMY_RUNTIME,
+			});
+			if (handed) {
+				recordEvent(
+					events,
+					"No job runs any more: its OS updates (OS Updates) start",
+				);
+			}
+			drained = false;
+		}
 		// OS updates that could not start before the end of the window wait for the next one.
 		const patch = node.drain?.reason === "patch" ? node.drain : null;
 		if (
@@ -3931,7 +4025,11 @@ const actOnNode = async (
 
 		const pressure =
 			runtime && host ? diskGoal(node, host, runtime, now) : null;
-		if (
+		// A machine handed to its OS updates is left alone (cleanups use
+		// Docker, which the updates may restart; a benchmark would compete).
+		if (isOsUpdateDrain(node.drain)) {
+			// Nothing.
+		} else if (
 			pressure &&
 			cleanupDue(state.lastCleanups.get(nodeId), now, busy, pressure.trigger) &&
 			startCleanup(nodeId, {
@@ -5011,6 +5109,36 @@ const evaluateAlerts = async () => {
 	);
 };
 
+/**
+ * Gives back the machines an OS update run left drained: its run ended
+ * without doing it, or its process stopped before installing and the window
+ * closed. Without this they would stay out of service.
+ */
+const releaseStaleOsUpdateDrains = async (nodes: NodeWithRelations[]) => {
+	const stale = await staleOsUpdateDrains(nodes, Date.now()).catch((error) => {
+		console.error("GitHub runners: OS update drains not checked", error);
+		return [];
+	});
+	await Promise.all(
+		stale.map(async (node) => {
+			const drain = node.drain;
+			if (!isOsUpdateDrain(drain)) return;
+			const given = await releaseOsUpdateDrain(
+				node.githubRunnerNodeId,
+				drain.osUpdateRunId,
+			).catch(() => false);
+			if (!given) return;
+			// This tick sees the machine back at work.
+			node.phase = node.enabled ? "ready" : "stopped";
+			node.drain = null;
+			pushEvent(
+				node.githubRunnerNodeId,
+				"Its OS update run ended without giving it back: it takes jobs again",
+			);
+		}),
+	);
+};
+
 const tickGithubRunners = async () => {
 	if (!state.leader) return;
 	if (state.running) {
@@ -5026,12 +5154,16 @@ const tickGithubRunners = async () => {
 		for (const nodeId of state.reconnects.keys()) {
 			if (!ids.has(nodeId)) state.reconnects.delete(nodeId);
 		}
+		await releaseStaleOsUpdateDrains(nodes);
 		const byPool = new Map<string, NodeWithRelations[]>();
 		for (const node of nodes) {
 			if (
 				node.phase === "enrolling" ||
 				node.phase === "new" ||
-				node.phase === "provisioning"
+				node.phase === "provisioning" ||
+				// Its OS update run drives it until it gives it back: no probe
+				// while it installs and reboots (no "unreachable", no cleanup).
+				isOsUpdateInstalling(node.drain)
 			) {
 				continue;
 			}

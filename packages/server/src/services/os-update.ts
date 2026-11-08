@@ -1,34 +1,59 @@
 /**
- * OS updates of the remote servers: maintenance configurations, their
- * servers, assessments and runs. The controller (utils/os-updates) does the
- * work; this service records what users ask for.
+ * OS updates of the remote servers and of the Linux GitHub runner machines:
+ * maintenance configurations, their machines, assessments and runs. The
+ * controller (utils/os-updates) does the work; this service records what
+ * users ask for.
  *
  * Every call carries the access of the member who asks: the servers they may
  * reach (a member restricted to some servers sees and changes only those),
- * and `requireRun`, the check of the right to make servers run apt as root
- * (osUpdate.run). Assigning servers, enabling a configuration, changing its
- * window or what it installs, and assessing a server all lead to root apt
- * runs: they need it, as Check now and Install now do.
+ * the runner machines they may see (githubRunner.read), and two checks:
+ * `requireRun`, the right to make machines run apt as root (osUpdate.run),
+ * and `requireRunnerUpdate`, the right to take runner machines out of
+ * service (githubRunner.update). Assigning machines, enabling a
+ * configuration, changing its window or what it installs, and assessing a
+ * machine all lead to root apt runs: they need the first, as Check now and
+ * Install now do; on runner machines they need the second too.
  */
 import { db } from "@dokploy/server/db";
 import {
 	type apiCreateOsUpdateConfiguration,
 	type apiInstallOsUpdatesNow,
 	type apiUpdateOsUpdateConfiguration,
+	githubRunnerNodes,
+	githubRunnerPools,
 	type OsUpdateConfiguration,
 	osUpdateConfigurations,
+	osUpdateRunnerNodes,
 	osUpdateRuns,
 	osUpdateServers,
 	server,
 } from "@dokploy/server/db/schema";
-import { requestOsUpdatesTick } from "@dokploy/server/utils/os-updates/controller";
+import {
+	isManagedRunnerNode,
+	machineOf,
+	type OsUpdateMachine,
+	requestOsUpdatesTick,
+} from "@dokploy/server/utils/os-updates/controller";
 import { osUpdateSettingsSchema } from "@dokploy/server/utils/os-updates/filters";
+import {
+	isOsUpdateDrain,
+	wakeOsUpdateDrains,
+} from "@dokploy/server/utils/os-updates/runner-drain";
 import {
 	nextWindow,
 	openWindow,
 } from "@dokploy/server/utils/os-updates/schedule";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, getTableColumns, inArray } from "drizzle-orm";
+import {
+	and,
+	desc,
+	eq,
+	getTableColumns,
+	inArray,
+	isNotNull,
+	or,
+	sql,
+} from "drizzle-orm";
 import type { z } from "zod";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -37,9 +62,24 @@ export interface OsUpdateAccess {
 	organizationId: string;
 	/** The servers of the organization the member may access. */
 	serverIds: Set<string>;
-	/** Throws unless the member may make servers run apt as root. */
+	/** The runner machines of the organization the member may see. */
+	runnerNodeIds: Set<string>;
+	/** Throws unless the member may make machines run apt as root. */
 	requireRun: () => Promise<void>;
+	/** Throws unless the member may take runner machines out of service. */
+	requireRunnerUpdate: () => Promise<void>;
 }
+
+/** A server or a runner machine, as the API names it. */
+export interface OsUpdateMachineInput {
+	serverId?: string;
+	githubRunnerNodeId?: string;
+}
+
+export const machineOfInput = (input: OsUpdateMachineInput): OsUpdateMachine =>
+	input.githubRunnerNodeId
+		? { kind: "runner", id: input.githubRunnerNodeId }
+		: { kind: "server", id: input.serverId ?? "" };
 
 const notFound = (what: string) =>
 	new TRPCError({ code: "NOT_FOUND", message: `${what} not found` });
@@ -49,6 +89,15 @@ const forbiddenServer = () =>
 		code: "UNAUTHORIZED",
 		message: "You are not authorized to access this server",
 	});
+
+const forbiddenRunner = () =>
+	new TRPCError({
+		code: "UNAUTHORIZED",
+		message: "You are not authorized to access this runner machine",
+	});
+
+const LINUX_ONLY =
+	"OS updates manage Linux runner machines only: the VM of a Mac follows the update policy of its pool, and macOS its owner";
 
 const isUniqueViolation = (error: unknown) =>
 	(error as { cause?: { code?: string } }).cause?.code === "23505" ||
@@ -68,6 +117,64 @@ const findServer = async (serverId: string, access: OsUpdateAccess) => {
 	return row;
 };
 
+/**
+ * A machine of the organization the member may access: its id, name, and
+ * whether OS updates may work on it now. A runner machine must be Linux.
+ */
+const findMachine = async (
+	machine: OsUpdateMachine,
+	access: OsUpdateAccess,
+) => {
+	if (machine.kind === "server") {
+		const row = await findServer(machine.id, access);
+		return {
+			machine,
+			id: row.serverId,
+			name: row.name,
+			active: row.serverStatus === "active",
+		};
+	}
+	const node = await db.query.githubRunnerNodes.findFirst({
+		where: and(
+			eq(githubRunnerNodes.githubRunnerNodeId, machine.id),
+			eq(githubRunnerNodes.organizationId, access.organizationId),
+		),
+		columns: {
+			githubRunnerNodeId: true,
+			name: true,
+			platform: true,
+			phase: true,
+		},
+	});
+	if (!node) throw notFound("Runner machine");
+	if (!access.runnerNodeIds.has(machine.id)) throw forbiddenRunner();
+	if (node.platform !== "linux") {
+		throw new TRPCError({ code: "BAD_REQUEST", message: LINUX_ONLY });
+	}
+	return {
+		machine,
+		id: node.githubRunnerNodeId,
+		name: node.name,
+		active: isManagedRunnerNode(node),
+	};
+};
+
+/** Refused on a machine OS updates cannot work on now. */
+const assertActive = (found: {
+	name: string;
+	active: boolean;
+	machine: OsUpdateMachine;
+}) => {
+	if (found.active) return;
+	throw new TRPCError({
+		code: "BAD_REQUEST",
+		message:
+			found.machine.kind === "server"
+				? `${found.name} is inactive in Dokploy`
+				: `${found.name} is not set up, or in error, in GitHub Runners`,
+	});
+};
+
 export const findOsUpdateConfiguration = async (
 	osUpdateConfigurationId: string,
 	organizationId: string,
@@ -85,32 +192,49 @@ export const findOsUpdateConfiguration = async (
 	return configuration;
 };
 
-/** The servers a configuration applies to. */
-const serversOf = async (osUpdateConfigurationId: string) =>
-	(
-		await db.query.osUpdateServers.findMany({
+/** The machines a configuration applies to. */
+const machinesOf = async (osUpdateConfigurationId: string) => {
+	const [servers, runnerNodes] = await Promise.all([
+		db.query.osUpdateServers.findMany({
 			where: eq(
 				osUpdateServers.osUpdateConfigurationId,
 				osUpdateConfigurationId,
 			),
 			columns: { serverId: true },
-		})
-	).map((row) => row.serverId);
+		}),
+		db.query.osUpdateRunnerNodes.findMany({
+			where: eq(
+				osUpdateRunnerNodes.osUpdateConfigurationId,
+				osUpdateConfigurationId,
+			),
+			columns: { githubRunnerNodeId: true },
+		}),
+	]);
+	return {
+		serverIds: servers.map((row) => row.serverId),
+		runnerNodeIds: runnerNodes.map((row) => row.githubRunnerNodeId),
+	};
+};
+
+type Machines = Awaited<ReturnType<typeof machinesOf>>;
 
 /**
  * A change to a configuration itself (its window, what it installs, whether
- * it runs, its removal) applies to all its servers: the member must access
+ * it runs, its removal) applies to all its machines: the member must access
  * every one of them.
  */
 const assertWholeConfiguration = (
-	serverIds: string[],
+	machines: Machines,
 	access: OsUpdateAccess,
 ) => {
-	if (serverIds.some((serverId) => !access.serverIds.has(serverId))) {
+	if (
+		machines.serverIds.some((serverId) => !access.serverIds.has(serverId)) ||
+		machines.runnerNodeIds.some((nodeId) => !access.runnerNodeIds.has(nodeId))
+	) {
 		throw new TRPCError({
 			code: "UNAUTHORIZED",
 			message:
-				"This configuration also applies to servers you cannot access: only its servers can be changed",
+				"This configuration also applies to machines you cannot access: only its machines can be changed",
 		});
 	}
 };
@@ -137,90 +261,172 @@ export const listOsUpdateConfigurations = async (access: OsUpdateAccess) => {
 			servers: {
 				with: { server: { columns: { serverId: true, name: true } } },
 			},
+			runnerNodes: {
+				with: {
+					node: { columns: { githubRunnerNodeId: true, name: true } },
+				},
+			},
 		},
 		orderBy: (table, { asc }) => asc(table.name),
 	});
 	const now = new Date();
-	return rows.map(({ servers, ...configuration }) => {
+	return rows.map(({ servers, runnerNodes, ...configuration }) => {
 		const listed = servers.flatMap((row) => (row.server ? [row.server] : []));
+		const nodes = runnerNodes.flatMap((row) => (row.node ? [row.node] : []));
 		return {
 			...configuration,
 			servers: listed.filter((item) => access.serverIds.has(item.serverId)),
-			/** Servers it applies to that the member cannot access. */
-			hiddenServers: listed.filter(
-				(item) => !access.serverIds.has(item.serverId),
-			).length,
+			runnerNodes: nodes.filter((item) =>
+				access.runnerNodeIds.has(item.githubRunnerNodeId),
+			),
+			/** Machines it applies to that the member cannot access. */
+			hiddenMachines:
+				listed.filter((item) => !access.serverIds.has(item.serverId)).length +
+				nodes.filter(
+					(item) => !access.runnerNodeIds.has(item.githubRunnerNodeId),
+				).length,
 			window: windowOf(configuration, now),
 		};
 	});
 };
 
 /**
- * Assigns the servers a member may access to a configuration: those listed
+ * Assigns the machines a member may access to a configuration: those listed
  * join it (leaving any other, and assessed every day from then on), those
- * it had and are not listed leave it. Servers out of the member's access
- * stay as they are. Returns the servers that joined.
+ * it had and are not listed leave it. Machines out of the member's access
+ * stay as they are. Runner machines must be Linux.
  */
-const assignServers = async (
+const assignMachines = async (
 	tx: Transaction,
 	configurationId: string,
-	serverIds: string[],
+	wanted: Machines,
 	access: OsUpdateAccess,
 ) => {
-	const wantedIds = new Set(serverIds);
-	const wanted = [...wantedIds];
-	if (wanted.some((serverId) => !access.serverIds.has(serverId))) {
+	const wantedServers = new Set(wanted.serverIds);
+	const wantedNodes = new Set(wanted.runnerNodeIds);
+	if ([...wantedServers].some((serverId) => !access.serverIds.has(serverId))) {
 		throw forbiddenServer();
 	}
-	if (wanted.length) {
+	if ([...wantedNodes].some((nodeId) => !access.runnerNodeIds.has(nodeId))) {
+		throw forbiddenRunner();
+	}
+	if (wantedServers.size) {
 		const owned = await tx
 			.select({ serverId: server.serverId })
 			.from(server)
 			.where(
 				and(
-					inArray(server.serverId, wanted),
+					inArray(server.serverId, [...wantedServers]),
 					eq(server.organizationId, access.organizationId),
 				),
 			);
-		if (owned.length !== wanted.length) throw notFound("Server");
+		if (owned.length !== wantedServers.size) throw notFound("Server");
 	}
-	const current = await tx
-		.select({ serverId: osUpdateServers.serverId })
-		.from(osUpdateServers)
-		.where(eq(osUpdateServers.osUpdateConfigurationId, configurationId));
-	const currentIds = new Set(current.map((row) => row.serverId));
-	const leaving = [...currentIds].filter(
-		(serverId) => access.serverIds.has(serverId) && !wantedIds.has(serverId),
+	if (wantedNodes.size) {
+		const owned = await tx
+			.select({
+				id: githubRunnerNodes.githubRunnerNodeId,
+				platform: githubRunnerNodes.platform,
+			})
+			.from(githubRunnerNodes)
+			.where(
+				and(
+					inArray(githubRunnerNodes.githubRunnerNodeId, [...wantedNodes]),
+					eq(githubRunnerNodes.organizationId, access.organizationId),
+				),
+			);
+		if (owned.length !== wantedNodes.size) throw notFound("Runner machine");
+		if (owned.some((node) => node.platform !== "linux")) {
+			throw new TRPCError({ code: "BAD_REQUEST", message: LINUX_ONLY });
+		}
+	}
+	const now = new Date().toISOString();
+	const joined = { serverIds: [] as string[], runnerNodeIds: [] as string[] };
+
+	const currentServers = new Set(
+		(
+			await tx
+				.select({ serverId: osUpdateServers.serverId })
+				.from(osUpdateServers)
+				.where(eq(osUpdateServers.osUpdateConfigurationId, configurationId))
+		).map((row) => row.serverId),
 	);
-	if (leaving.length) {
+	const leavingServers = [...currentServers].filter(
+		(serverId) =>
+			access.serverIds.has(serverId) && !wantedServers.has(serverId),
+	);
+	if (leavingServers.length) {
 		await tx
 			.update(osUpdateServers)
 			.set({ osUpdateConfigurationId: null, assignedAt: null })
-			.where(inArray(osUpdateServers.serverId, leaving));
+			.where(inArray(osUpdateServers.serverId, leavingServers));
 	}
-	const joining = wanted.filter((serverId) => !currentIds.has(serverId));
-	if (!joining.length) return joining;
-	// Joining from another configuration, or for the first time.
-	const now = new Date().toISOString();
-	await tx
-		.insert(osUpdateServers)
-		.values(
-			joining.map((serverId) => ({
-				serverId,
-				osUpdateConfigurationId: configurationId,
-				assignedAt: now,
-				periodicAssessment: true,
-			})),
-		)
-		.onConflictDoUpdate({
-			target: osUpdateServers.serverId,
-			set: {
-				osUpdateConfigurationId: configurationId,
-				assignedAt: now,
-				periodicAssessment: true,
-			},
-		});
-	return joining;
+	joined.serverIds = [...wantedServers].filter(
+		(serverId) => !currentServers.has(serverId),
+	);
+	if (joined.serverIds.length) {
+		// Joining from another configuration, or for the first time.
+		await tx
+			.insert(osUpdateServers)
+			.values(
+				joined.serverIds.map((serverId) => ({
+					serverId,
+					osUpdateConfigurationId: configurationId,
+					assignedAt: now,
+					periodicAssessment: true,
+				})),
+			)
+			.onConflictDoUpdate({
+				target: osUpdateServers.serverId,
+				set: {
+					osUpdateConfigurationId: configurationId,
+					assignedAt: now,
+					periodicAssessment: true,
+				},
+			});
+	}
+
+	const currentNodes = new Set(
+		(
+			await tx
+				.select({ nodeId: osUpdateRunnerNodes.githubRunnerNodeId })
+				.from(osUpdateRunnerNodes)
+				.where(eq(osUpdateRunnerNodes.osUpdateConfigurationId, configurationId))
+		).map((row) => row.nodeId),
+	);
+	const leavingNodes = [...currentNodes].filter(
+		(nodeId) => access.runnerNodeIds.has(nodeId) && !wantedNodes.has(nodeId),
+	);
+	if (leavingNodes.length) {
+		await tx
+			.update(osUpdateRunnerNodes)
+			.set({ osUpdateConfigurationId: null, assignedAt: null })
+			.where(inArray(osUpdateRunnerNodes.githubRunnerNodeId, leavingNodes));
+	}
+	joined.runnerNodeIds = [...wantedNodes].filter(
+		(nodeId) => !currentNodes.has(nodeId),
+	);
+	if (joined.runnerNodeIds.length) {
+		await tx
+			.insert(osUpdateRunnerNodes)
+			.values(
+				joined.runnerNodeIds.map((githubRunnerNodeId) => ({
+					githubRunnerNodeId,
+					osUpdateConfigurationId: configurationId,
+					assignedAt: now,
+					periodicAssessment: true,
+				})),
+			)
+			.onConflictDoUpdate({
+				target: osUpdateRunnerNodes.githubRunnerNodeId,
+				set: {
+					osUpdateConfigurationId: configurationId,
+					assignedAt: now,
+					periodicAssessment: true,
+				},
+			});
+	}
+	return joined;
 };
 
 const configurationValues = (
@@ -286,8 +492,18 @@ export const createOsUpdateConfiguration = async (
 	if (input.serverIds.some((serverId) => !access.serverIds.has(serverId))) {
 		throw forbiddenServer();
 	}
-	// Servers in an enabled configuration install in its windows.
-	if (input.enabled && input.serverIds.length) await access.requireRun();
+	if (input.runnerNodeIds.some((nodeId) => !access.runnerNodeIds.has(nodeId))) {
+		throw forbiddenRunner();
+	}
+	// Machines in an enabled configuration install in its windows.
+	if (
+		input.enabled &&
+		input.serverIds.length + input.runnerNodeIds.length > 0
+	) {
+		await access.requireRun();
+	}
+	// Runner machines it holds are drained in its windows.
+	if (input.runnerNodeIds.length) await access.requireRunnerUpdate();
 	try {
 		const configuration = await db.transaction(async (tx) => {
 			const [row] = await tx
@@ -298,10 +514,10 @@ export const createOsUpdateConfiguration = async (
 				})
 				.returning();
 			if (!row) throw new Error("The configuration was not created");
-			await assignServers(
+			await assignMachines(
 				tx,
 				row.osUpdateConfigurationId,
-				input.serverIds,
+				{ serverIds: input.serverIds, runnerNodeIds: input.runnerNodeIds },
 				access,
 			);
 			return row;
@@ -322,27 +538,50 @@ export const updateOsUpdateConfiguration = async (
 		input.osUpdateConfigurationId,
 		access.organizationId,
 	);
-	const currentServers = await serversOf(current.osUpdateConfigurationId);
+	const currentMachines = await machinesOf(current.osUpdateConfigurationId);
 	const settingsChanged =
 		installSettings(current) !== installSettings(input) ||
 		current.enabled !== input.enabled;
-	if (settingsChanged) assertWholeConfiguration(currentServers, access);
+	if (settingsChanged) assertWholeConfiguration(currentMachines, access);
 	if (input.serverIds.some((serverId) => !access.serverIds.has(serverId))) {
 		throw forbiddenServer();
 	}
-	const hidden = currentServers.filter(
+	if (input.runnerNodeIds.some((nodeId) => !access.runnerNodeIds.has(nodeId))) {
+		throw forbiddenRunner();
+	}
+	const hiddenServers = currentMachines.serverIds.filter(
 		(serverId) => !access.serverIds.has(serverId),
 	);
-	const assigned = new Set(currentServers);
-	const joining = input.serverIds.filter((serverId) => !assigned.has(serverId));
-	const serversAfter = hidden.length + input.serverIds.length;
-	// Servers that start installing, or install at other times or other updates.
-	if (
-		input.enabled &&
-		serversAfter > 0 &&
-		(joining.length > 0 || settingsChanged)
-	) {
+	const hiddenNodes = currentMachines.runnerNodeIds.filter(
+		(nodeId) => !access.runnerNodeIds.has(nodeId),
+	);
+	const assignedServers = new Set(currentMachines.serverIds);
+	const assignedNodes = new Set(currentMachines.runnerNodeIds);
+	const joining =
+		input.serverIds.filter((serverId) => !assignedServers.has(serverId))
+			.length +
+		input.runnerNodeIds.filter((nodeId) => !assignedNodes.has(nodeId)).length;
+	const machinesAfter =
+		hiddenServers.length +
+		hiddenNodes.length +
+		input.serverIds.length +
+		input.runnerNodeIds.length;
+	// Machines that start installing, or install at other times or other updates.
+	if (input.enabled && machinesAfter > 0 && (joining > 0 || settingsChanged)) {
 		await access.requireRun();
+	}
+	// Runner machines joining or leaving it, or drained at other times.
+	const wanted = new Set(input.runnerNodeIds);
+	const runnersChanged =
+		input.runnerNodeIds.some((nodeId) => !assignedNodes.has(nodeId)) ||
+		currentMachines.runnerNodeIds.some(
+			(nodeId) => access.runnerNodeIds.has(nodeId) && !wanted.has(nodeId),
+		);
+	if (
+		runnersChanged ||
+		(settingsChanged && hiddenNodes.length + input.runnerNodeIds.length > 0)
+	) {
+		await access.requireRunnerUpdate();
 	}
 	try {
 		const configuration = await db.transaction(async (tx) => {
@@ -361,10 +600,10 @@ export const updateOsUpdateConfiguration = async (
 				)
 				.returning();
 			if (!row) throw notFound("Maintenance configuration");
-			await assignServers(
+			await assignMachines(
 				tx,
 				row.osUpdateConfigurationId,
-				input.serverIds,
+				{ serverIds: input.serverIds, runnerNodeIds: input.runnerNodeIds },
 				access,
 			);
 			return row;
@@ -386,10 +625,13 @@ export const setOsUpdateConfigurationEnabled = async (
 		input.osUpdateConfigurationId,
 		access.organizationId,
 	);
-	const servers = await serversOf(current.osUpdateConfigurationId);
-	assertWholeConfiguration(servers, access);
-	if (input.enabled && !current.enabled && servers.length) {
-		await access.requireRun();
+	const machines = await machinesOf(current.osUpdateConfigurationId);
+	assertWholeConfiguration(machines, access);
+	if (input.enabled && !current.enabled) {
+		if (machines.serverIds.length + machines.runnerNodeIds.length > 0) {
+			await access.requireRun();
+		}
+		if (machines.runnerNodeIds.length) await access.requireRunnerUpdate();
 	}
 	const [row] = await db
 		.update(osUpdateConfigurations)
@@ -414,8 +656,8 @@ export const removeOsUpdateConfiguration = async (
 		osUpdateConfigurationId,
 		access.organizationId,
 	);
-	assertWholeConfiguration(await serversOf(osUpdateConfigurationId), access);
-	// Its servers leave it (set null); its runs keep their history.
+	assertWholeConfiguration(await machinesOf(osUpdateConfigurationId), access);
+	// Its machines leave it (set null); its runs keep their history.
 	await db
 		.delete(osUpdateConfigurations)
 		.where(
@@ -495,98 +737,231 @@ export const listOsUpdateServers = async (access: OsUpdateAccess) => {
 	});
 };
 
-/** A server's row, created on first use (not assessed periodically by default). */
-const ensureServerRow = (serverId: string) =>
-	db
-		.insert(osUpdateServers)
-		.values({ serverId, periodicAssessment: false })
-		.onConflictDoNothing();
+/**
+ * The Linux runner machines the member may see, with what OS updates know of
+ * them and where their drain stands.
+ */
+export const listOsUpdateRunnerNodes = async (access: OsUpdateAccess) => {
+	const ids = [...access.runnerNodeIds];
+	if (!ids.length) return [];
+	const nodes = await db
+		.select({
+			githubRunnerNodeId: githubRunnerNodes.githubRunnerNodeId,
+			name: githubRunnerNodes.name,
+			host: githubRunnerNodes.host,
+			phase: githubRunnerNodes.phase,
+			enabled: githubRunnerNodes.enabled,
+			platform: githubRunnerNodes.platform,
+			drain: githubRunnerNodes.drain,
+			observed: githubRunnerNodes.observed,
+			poolName: githubRunnerPools.name,
+		})
+		.from(githubRunnerNodes)
+		.innerJoin(
+			githubRunnerPools,
+			eq(
+				githubRunnerPools.githubRunnerPoolId,
+				githubRunnerNodes.githubRunnerPoolId,
+			),
+		)
+		.where(
+			and(
+				eq(githubRunnerNodes.organizationId, access.organizationId),
+				eq(githubRunnerNodes.platform, "linux"),
+				inArray(githubRunnerNodes.githubRunnerNodeId, ids),
+			),
+		)
+		.orderBy(githubRunnerPools.name, githubRunnerNodes.name);
+	if (!nodes.length) return [];
+	const listed = nodes.map((row) => row.githubRunnerNodeId);
+	const [states, runs] = await Promise.all([
+		db.query.osUpdateRunnerNodes.findMany({
+			where: inArray(osUpdateRunnerNodes.githubRunnerNodeId, listed),
+			with: { configuration: true },
+		}),
+		db
+			.selectDistinctOn([osUpdateRuns.githubRunnerNodeId], {
+				githubRunnerNodeId: osUpdateRuns.githubRunnerNodeId,
+				osUpdateRunId: osUpdateRuns.osUpdateRunId,
+				status: osUpdateRuns.status,
+				trigger: osUpdateRuns.trigger,
+				createdAt: osUpdateRuns.createdAt,
+				startedAt: osUpdateRuns.startedAt,
+				finishedAt: osUpdateRuns.finishedAt,
+				message: osUpdateRuns.message,
+			})
+			.from(osUpdateRuns)
+			.where(inArray(osUpdateRuns.githubRunnerNodeId, listed))
+			.orderBy(osUpdateRuns.githubRunnerNodeId, desc(osUpdateRuns.createdAt)),
+	]);
+	const now = new Date();
+	const stateOf = new Map(
+		states.map((state) => [state.githubRunnerNodeId, state]),
+	);
+	const lastRunOf = new Map(runs.map((run) => [run.githubRunnerNodeId, run]));
+	return nodes.map(({ drain, observed, ...row }) => {
+		const state = stateOf.get(row.githubRunnerNodeId);
+		const configuration = state?.configuration ?? null;
+		return {
+			...row,
+			active: isManagedRunnerNode(row),
+			/** Jobs running on it, as the runner controller last saw. */
+			jobs: (observed?.slots ?? []).filter((slot) => slot.state === "busy")
+				.length,
+			/** Out of service for an OS update run: waiting for its jobs, or installing. */
+			osUpdate: isOsUpdateDrain(drain)
+				? {
+						osUpdateRunId: drain.osUpdateRunId,
+						installing: Boolean(drain.installingAt),
+					}
+				: null,
+			periodicAssessment: state?.periodicAssessment ?? false,
+			assessment: state?.assessment ?? null,
+			assessedAt: state?.assessedAt ?? null,
+			assessmentError: state?.assessmentError ?? null,
+			assessmentRequested: Boolean(state?.assessmentRequestedAt),
+			configuration: configuration
+				? {
+						osUpdateConfigurationId: configuration.osUpdateConfigurationId,
+						name: configuration.name,
+						enabled: configuration.enabled,
+						timeZone: configuration.schedule.timeZone,
+						window: windowOf(configuration, now),
+					}
+				: null,
+			lastRun: lastRunOf.get(row.githubRunnerNodeId) ?? null,
+		};
+	});
+};
 
-export const assignOsUpdateConfiguration = async (
-	input: { serverId: string; osUpdateConfigurationId: string | null },
+/** A machine's row, created on first use (not assessed periodically by default). */
+const ensureMachineRow = (machine: OsUpdateMachine) =>
+	machine.kind === "server"
+		? db
+				.insert(osUpdateServers)
+				.values({ serverId: machine.id, periodicAssessment: false })
+				.onConflictDoNothing()
+		: db
+				.insert(osUpdateRunnerNodes)
+				.values({ githubRunnerNodeId: machine.id, periodicAssessment: false })
+				.onConflictDoNothing();
+
+const findMachineRow = (machine: OsUpdateMachine) =>
+	machine.kind === "server"
+		? db.query.osUpdateServers.findFirst({
+				where: eq(osUpdateServers.serverId, machine.id),
+			})
+		: db.query.osUpdateRunnerNodes.findFirst({
+				where: eq(osUpdateRunnerNodes.githubRunnerNodeId, machine.id),
+			});
+
+const updateMachineRow = (
+	machine: OsUpdateMachine,
+	values: {
+		osUpdateConfigurationId?: string | null;
+		assignedAt?: string | null;
+		periodicAssessment?: boolean;
+		assessmentRequestedAt?: string | null;
+	},
+) =>
+	machine.kind === "server"
+		? db
+				.update(osUpdateServers)
+				.set(values)
+				.where(eq(osUpdateServers.serverId, machine.id))
+		: db
+				.update(osUpdateRunnerNodes)
+				.set(values)
+				.where(eq(osUpdateRunnerNodes.githubRunnerNodeId, machine.id));
+
+/** Root apt on a runner machine: the member may also change runner machines. */
+const requireMachineChange = async (
+	machine: OsUpdateMachine,
 	access: OsUpdateAccess,
 ) => {
-	const target = await findServer(input.serverId, access);
+	if (machine.kind === "runner") await access.requireRunnerUpdate();
+};
+
+export const assignOsUpdateConfiguration = async (
+	input: OsUpdateMachineInput & { osUpdateConfigurationId: string | null },
+	access: OsUpdateAccess,
+) => {
+	const target = await findMachine(machineOfInput(input), access);
 	const configuration = input.osUpdateConfigurationId
 		? await findOsUpdateConfiguration(
 				input.osUpdateConfigurationId,
 				access.organizationId,
 			)
 		: null;
-	await ensureServerRow(input.serverId);
-	const current = await db.query.osUpdateServers.findFirst({
-		where: eq(osUpdateServers.serverId, input.serverId),
-	});
+	await ensureMachineRow(target.machine);
+	const current = await findMachineRow(target.machine);
 	if (current?.osUpdateConfigurationId !== input.osUpdateConfigurationId) {
 		// It installs in the configuration's windows, and is assessed every day.
 		if (configuration) await access.requireRun();
-		await db
-			.update(osUpdateServers)
-			.set({
-				osUpdateConfigurationId: input.osUpdateConfigurationId,
-				assignedAt: configuration ? new Date().toISOString() : null,
-				...(configuration ? { periodicAssessment: true } : {}),
-			})
-			.where(eq(osUpdateServers.serverId, input.serverId));
+		await requireMachineChange(target.machine, access);
+		await updateMachineRow(target.machine, {
+			osUpdateConfigurationId: input.osUpdateConfigurationId,
+			assignedAt: configuration ? new Date().toISOString() : null,
+			...(configuration ? { periodicAssessment: true } : {}),
+		});
 	}
 	requestOsUpdatesTick();
-	return { server: target, configuration };
+	return { machine: target, configuration };
 };
 
 export const setOsUpdatePeriodicAssessment = async (
-	input: { serverId: string; periodicAssessment: boolean },
+	input: OsUpdateMachineInput & { periodicAssessment: boolean },
 	access: OsUpdateAccess,
 ) => {
-	const target = await findServer(input.serverId, access);
+	const target = await findMachine(machineOfInput(input), access);
 	// An assessment refreshes the package lists as root.
-	if (input.periodicAssessment) await access.requireRun();
-	await ensureServerRow(input.serverId);
-	await db
-		.update(osUpdateServers)
-		.set({ periodicAssessment: input.periodicAssessment })
-		.where(eq(osUpdateServers.serverId, input.serverId));
+	if (input.periodicAssessment) {
+		await access.requireRun();
+		await requireMachineChange(target.machine, access);
+	}
+	await ensureMachineRow(target.machine);
+	await updateMachineRow(target.machine, {
+		periodicAssessment: input.periodicAssessment,
+	});
 	requestOsUpdatesTick();
 	return target;
 };
 
-/** "Check now": the controller assesses the server within seconds. */
+/** "Check now": the controller assesses the machine within seconds. */
 export const requestOsUpdateAssessment = async (
-	serverId: string,
+	input: OsUpdateMachineInput,
 	access: OsUpdateAccess,
 ) => {
-	const target = await findServer(serverId, access);
-	if (target.serverStatus !== "active") {
-		throw new TRPCError({
-			code: "BAD_REQUEST",
-			message: `${target.name} is inactive in Dokploy`,
-		});
-	}
-	await ensureServerRow(serverId);
-	await db
-		.update(osUpdateServers)
-		.set({ assessmentRequestedAt: new Date().toISOString() })
-		.where(eq(osUpdateServers.serverId, serverId));
+	const target = await findMachine(machineOfInput(input), access);
+	assertActive(target);
+	await requireMachineChange(target.machine, access);
+	await ensureMachineRow(target.machine);
+	await updateMachineRow(target.machine, {
+		assessmentRequestedAt: new Date().toISOString(),
+	});
 	requestOsUpdatesTick();
 	return target;
 };
 
 /**
- * "Install now": a one-time run, queued for the controller. One per server
+ * "Install now": a one-time run, queued for the controller. One per machine
  * at a time: a unique index refuses a second one, even at the same instant.
+ * A runner machine is drained first, as in a window.
  */
 export const installOsUpdatesNow = async (
 	input: z.infer<typeof apiInstallOsUpdatesNow>,
 	access: OsUpdateAccess,
 	requestedBy: string,
 ) => {
-	const target = await findServer(input.serverId, access);
-	if (target.serverStatus !== "active") {
-		throw new TRPCError({
-			code: "BAD_REQUEST",
-			message: `${target.name} is inactive in Dokploy`,
-		});
-	}
-	const { serverId, maxDurationMinutes, ...rest } = input;
+	const target = await findMachine(machineOfInput(input), access);
+	assertActive(target);
+	await requireMachineChange(target.machine, access);
+	const {
+		serverId: _server,
+		githubRunnerNodeId: _node,
+		maxDurationMinutes,
+		...rest
+	} = input;
 	const now = new Date();
 	let run: typeof osUpdateRuns.$inferSelect | undefined;
 	try {
@@ -594,7 +969,9 @@ export const installOsUpdatesNow = async (
 			.insert(osUpdateRuns)
 			.values({
 				organizationId: access.organizationId,
-				serverId,
+				...(target.machine.kind === "server"
+					? { serverId: target.id }
+					: { githubRunnerNodeId: target.id }),
 				trigger: "manual",
 				deadline: new Date(
 					now.getTime() + maxDurationMinutes * 60_000,
@@ -611,66 +988,90 @@ export const installOsUpdatesNow = async (
 		});
 	}
 	if (!run) throw new Error("The run was not queued");
-	await ensureServerRow(serverId);
+	await ensureMachineRow(target.machine);
 	requestOsUpdatesTick();
-	return { run, server: target };
+	return { run, machine: target };
 };
 
-/** Cancels a run that has not started: one that runs cannot stop halfway. */
+/**
+ * Cancels a run that has not started installing: a pending one, or a run of
+ * a runner machine still waiting for its jobs to end (the machine takes jobs
+ * again). One that installs cannot stop halfway.
+ */
 export const cancelOsUpdateRun = async (
 	osUpdateRunId: string,
 	access: OsUpdateAccess,
 ) => {
-	const pending = await db.query.osUpdateRuns.findFirst({
+	const found = await db.query.osUpdateRuns.findFirst({
 		where: and(
 			eq(osUpdateRuns.osUpdateRunId, osUpdateRunId),
 			eq(osUpdateRuns.organizationId, access.organizationId),
 		),
-		columns: { serverId: true },
+		columns: { serverId: true, githubRunnerNodeId: true },
 	});
-	if (!pending) throw notFound("Run");
-	const target = await findServer(pending.serverId, access);
+	if (!found) throw notFound("Run");
+	const target = await findMachine(machineOf(found), access);
 	const [run] = await db
 		.update(osUpdateRuns)
 		.set({
 			status: "cancelled",
 			finishedAt: new Date().toISOString(),
-			message: "Cancelled before it started.",
+			message: sql`CASE WHEN ${osUpdateRuns.status} = 'running' THEN 'Cancelled while the jobs of the machine ended: nothing was installed, and it takes jobs again.' ELSE 'Cancelled before it started.' END`,
+			lockedBy: null,
+			lockedUntil: null,
 		})
 		.where(
 			and(
 				eq(osUpdateRuns.osUpdateRunId, osUpdateRunId),
-				eq(osUpdateRuns.status, "pending"),
+				or(
+					eq(osUpdateRuns.status, "pending"),
+					and(
+						eq(osUpdateRuns.status, "running"),
+						isNotNull(osUpdateRuns.githubRunnerNodeId),
+						sql`coalesce(${osUpdateRuns.progress}->>'step', 'drain') = 'drain'`,
+					),
+				),
 			),
 		)
 		.returning();
 	if (!run) {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
-			message: "Only a run that has not started can be cancelled",
+			message: "Only a run that has not started installing can be cancelled",
 		});
 	}
-	return { run, server: target };
+	// The run waiting in this process gives the machine back at once.
+	wakeOsUpdateDrains();
+	return { run, machine: target };
 };
 
-/** The history of the servers the member may access, newest first, without the logs. */
+/** The history of the machines the member may access, newest first, without the logs. */
 export const listOsUpdateRuns = async (
-	input: { serverId?: string; limit: number },
+	input: OsUpdateMachineInput & { limit: number },
 	access: OsUpdateAccess,
 ) => {
-	const ids = [...access.serverIds].filter(
-		(serverId) => !input.serverId || serverId === input.serverId,
+	const filtered = Boolean(input.serverId || input.githubRunnerNodeId);
+	const serverIds = [...access.serverIds].filter(
+		(serverId) => !filtered || serverId === input.serverId,
 	);
-	if (!ids.length) return [];
+	const nodeIds = [...access.runnerNodeIds].filter(
+		(nodeId) => !filtered || nodeId === input.githubRunnerNodeId,
+	);
+	if (!serverIds.length && !nodeIds.length) return [];
 	const { log: _log, ...columns } = getTableColumns(osUpdateRuns);
-	return db
+	const rows = await db
 		.select({
 			...columns,
 			serverName: server.name,
+			runnerNodeName: githubRunnerNodes.name,
 			configurationName: osUpdateConfigurations.name,
 		})
 		.from(osUpdateRuns)
 		.leftJoin(server, eq(server.serverId, osUpdateRuns.serverId))
+		.leftJoin(
+			githubRunnerNodes,
+			eq(githubRunnerNodes.githubRunnerNodeId, osUpdateRuns.githubRunnerNodeId),
+		)
 		.leftJoin(
 			osUpdateConfigurations,
 			eq(
@@ -681,11 +1082,23 @@ export const listOsUpdateRuns = async (
 		.where(
 			and(
 				eq(osUpdateRuns.organizationId, access.organizationId),
-				inArray(osUpdateRuns.serverId, ids),
+				or(
+					serverIds.length
+						? inArray(osUpdateRuns.serverId, serverIds)
+						: sql`false`,
+					nodeIds.length
+						? inArray(osUpdateRuns.githubRunnerNodeId, nodeIds)
+						: sql`false`,
+				),
 			),
 		)
 		.orderBy(desc(osUpdateRuns.createdAt))
 		.limit(input.limit);
+	return rows.map(({ serverName, runnerNodeName, ...row }) => ({
+		...row,
+		/** The server's, or the runner machine's. */
+		machineName: serverName ?? runnerNodeName,
+	}));
 };
 
 export const findOsUpdateRun = async (
@@ -699,10 +1112,25 @@ export const findOsUpdateRun = async (
 		),
 		with: {
 			server: { columns: { name: true } },
+			runnerNode: { columns: { name: true } },
 			configuration: { columns: { name: true, schedule: true } },
 		},
 	});
-	// Another member's server: as if it did not exist.
-	if (!run || !access.serverIds.has(run.serverId)) throw notFound("Run");
-	return run;
+	// Another member's machine: as if it did not exist.
+	const machine = run ? machineOf(run) : null;
+	if (
+		!run ||
+		!machine ||
+		!(machine.kind === "server"
+			? access.serverIds.has(machine.id)
+			: access.runnerNodeIds.has(machine.id))
+	) {
+		throw notFound("Run");
+	}
+	const { server: serverRow, runnerNode, ...rest } = run;
+	return {
+		...rest,
+		machineName: serverRow?.name ?? runnerNode?.name ?? null,
+		configuration: run.configuration,
+	};
 };

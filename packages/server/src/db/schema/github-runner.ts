@@ -74,8 +74,19 @@ export const githubRunnerOperationStatus = pgEnum(
 export type GithubRunnerDrainMode = "wait" | "kill";
 
 /** Why a machine stops taking jobs: once it is empty the controller finishes that action. */
-/** patch: OS updates once the jobs ended, then back to ready. */
-export type GithubRunnerDrainReason = "disable" | "apply" | "remove" | "patch";
+/**
+ * patch: OS updates once the jobs ended, then back to ready (the runner
+ * controller installs them, `osPatches` of the update policy).
+ * os-update: a run of an OS updates maintenance configuration holds the
+ * machine; once it is empty the controller only says so (drainedAt), the run
+ * installs, then gives it back.
+ */
+export type GithubRunnerDrainReason =
+	| "disable"
+	| "apply"
+	| "remove"
+	| "patch"
+	| "os-update";
 
 export interface GithubRunnerDrain {
 	mode: GithubRunnerDrainMode;
@@ -86,8 +97,20 @@ export interface GithubRunnerDrain {
 	operationId: string | null;
 	/** With reason "remove": also delete the runtime (and the VM on macOS). */
 	uninstall?: boolean;
-	/** With reason "patch": given up if jobs still run then (end of the window). */
+	/**
+	 * With reason "patch" or "os-update": given up if jobs still run then
+	 * (end of the window).
+	 */
 	abortAt?: string | null;
+	/** With reason "os-update": the run (os_update_run) holding the machine. */
+	osUpdateRunId?: string;
+	/** With reason "os-update": no runner left on the machine since then. */
+	drainedAt?: string | null;
+	/**
+	 * With reason "os-update": the run installs (and may reboot) since then.
+	 * Nothing may put the machine back to work until it gives it back.
+	 */
+	installingAt?: string | null;
 }
 
 /** What the controller last applied on the machine, compared with the desired settings. */

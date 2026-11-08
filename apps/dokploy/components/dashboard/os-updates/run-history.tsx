@@ -176,7 +176,9 @@ export const RunDetailsDialog = ({
 	<Dialog open={run !== null} onOpenChange={onOpenChange}>
 		<DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
 			<DialogHeader>
-				<DialogTitle>OS updates of {run?.serverName ?? "a server"}</DialogTitle>
+				<DialogTitle>
+					OS updates of {run?.machineName ?? "a server"}
+				</DialogTitle>
 				<DialogDescription>
 					What the run installed, whether it rebooted, and its log.
 				</DialogDescription>
@@ -190,7 +192,7 @@ export const RunDetailsDialog = ({
 const CancelButton = ({ run }: { run: OsUpdateRunRow }) => {
 	const utils = api.useUtils();
 	const cancel = api.osUpdate.cancelRun.useMutation();
-	const server = run.serverName ?? "this server";
+	const server = run.machineName ?? "this server";
 	return (
 		<DialogAction
 			title={`Cancel the update of ${server}?`}
@@ -256,7 +258,7 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 				<Table>
 					<TableHeader>
 						<TableRow>
-							<TableHead>Server</TableHead>
+							<TableHead>Machine</TableHead>
 							<TableHead>Status</TableHead>
 							<TableHead>Trigger</TableHead>
 							<TableHead>When ({zone})</TableHead>
@@ -271,7 +273,7 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 							return (
 								<TableRow key={run.osUpdateRunId}>
 									<TableCell className="font-medium">
-										{run.serverName ?? run.serverId}
+										{run.machineName ?? run.serverId ?? run.githubRunnerNodeId}
 									</TableCell>
 									<TableCell>
 										<span className="inline-flex items-center gap-1">
@@ -310,14 +312,19 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 											<Button
 												size="sm"
 												variant="ghost"
-												aria-label={`Details of the update of ${run.serverName ?? run.serverId}`}
+												aria-label={`Details of the update of ${run.machineName ?? run.serverId ?? run.githubRunnerNodeId}`}
 												onClick={() => setShown(run)}
 											>
 												Details
 											</Button>
-											{canRun && run.status === "pending" && (
-												<CancelButton run={run} />
-											)}
+											{canRun &&
+												(run.status === "pending" ||
+													// A runner machine still waiting for its jobs.
+													(run.status === "running" &&
+														run.githubRunnerNodeId !== null &&
+														(run.progress?.step ?? "drain") === "drain")) && (
+													<CancelButton run={run} />
+												)}
 										</span>
 									</TableCell>
 								</TableRow>
