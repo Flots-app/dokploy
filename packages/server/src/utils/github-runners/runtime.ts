@@ -8,7 +8,7 @@ import type { GithubRunnerJobGuard } from "../../db/schema/github-runner";
 import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 
-export const RUNTIME_VERSION = 11;
+export const RUNTIME_VERSION = 12;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -19,7 +19,9 @@ export const RUNTIME_VERSION = 11;
  * minutes to stop, checks the runner starts, keeps background updates from
  * restarting runners or Docker mid-job, and forces Docker's systemd cgroup
  * driver: optional. v11 refuses the jobs the pool's job guard does not accept
- * (forks, Dependabot, other repositories or events): optional.
+ * (forks, Dependabot, other repositories or events): optional. v12 gives the
+ * tool cache back to the runner account before each job, after container jobs
+ * wrote it as root: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 /** The first runtime with `runnerctl guard` and the check in job-started.sh. */
@@ -274,6 +276,24 @@ cmd_caches() {
 	echo "dir name=workspaces kib=$( (timeout 60 du -sk "$ROOT"/slots/*/_work 2>/dev/null || true) | awk '{s += $1} END {print s + 0}')"
 }
 
+# A job with a container: runs as the image's user, root unless the image says
+# otherwise, and the runner mounts the tool cache into it (/__t). What it adds
+# there, setup-node's node directory or a version, stays root's: a job running
+# on the machine then cannot add a version next to it (EACCES on mkdir) or
+# replace a broken one. Given back to the runner before each job.
+# Jobs write this tree and this runs as root, so nothing is followed: -P leaves
+# symbolic links alone (their owner grants nothing), -execdir runs chown from
+# the directory find holds open, so a job swapping a parent for a link cannot
+# redirect it, chown -h never dereferences the name it gets, -xdev stays on
+# this disk, and a file with another hard link may be someone else's file.
+tool_cache_repair() {
+	local cache="$ROOT/tool-cache"
+	[ -d "$cache" ] && [ ! -L "$cache" ] || return 0
+	timeout 60 find -P "$cache" -xdev \( -type d -o \( -type f -links 1 \) \) \
+		! \( -user "$RUNNER_USER" -group "$RUNNER_USER" \) \
+		-execdir chown -h "$RUNNER_USER:$RUNNER_USER" -- {} + 2>/dev/null || true
+}
+
 cmd_arm() {
 	local slot min_free_kib unit state free release dir
 	slot=$(slot_arg "\${1:-}")
@@ -311,6 +331,7 @@ cmd_arm() {
 	install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$dir/_work" || die "slot $slot: could not create its workspace"
 	read_jit "$dir"
 	[ -s "$dir/.runner" ] && [ -s "$dir/.credentials" ] || die "incomplete JIT configuration"
+	tool_cache_repair
 	systemctl reset-failed "$unit" >/dev/null 2>&1 || true
 	systemctl start --no-block "$unit" || die "slot $slot did not start"
 	echo "armed slot=$slot"
