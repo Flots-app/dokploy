@@ -107,6 +107,8 @@ const state = (
 			autonomyApplied: Map<string, string>;
 			reconnects: Map<string, unknown>;
 			tasks: Map<string, Promise<void>>;
+			macJobAt: Map<string, number>;
+			pendingEvents: Map<string, { message: string }[]>;
 		};
 	}
 ).__dokployGithubRunners;
@@ -271,6 +273,8 @@ afterEach(async () => {
 	state.leaseRenewals.clear();
 	state.reconnects.clear();
 	state.autonomyApplied.clear();
+	state.macJobAt.clear();
+	state.pendingEvents.clear();
 	for (const name of Object.keys(machines)) delete machines[name];
 	vi.mocked(db.query.githubRunnerNodes.findMany).mockReset();
 	vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([]);
@@ -440,5 +444,153 @@ describe("job guard", () => {
 		expect(environmentHash(ci as never, JOB_GUARD_RUNTIME)).not.toBe(
 			environmentHash(ci as never, JOB_GUARD_RUNTIME - 1),
 		);
+	});
+});
+
+describe("a Mac short of disk or memory", () => {
+	const GiB_KIB = 1024 * 1024;
+	/** What the Mac mini of the incident reports: 32 GiB, 228 GiB disk. */
+	const macProbe =
+		(options: {
+			freeGiB: number;
+			memoryFree?: number;
+			vm?: string;
+			guest?: string;
+		}) =>
+		async () => {
+			const vm = options.vm ?? "Running";
+			return [
+				"mac cpus=12 memory_bytes=34359738368 arch=arm64 version=27.0.1 load=1.00",
+				`macmem free_percent=${options.memoryFree ?? 60}`,
+				`macdisk total_kib=${228 * GiB_KIB} free_kib=${Math.round(options.freeGiB * GiB_KIB)}`,
+				"lima version=2.2.1 managed=yes",
+				`vm status=${vm} cpus=9 memory_bytes=17179869184 disk_bytes=26843545600 type=vz`,
+				...(vm === "Running"
+					? (options.guest ?? status("autonomyset state=off"))
+							.split("\n")
+							.map((line) => `guest: ${line}`)
+					: []),
+			].join("\n");
+		};
+	const mac = (id: string) =>
+		node(id, pool("pool-1"), {
+			platform: "macos",
+			username: "dokploy-manager",
+			diskReserveGb: 15,
+			maxRunners: 1,
+		});
+	const load = (row: ReturnType<typeof mac>) => {
+		vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([
+			row,
+		] as never);
+		vi.mocked(db.query.githubRunnerNodes.findFirst).mockResolvedValue(
+			row as never,
+		);
+	};
+	const count = (commands: string[], what: RegExp) =>
+		commands.filter((command) => what.test(command)).length;
+	const observed = (updates: Update[]) =>
+		updates.find((update) => update.values.observed)?.values.observed as {
+			admission: { ok: boolean; reason?: string };
+			events: { message: string }[];
+		};
+	const settle = () => Promise.allSettled([...state.tasks.values()]);
+
+	it("stops the VM once no job runs, below the disk reserve", async () => {
+		const row = mac("mac-a");
+		load(row);
+		const a = machine("mac-a", macProbe({ freeGiB: 12 }));
+		const updates = recordUpdates();
+		await tick();
+		await settle();
+		expect(count(a.commands, /limactl stop/)).toBe(1);
+		expect(count(a.commands, /limactl start/)).toBe(0);
+		const seen = observed(updates);
+		expect(seen.admission).toEqual({
+			ok: false,
+			reason: "12 GiB free, below the 15 GiB reserve",
+		});
+		expect(seen.events.map((event) => event.message)).toContain(
+			"Stopping VM dokploy-runners: the Mac has 12 GiB free, below its 15 GiB reserve",
+		);
+		expect(state.pendingEvents.get("mac-a")?.[0]?.message).toBe(
+			"VM dokploy-runners stopped to give the Mac its memory back: the Mac has 12 GiB free, below its 15 GiB reserve. It starts again once the Mac has 20 GiB free",
+		);
+	});
+
+	it("waits for a running slot before it stops the VM", async () => {
+		const row = mac("mac-b");
+		load(row);
+		const since = Math.floor(Date.now() / 1000);
+		const b = machine(
+			"mac-b",
+			macProbe({
+				freeGiB: 12,
+				guest: `${status("autonomyset state=off")}\nslot id=1 active=active since=${since} name=dkp-mac-b-1-abc000`,
+			}),
+		);
+		recordUpdates();
+		await tick();
+		await settle();
+		expect(count(b.commands, /limactl stop/)).toBe(0);
+	});
+
+	it("starts the stopped VM again only once the Mac has room", async () => {
+		const row = mac("mac-c");
+		load(row);
+		let freeGiB = 18.8;
+		const c = machine("mac-c", () => macProbe({ freeGiB, vm: "Stopped" })());
+		const updates = recordUpdates();
+		await tick();
+		await settle();
+		expect(count(c.commands, /limactl start/)).toBe(0);
+		expect(observed(updates).admission).toEqual({
+			ok: false,
+			reason: "the Mac has 18.8 GiB free; its VM starts again above 20 GiB",
+		});
+		freeGiB = 25;
+		await tick();
+		await vi.waitFor(
+			() => {
+				if (!count(c.commands, /limactl start/)) throw new Error("not started");
+			},
+			{ timeout: 5_000, interval: 20 },
+		);
+		await settle();
+	});
+
+	it("restarts a VM that ran jobs once it idled on a Mac short of memory", async () => {
+		const row = mac("mac-d");
+		load(row);
+		state.macJobAt.set("mac-d", Date.now() - 11 * 60_000);
+		const d = machine("mac-d", macProbe({ freeGiB: 30, memoryFree: 38 }));
+		const updates = recordUpdates();
+		await tick();
+		await settle();
+		expect(observed(updates).admission).toEqual({
+			ok: false,
+			reason:
+				"the VM restarts to give the Mac its memory back (the Mac has 38% of its memory free)",
+		});
+		const order = d.commands.flatMap((command) =>
+			/limactl stop/.test(command)
+				? ["stop"]
+				: /limactl start/.test(command)
+					? ["start"]
+					: [],
+		);
+		expect(order).toEqual(["stop", "start"]);
+		expect(state.macJobAt.has("mac-d")).toBe(false);
+	});
+
+	it("leaves the VM of a Mac with memory and disk to spare", async () => {
+		const row = mac("mac-e");
+		load(row);
+		state.macJobAt.set("mac-e", Date.now() - 11 * 60_000);
+		const e = machine("mac-e", macProbe({ freeGiB: 30, memoryFree: 70 }));
+		recordUpdates();
+		await tick();
+		await settle();
+		expect(count(e.commands, /limactl (stop|start)/)).toBe(0);
 	});
 });
