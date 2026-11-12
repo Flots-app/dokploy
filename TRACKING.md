@@ -160,7 +160,11 @@
   [Flots-app/dokploy#57](https://github.com/Flots-app/dokploy/pull/57), with
   the Linux GitHub runner machines from
   [Flots-app/dokploy#58](https://github.com/Flots-app/dokploy/pull/58).
-- [ ] Publish `v0.29.14-flots.18` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.18` from `canary` and deploy it to production.
+- [x] Give a Mac its memory and disk back from the runner VM (stop it below
+  the disk reserve, restart it after jobs when the Mac is short of memory) in
+  [Flots-app/dokploy#62](https://github.com/Flots-app/dokploy/pull/62).
+- [ ] Publish `v0.29.14-flots.19` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
