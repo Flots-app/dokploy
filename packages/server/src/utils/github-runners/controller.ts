@@ -119,6 +119,13 @@ import {
 	resolveRunnerRelease,
 } from "./github-api";
 import {
+	MAC_RESTART_IDLE_MS,
+	type MacRelief,
+	macRelief,
+	macRoomToStart,
+	macStartThreshold,
+} from "./mac-relief";
+import {
 	LIMA_VERSION,
 	MAC_BOOT_SCRIPT_VERSION,
 	macCreateVmScript,
@@ -319,6 +326,11 @@ interface ControllerState {
 	autonomyApplied: Map<string, string>;
 	/** Why each machine's update waits, as last told in its events. */
 	updateWaiting: Map<string, string>;
+	/**
+	 * Last tick a job ran in each Mac's VM since the VM started: the VM still
+	 * holds the memory of that job (see mac-relief.ts).
+	 */
+	macJobAt: Map<string, number>;
 	/** Whether this process leads: only the leader ticks. */
 	leader: boolean;
 	heartbeat: NodeJS.Timeout | null;
@@ -371,6 +383,7 @@ shared.__dokployGithubRunners ??= {
 	firewallExpected: new Map(),
 	autonomyApplied: new Map(),
 	updateWaiting: new Map(),
+	macJobAt: new Map(),
 	leader: false,
 	heartbeat: null,
 	kind: "dokploy",
@@ -394,6 +407,7 @@ state.leaseRenewals ??= new Map();
 state.firewallExpected ??= new Map();
 state.autonomyApplied ??= new Map();
 state.updateWaiting ??= new Map();
+state.macJobAt ??= new Map();
 state.leader ??= false;
 state.heartbeat ??= null;
 state.kind ??= "dokploy";
@@ -1086,6 +1100,60 @@ const startVm = async (
 		},
 	});
 };
+
+/**
+ * Stops, or restarts, a Mac's VM for the Mac (see mac-relief.ts). The tick saw
+ * no job in it; the machine is looked at again first, since a runner may have
+ * started or the operator changed the machine meanwhile.
+ */
+const startMacRelief = (nodeId: string) =>
+	runTask(nodeId, null, async ({ node, driver }) => {
+		if (
+			node.platform !== "macos" ||
+			!node.enabled ||
+			node.phase !== "ready" ||
+			node.drain
+		) {
+			return;
+		}
+		const probe = await driver.probe();
+		if (
+			probe.vm?.status !== "Running" ||
+			!probe.host ||
+			!probe.runtime ||
+			probe.runtime.slots.some((slot) => LIVE_SLOT.has(slot.active))
+		) {
+			return;
+		}
+		const reserveBytes = node.diskReserveGb * GiB;
+		const due = macRelief({
+			now: Date.now(),
+			host: probe.host,
+			reserveBytes,
+			lastJobAt: state.macJobAt.get(nodeId) ?? null,
+		});
+		// A restart is still due when the Mac has since run short of disk: stop.
+		if (due.action === "none") return;
+		await driver.host(macStopVmScript(node.vmName), {
+			timeoutMs: 5 * 60_000,
+			label: "VM stop",
+		});
+		state.macJobAt.delete(nodeId);
+		if (due.action === "stop") {
+			pushEvent(
+				nodeId,
+				`VM ${node.vmName} stopped to give the Mac its memory back: ${due.reason}. It starts again once the Mac has ${formatBytes(macStartThreshold(reserveBytes))} free`,
+			);
+			return;
+		}
+		await startVm(driver, node, async (line) =>
+			console.log(`[github-runners] ${node.name}: ${line}`),
+		);
+		pushEvent(
+			nodeId,
+			`VM ${node.vmName} restarted after ${MAC_RESTART_IDLE_MS / 60_000} minutes without a job, to give the Mac back the memory its jobs used: ${due.reason}`,
+		);
+	});
 
 /** Keeps the useful lines of limactl's logfmt output, as plain messages. */
 export const limaLogLine = (line: string) => {
@@ -3624,6 +3692,8 @@ const actOnNode = async (
 	let lastError: string | null = listError;
 	let runtime = probe.runtime;
 	let admission: GithubRunnerNodeObservation["admission"] = { ok: true };
+	/** What a Mac needs of its VM (see mac-relief.ts). */
+	let relief: MacRelief = { action: "none" };
 	let busy = 0;
 	let slots: GithubRunnerNodeObservation["slots"] = [];
 	let drained = false;
@@ -3639,9 +3709,17 @@ const actOnNode = async (
 				runtime = null;
 			} else if (probe.vm.status !== "Running") {
 				runtime = null;
+				// A VM that starts again holds none of the memory of its jobs.
+				state.macJobAt.delete(nodeId);
+				// A Mac short of disk keeps its VM stopped (see mac-relief.ts).
+				const room = macRoomToStart(probe.host, node.diskReserveGb * GiB);
+				if (!room.ok && node.enabled && phase === "ready") {
+					admission = { ok: false, reason: room.reason };
+				}
 				if (
 					node.enabled &&
 					phase === "ready" &&
+					room.ok &&
 					now - (lastHealAt.get(nodeId) ?? 0) > HEAL_EVERY_MS
 				) {
 					lastHealAt.set(nodeId, now);
@@ -3901,6 +3979,26 @@ const actOnNode = async (
 					reason: `VM disk almost full (${formatBytes(runtime.disk.freeBytes)} free)`,
 				};
 			}
+			// The Mac's own needs: its VM stops, or restarts, once no job runs.
+			if (
+				node.platform === "macos" &&
+				node.enabled &&
+				phase === "ready" &&
+				!node.drain
+			) {
+				relief = macRelief({
+					now,
+					host,
+					reserveBytes: reserve,
+					lastJobAt: state.macJobAt.get(nodeId) ?? null,
+				});
+				if (relief.action === "restart" && admission.ok) {
+					admission = {
+						ok: false,
+						reason: `the VM restarts to give the Mac its memory back (${relief.reason})`,
+					};
+				}
+			}
 		}
 
 		// Admission: the firewall of the jobs, when the machine follows one.
@@ -3929,7 +4027,8 @@ const actOnNode = async (
 				labels,
 				runnerVersion: runtime?.release ?? null,
 				admission,
-				stopIdle: blocked,
+				// On a Mac the VM waits for its idle runners to leave before it stops.
+				stopIdle: blocked ?? (relief.action === "none" ? null : relief.reason),
 				maxArmsPerTick: MAX_ARMS_PER_TICK,
 				waiting,
 			},
@@ -3952,6 +4051,26 @@ const actOnNode = async (
 					: plan.actions;
 			await executeActions(observation, actions, client, labels, events);
 			await recordJobs(node, runtime);
+			if (node.platform === "macos") {
+				if (plan.busy > 0) state.macJobAt.set(nodeId, now);
+				// No slot runs and GitHub sees no job on the machine: the VM can stop.
+				if (
+					relief.action !== "none" &&
+					runners !== null &&
+					plan.running === 0 &&
+					!runners.some(
+						(runner) =>
+							runner.busy &&
+							isRunnerOf(runnerNamePrefix(node.name), runner.name),
+					) &&
+					startMacRelief(nodeId)
+				) {
+					recordEvent(
+						events,
+						`${relief.action === "stop" ? "Stopping" : "Restarting"} VM ${node.vmName}: ${relief.reason}`,
+					);
+				}
+			}
 			await followCanary(
 				node,
 				{
