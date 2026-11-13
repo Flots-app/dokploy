@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -4133,6 +4134,91 @@ done`);
 				expect(existsSync(join(root, "tool-cache/node/18"))).toBe(false);
 				expect(existsSync(join(root, "tool-cache/node", forged))).toBe(false);
 				expect(existsSync(join(state, "home/.cache/pip"))).toBe(false);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it.skipIf(!linuxShell)(
+		"gives the tool cache back to the runner without following links",
+		() => {
+			const dir = realpathSync(mkdtempSync(join(tmpdir(), "dokploy-tools-")));
+			try {
+				const root = join(dir, "root");
+				const cache = join(root, "tool-cache");
+				const victim = join(dir, "victim");
+				for (const path of [join(cache, "node/24.19.0/arm64/bin"), victim]) {
+					mkdirSync(path, { recursive: true });
+				}
+				writeFileSync(join(cache, "node/24.19.0/arm64/bin/node"), "");
+				writeFileSync(join(cache, "node/24.19.0/arm64.complete"), "");
+				writeFileSync(join(victim, "secret"), "");
+				// A link to a directory, a link to a file, and a second name of a
+				// file outside the cache: none of them may change owner.
+				symlinkSync(victim, join(cache, "node/link"));
+				symlinkSync(join(victim, "secret"), join(cache, "node/file-link"));
+				linkSync(join(victim, "secret"), join(cache, "node/hardlink"));
+				// chown needs root: this one records what it was asked to change.
+				mkdirSync(join(dir, "bin"));
+				writeFileSync(
+					join(dir, "bin/chown"),
+					`#!/bin/bash\n[ "$1" = -h ] && [ "$3" = -- ] || exit 9\nowner=$2\nshift 3\nfor name in "$@"; do printf '%s %s/%s\\n' "$owner" "$PWD" "\${name#./}"; done >>${shellQuote(join(dir, "chowned"))}\n`,
+				);
+				chmodSync(join(dir, "bin/chown"), 0o755);
+				const repair = (user: string) =>
+					bash(`set -euo pipefail
+export PATH=${shellQuote(join(dir, "bin"))}:/usr/bin:/bin
+ROOT=${shellQuote(root)}
+RUNNER_USER=${user}
+${shellFunction(runnerctlScript(), "tool_cache_repair")}
+tool_cache_repair
+echo done`);
+				const chowned = () =>
+					existsSync(join(dir, "chowned"))
+						? readFileSync(join(dir, "chowned"), "utf8")
+								.trim()
+								.split("\n")
+								.sort()
+						: [];
+
+				// Everything belongs to the test user: nothing to give back.
+				const me = execFileSync("id", ["-un"]).toString().trim();
+				const group = execFileSync("id", ["-gn"]).toString().trim();
+				if (me === group) {
+					const idle = repair(me);
+					expect(idle.stdout).toBe("done\n");
+					expect(chowned()).toEqual([]);
+				}
+
+				// Written by another account (root, in a container job).
+				const other = me === "root" ? "daemon" : "root";
+				const result = repair(other);
+				expect(result.stderr).toBe("");
+				expect(result.stdout).toBe("done\n");
+				// Each name is given from the directory holding it (-execdir).
+				expect(chowned()).toEqual(
+					[
+						"",
+						"/node",
+						"/node/24.19.0",
+						"/node/24.19.0/arm64",
+						"/node/24.19.0/arm64.complete",
+						"/node/24.19.0/arm64/bin",
+						"/node/24.19.0/arm64/bin/node",
+					]
+						.map((path) => `${other}:${other} ${cache}${path}`)
+						.sort(),
+				);
+				expect(chowned().join("\n")).not.toContain(victim);
+				expect(chowned().join("\n")).not.toContain("link");
+
+				// A tool cache replaced by a link is left alone.
+				rmSync(join(dir, "chowned"));
+				rmSync(cache, { recursive: true });
+				symlinkSync(victim, cache);
+				expect(repair(other).stdout).toBe("done\n");
+				expect(chowned()).toEqual([]);
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}
