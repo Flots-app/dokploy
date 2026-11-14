@@ -192,8 +192,73 @@
 - [x] Give a Mac VM 4 GiB of compressed swap (zswap in front of a swap file,
   runtime v18), so a job that overshoots the VM's memory slows down instead of
   losing a process.
-- [ ] Publish `v0.29.14-flots.26` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.26` from `canary` and deploy it to production.
+- [x] Set aside a runner machine that keeps losing jobs, and leave the pool once
+  none is left (failover phase 1), in
+  [Flots-app/dokploy#77](https://github.com/Flots-app/dokploy/pull/77).
+- [ ] Publish `v0.29.14-flots.27` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
+
+---
+
+# Runner pool failover to Blacksmith and GitHub-hosted runners
+
+Jobs leave the pool not only when no runner is online, but whenever its machines
+lose jobs, and go to the next provider of a chain within the budget set for it.
+Dokploy decides; workflows read its Actions variables (no selector job).
+
+## Phase 1: pool health and degraded routing
+
+- [x] Machine health: a machine that loses jobs is set aside until a cooldown
+  ends, with the reason; it takes no new job, its running jobs go on
+  (`health.ts`, admission "set aside until").
+- [x] Signals: no runner ON (as before), and jobs interrupted or hit by the OOM
+  killer within a sliding window; jobs marked interrupted right after a
+  controller takes the lead do not count.
+- [x] Once no machine is left, both routing variables point to the fallback;
+  queued jobs are moved and the re-runs of interrupted jobs land there.
+- [x] Pool settings: lost jobs threshold, window, cooldown (0 turns it off),
+  migration `0187_github_runner_failover`.
+- [x] Override: automatic, keep the jobs on the pool, send every job to the
+  fallback.
+- [x] Pool page: routing line names the machines set aside; the machine card
+  shows the admission reason.
+- [x] Alerts name the machines set aside and why (machine alert `set-aside`,
+  and the pool's fallback alert).
+- [x] An interrupted job that GitHub reports successful is not re-run (controller
+  restarts marked finished jobs interrupted, 2026-11-14 18:06).
+- [x] Database test of the set-aside against a real PostgreSQL (it found the
+  missing "Back in the pool" event).
+- [ ] Release, then see it set m4 aside and bring it back in production.
+
+## Phase 2: providers and budgets
+
+- [ ] Ordered fallback chain per pool: Blacksmith, GitHub-hosted, labels per job class.
+- [ ] Per provider: free allowance, monthly budget, allowed overspend, hard cap.
+- [ ] Metering: jobs Dokploy scans (provider from the runner name), Blacksmith usage
+  API, GitHub billing API.
+- [ ] A provider over its budget is skipped; alerts at the warning level and the cap.
+- [ ] Pool page: spend this month and projection per provider.
+
+## Phase 3: job classes
+
+- [ ] Classes beyond x86_64 (ARM64 general, heavy or Android), each with its
+  variable and chain; architecture-aware labels (Blacksmith and GitHub arm64).
+
+## Phase 4: dead man's switch
+
+- [ ] A heartbeat outside Dokploy (for example a Cloudflare Worker cron) moves the
+  variables to the fallback when Dokploy stays silent.
+
+## Phase 5: spillover
+
+- [ ] When the pool is healthy but saturated (queue wait above N minutes), part of
+  the jobs go to a provider, within its budget.
+
+## Phase 6: workflows
+
+- [ ] Monorepo and the other guarded repositories read the Dokploy variables; the
+  external runner router reads Dokploy's decision or goes.
 
 ---
 

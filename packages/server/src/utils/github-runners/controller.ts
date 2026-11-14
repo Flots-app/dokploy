@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { db } from "@dokploy/server/db";
 import {
+	DEFAULT_FAILOVER,
 	type GithubRunnerAppliedConfig,
 	type GithubRunnerCleanup,
 	type GithubRunnerDrain,
@@ -121,6 +122,7 @@ import {
 	resolveLimaRelease,
 	resolveRunnerRelease,
 } from "./github-api";
+import { decideMachineHealth, lostJob } from "./health";
 import {
 	MAC_RESTART_IDLE_MS,
 	type MacRelief,
@@ -363,6 +365,8 @@ interface ControllerState {
 	x64InstallError: Map<string, string>;
 	/** Whether this process leads: only the leader ticks. */
 	leader: boolean;
+	/** When this process took the lead (epoch ms); null while it stands by. */
+	leaderSince: number | null;
 	heartbeat: NodeJS.Timeout | null;
 	kind: "dokploy" | "standalone";
 	version: string | null;
@@ -420,6 +424,7 @@ shared.__dokployGithubRunners ??= {
 	x64InstallAt: new Map(),
 	x64InstallError: new Map(),
 	leader: false,
+	leaderSince: null,
 	heartbeat: null,
 	kind: "dokploy",
 	version: null,
@@ -447,6 +452,7 @@ state.x64Waiting ??= new Map();
 state.x64InstallAt ??= new Map();
 state.x64InstallError ??= new Map();
 state.leader ??= false;
+state.leaderSince ??= null;
 state.heartbeat ??= null;
 state.kind ??= "dokploy";
 state.version ??= null;
@@ -2094,6 +2100,59 @@ interface Observation {
 }
 
 const { counters, lastMetricAt, lastCachesAt, lastHealAt } = state;
+
+/**
+ * Counts the jobs a machine lost within the pool's failover window and sets it
+ * aside, or brings it back, accordingly (see health.ts).
+ */
+export const refreshMachineHealth = async (
+	node: Pick<GithubRunnerNode, "githubRunnerNodeId" | "health"> & {
+		pool: Pick<GithubRunnerPool, "failover">;
+	},
+	now: number,
+	events: { at: string; message: string }[],
+) => {
+	const failover = node.pool.failover ?? DEFAULT_FAILOVER;
+	const since = new Date(now - failover.windowMinutes * 60_000).toISOString();
+	const recent = await db.query.githubRunnerJobs.findMany({
+		columns: {
+			outcome: true,
+			rerunStatus: true,
+			rerunNote: true,
+			finishedAt: true,
+		},
+		where: and(
+			eq(githubRunnerJobs.githubRunnerNodeId, node.githubRunnerNodeId),
+			ne(githubRunnerJobs.outcome, "running"),
+			gte(githubRunnerJobs.finishedAt, since),
+		),
+	});
+	const previous = node.health ?? null;
+	const health = decideMachineHealth({
+		previous,
+		lost: recent.filter((job) => lostJob(job, state.leaderSince)).length,
+		failover,
+		now,
+	});
+	if (JSON.stringify(health) !== JSON.stringify(previous)) {
+		await db
+			.update(githubRunnerNodes)
+			.set({ health })
+			.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
+		const wasAside =
+			previous !== null && Date.parse(previous.degradedUntil) > now;
+		if (health && !wasAside) {
+			recordEvent(
+				events,
+				`Set aside until ${health.degradedUntil.slice(11, 16)} UTC: ${health.reason}. It takes no new job; its jobs go to the other machines, or to the fallback`,
+			);
+		} else if (!health && previous) {
+			// Checked once the cooldown is over: what was stored is what ended.
+			recordEvent(events, "Back in the pool: no job lost during the cooldown");
+		}
+	}
+	return health;
+};
 
 const recordEvent = (
 	events: { at: string; message: string }[],
@@ -4149,6 +4208,15 @@ const actOnNode = async (
 		const blocked = await enforceFirewall(node, driver, probe, events);
 		if (blocked && admission.ok) admission = { ok: false, reason: blocked };
 
+		// Admission: a machine that keeps losing jobs is set aside (see health.ts).
+		const health = await refreshMachineHealth(node, now, events);
+		if (health && admission.ok) {
+			admission = {
+				ok: false,
+				reason: `set aside until ${health.degradedUntil.slice(11, 16)} UTC, ${health.reason}`,
+			};
+		}
+
 		const effectiveSlots = runtime?.slots ?? [];
 		const labels = runnerLabels(
 			node.pool,
@@ -4629,6 +4697,12 @@ const runnerOn = (node: GithubRunnerNode, runners: GithubRunner[]): boolean =>
 			isRunnerOf(runnerNamePrefix(node.name), runner.name),
 	);
 
+/** The target a pool forces, whatever its machines do (failover.mode). */
+const forcedTarget = (pool: GithubRunnerPool) => {
+	const mode = pool.failover?.mode ?? "auto";
+	return mode === "auto" ? null : mode;
+};
+
 const routingChanged = (
 	previous: GithubRunnerPool["routing"],
 	next: GithubRunnerPool["routing"],
@@ -4689,6 +4763,7 @@ export const routePool = async (pool: GithubRunnerPool) => {
 	if (candidates.length && (!listed || now - listed.at > 60_000)) return;
 	let routing = decideRouting({
 		previous: pool.routing,
+		force: forcedTarget(pool),
 		available: candidates.some((node) => runnerOn(node, listed?.runners ?? [])),
 		anyEnabled: nodes.some((node) => node.enabled),
 		labels: pool.labels,
@@ -4842,6 +4917,7 @@ const routeX64 = async (
 	);
 	let routing = decideRouting({
 		previous,
+		force: forcedTarget(pool),
 		available,
 		anyEnabled: machines.length > 0,
 		labels: pool.labels.map(x64Label),
@@ -5981,6 +6057,7 @@ const heartbeat = async () => {
 	if (leading && !state.leader) {
 		console.log(`GitHub runner controller: leading (${OWNER})`);
 		state.leader = true;
+		state.leaderSince = Date.now();
 		state.lastOrphanCheck = 0;
 		// Another leader may have changed what machines follow meanwhile.
 		state.autonomyApplied.clear();
@@ -5988,6 +6065,7 @@ const heartbeat = async () => {
 	} else if (!leading && state.leader) {
 		console.log(`GitHub runner controller: standing by (${OWNER})`);
 		state.leader = false;
+		state.leaderSince = null;
 	}
 	if (state.leader && Date.now() - state.lastOrphanCheck > ORPHANS_EVERY_MS) {
 		state.lastOrphanCheck = Date.now();

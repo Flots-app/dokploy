@@ -90,6 +90,11 @@ export const decideRerun = (
 	if (!ours) {
 		return { action: "skip", note: "this runner ran no job of that run" };
 	}
+	// The machine lost track of a job that ended well (a controller restart
+	// while the slot was armed again): nothing to recover.
+	if (ours.status === "completed" && ours.conclusion === "success") {
+		return { action: "skip", note: "the job succeeded" };
+	}
 	// Ended on its own while its machine ran out of memory: its runner reported
 	// it, so the run never waits for it, and only a failure is worth a re-run.
 	if (job.outcome === "completed") {

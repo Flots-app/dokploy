@@ -12,9 +12,17 @@ import {
 	FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { RunnerPool } from "./format";
 import type { PoolFormValues } from "./pool-form";
+import { NumberInput } from "./shared";
 
 /** Step 3: where jobs go while no runner of the pool is ON. */
 export const RoutingFields = ({
@@ -102,11 +110,107 @@ export const RoutingFields = ({
 							</FormItem>
 						)}
 					/>
+					<FailoverFields form={form} />
 				</div>
 			)}
 		</div>
 	);
 };
+
+/** When a machine that keeps losing jobs is set aside (see health.ts). */
+const FailoverFields = ({ form }: { form: UseFormReturn<PoolFormValues> }) => (
+	<div className="grid gap-4 sm:col-span-2 sm:grid-cols-3">
+		<FormField
+			control={form.control}
+			name="failover.mode"
+			render={({ field }) => (
+				<FormItem className="sm:col-span-3">
+					<FormLabel>Failover</FormLabel>
+					<Select value={field.value} onValueChange={field.onChange}>
+						<FormControl>
+							<SelectTrigger>
+								<SelectValue />
+							</SelectTrigger>
+						</FormControl>
+						<SelectContent>
+							<SelectItem value="auto">
+								Automatic: leave the machines that lose jobs (recommended)
+							</SelectItem>
+							<SelectItem value="pool">Keep the jobs on this pool</SelectItem>
+							<SelectItem value="fallback">
+								Send every job to the fallback
+							</SelectItem>
+						</SelectContent>
+					</Select>
+					<FormDescription>
+						A machine whose runners stay online can still lose its jobs (out of
+						memory, a VM that stops). Automatic: such a machine takes no new job
+						for a while, and the jobs go to the fallback once no machine is
+						left.
+					</FormDescription>
+				</FormItem>
+			)}
+		/>
+		<FormField
+			control={form.control}
+			name="failover.interruptions"
+			render={({ field }) => (
+				<FormItem>
+					<FormLabel>Lost jobs</FormLabel>
+					<FormControl>
+						<NumberInput
+							value={field.value}
+							onValueChange={field.onChange}
+							onBlur={field.onBlur}
+							min={0}
+							max={20}
+						/>
+					</FormControl>
+					<FormDescription>
+						Interrupted, or killed for memory; 0 never sets a machine aside.
+					</FormDescription>
+				</FormItem>
+			)}
+		/>
+		<FormField
+			control={form.control}
+			name="failover.windowMinutes"
+			render={({ field }) => (
+				<FormItem>
+					<FormLabel>Within (minutes)</FormLabel>
+					<FormControl>
+						<NumberInput
+							value={field.value}
+							onValueChange={field.onChange}
+							onBlur={field.onBlur}
+							min={1}
+							max={120}
+						/>
+					</FormControl>
+				</FormItem>
+			)}
+		/>
+		<FormField
+			control={form.control}
+			name="failover.cooldownMinutes"
+			render={({ field }) => (
+				<FormItem>
+					<FormLabel>Set aside for (minutes)</FormLabel>
+					<FormControl>
+						<NumberInput
+							value={field.value}
+							onValueChange={field.onChange}
+							onBlur={field.onBlur}
+							min={1}
+							max={24 * 60}
+						/>
+					</FormControl>
+					<FormDescription>After its last lost job.</FormDescription>
+				</FormItem>
+			)}
+		/>
+	</div>
+);
 
 const time = (iso: string) => format(new Date(iso), "HH:mm");
 
@@ -162,6 +266,16 @@ export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
 			tone: "bg-red-500",
 			text: `Cannot update ${pool.routingVariable}: ${routing.error}`,
 		};
+	} else if (pool.failover?.mode === "pool") {
+		line = {
+			tone: "bg-blue-500",
+			text: "Failover off: jobs stay on these machines whatever happens",
+		};
+	} else if (pool.failover?.mode === "fallback") {
+		line = {
+			tone: "bg-orange-500",
+			text: `Every job goes to ${fallback} (GitHub-hosted), as the pool settings ask`,
+		};
 	} else if (routing.target === "pool") {
 		line = {
 			tone: "bg-emerald-500",
@@ -170,9 +284,10 @@ export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
 				: "Jobs go to these machines",
 		};
 	} else {
+		const aside = setAside(pool);
 		line = {
 			tone: "bg-orange-500",
-			text: `No runner ON since ${time(routing.since)}: jobs go to ${fallback} (GitHub-hosted)`,
+			text: `No runner ON since ${time(routing.since)}: jobs go to ${fallback} (GitHub-hosted)${aside.length ? `. Set aside: ${aside.join("; ")}` : ""}`,
 		};
 	}
 	return (
@@ -186,6 +301,16 @@ export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
 		</div>
 	);
 };
+
+/** Machines set aside after losing jobs, with why and until when (see health.ts). */
+const setAside = (pool: RunnerPool) =>
+	pool.nodes.flatMap((node) =>
+		node.health && Date.parse(node.health.degradedUntil) > Date.now()
+			? [
+					`${node.name} until ${time(node.health.degradedUntil)}, ${node.health.reason}`,
+				]
+			: [],
+	);
 
 /** Where the jobs that need x86_64 go: shown once a machine runs x86_64 runners. */
 const X64RoutingLine = ({ pool }: { pool: RunnerPool }) => {
