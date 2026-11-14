@@ -197,6 +197,10 @@
   none is left (failover phase 1), in
   [Flots-app/dokploy#77](https://github.com/Flots-app/dokploy/pull/77).
 - [x] Publish `v0.29.14-flots.27` from `canary` and deploy it to production.
+- [x] Fail over to a chain of providers (Blacksmith, GitHub-hosted) within
+  monthly budgets (failover phase 2), in
+  [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78).
+- [ ] Publish `v0.29.14-flots.28` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
