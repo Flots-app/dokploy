@@ -17,6 +17,7 @@
 import { db } from "@dokploy/server/db";
 import {
 	type apiCreateOsUpdateConfiguration,
+	type apiHandOffMacos,
 	type apiInstallOsUpdatesNow,
 	type apiUpdateOsUpdateConfiguration,
 	githubRunnerNodes,
@@ -34,7 +35,10 @@ import {
 	type OsUpdateMachine,
 	requestOsUpdatesTick,
 } from "@dokploy/server/utils/os-updates/controller";
-import { osUpdateSettingsSchema } from "@dokploy/server/utils/os-updates/filters";
+import {
+	DEFAULT_OS_UPDATE_SETTINGS,
+	osUpdateSettingsSchema,
+} from "@dokploy/server/utils/os-updates/filters";
 import {
 	isOsUpdateDrain,
 	wakeOsUpdateDrains,
@@ -51,6 +55,7 @@ import {
 	getTableColumns,
 	inArray,
 	isNotNull,
+	ne,
 	or,
 	sql,
 } from "drizzle-orm";
@@ -96,8 +101,8 @@ const forbiddenRunner = () =>
 		message: "You are not authorized to access this runner machine",
 	});
 
-const LINUX_ONLY =
-	"OS updates manage Linux runner machines only: the VM of a Mac follows the update policy of its pool, and macOS its owner";
+const MACS_ONLY =
+	"A hand-off is for Mac runner machines: macOS is updated by its owner, Dokploy only takes the Mac out of service meanwhile";
 
 const isUniqueViolation = (error: unknown) =>
 	(error as { cause?: { code?: string } }).cause?.code === "23505" ||
@@ -119,7 +124,9 @@ const findServer = async (serverId: string, access: OsUpdateAccess) => {
 
 /**
  * A machine of the organization the member may access: its id, name, and
- * whether OS updates may work on it now. A runner machine must be Linux.
+ * whether OS updates may work on it now. A runner machine is a Linux
+ * machine, or a Mac whose Linux VM OS updates manage (macOS itself is
+ * handed to its owner: handOffMacos).
  */
 const findMachine = async (
 	machine: OsUpdateMachine,
@@ -148,13 +155,11 @@ const findMachine = async (
 	});
 	if (!node) throw notFound("Runner machine");
 	if (!access.runnerNodeIds.has(machine.id)) throw forbiddenRunner();
-	if (node.platform !== "linux") {
-		throw new TRPCError({ code: "BAD_REQUEST", message: LINUX_ONLY });
-	}
 	return {
 		machine,
 		id: node.githubRunnerNodeId,
 		name: node.name,
+		platform: node.platform,
 		active: isManagedRunnerNode(node),
 	};
 };
@@ -324,10 +329,7 @@ const assignMachines = async (
 	}
 	if (wantedNodes.size) {
 		const owned = await tx
-			.select({
-				id: githubRunnerNodes.githubRunnerNodeId,
-				platform: githubRunnerNodes.platform,
-			})
+			.select({ id: githubRunnerNodes.githubRunnerNodeId })
 			.from(githubRunnerNodes)
 			.where(
 				and(
@@ -336,9 +338,6 @@ const assignMachines = async (
 				),
 			);
 		if (owned.length !== wantedNodes.size) throw notFound("Runner machine");
-		if (owned.some((node) => node.platform !== "linux")) {
-			throw new TRPCError({ code: "BAD_REQUEST", message: LINUX_ONLY });
-		}
 	}
 	const now = new Date().toISOString();
 	const joined = { serverIds: [] as string[], runnerNodeIds: [] as string[] };
@@ -738,8 +737,9 @@ export const listOsUpdateServers = async (access: OsUpdateAccess) => {
 };
 
 /**
- * The Linux runner machines the member may see, with what OS updates know of
- * them and where their drain stands.
+ * The runner machines the member may see (Linux machines, and the Linux VM
+ * of each Mac), with what OS updates know of them and where their drain
+ * stands.
  */
 export const listOsUpdateRunnerNodes = async (access: OsUpdateAccess) => {
 	const ids = [...access.runnerNodeIds];
@@ -752,6 +752,7 @@ export const listOsUpdateRunnerNodes = async (access: OsUpdateAccess) => {
 			phase: githubRunnerNodes.phase,
 			enabled: githubRunnerNodes.enabled,
 			platform: githubRunnerNodes.platform,
+			vmName: githubRunnerNodes.vmName,
 			drain: githubRunnerNodes.drain,
 			observed: githubRunnerNodes.observed,
 			poolName: githubRunnerPools.name,
@@ -767,7 +768,6 @@ export const listOsUpdateRunnerNodes = async (access: OsUpdateAccess) => {
 		.where(
 			and(
 				eq(githubRunnerNodes.organizationId, access.organizationId),
-				eq(githubRunnerNodes.platform, "linux"),
 				inArray(githubRunnerNodes.githubRunnerNodeId, ids),
 			),
 		)
@@ -791,28 +791,59 @@ export const listOsUpdateRunnerNodes = async (access: OsUpdateAccess) => {
 				message: osUpdateRuns.message,
 			})
 			.from(osUpdateRuns)
-			.where(inArray(osUpdateRuns.githubRunnerNodeId, listed))
+			.where(
+				and(
+					inArray(osUpdateRuns.githubRunnerNodeId, listed),
+					// A Mac's hand-offs are its macOS's, listed with it.
+					ne(osUpdateRuns.kind, "handoff"),
+				),
+			)
 			.orderBy(osUpdateRuns.githubRunnerNodeId, desc(osUpdateRuns.createdAt)),
 	]);
+	// What holds the drained ones: an OS update run, or a hand-off of macOS.
+	const drainRuns = nodes.flatMap((node) =>
+		isOsUpdateDrain(node.drain) ? [node.drain.osUpdateRunId] : [],
+	);
+	const handoffRuns = new Set(
+		drainRuns.length
+			? (
+					await db
+						.select({ osUpdateRunId: osUpdateRuns.osUpdateRunId })
+						.from(osUpdateRuns)
+						.where(
+							and(
+								inArray(osUpdateRuns.osUpdateRunId, drainRuns),
+								eq(osUpdateRuns.kind, "handoff"),
+							),
+						)
+				).map((run) => run.osUpdateRunId)
+			: [],
+	);
 	const now = new Date();
 	const stateOf = new Map(
 		states.map((state) => [state.githubRunnerNodeId, state]),
 	);
 	const lastRunOf = new Map(runs.map((run) => [run.githubRunnerNodeId, run]));
-	return nodes.map(({ drain, observed, ...row }) => {
+	return nodes.map(({ drain, observed, vmName, ...row }) => {
 		const state = stateOf.get(row.githubRunnerNodeId);
 		const configuration = state?.configuration ?? null;
 		return {
 			...row,
+			/** A Mac: the VM OS updates install in. */
+			vmName: row.platform === "macos" ? vmName : null,
 			active: isManagedRunnerNode(row),
 			/** Jobs running on it, as the runner controller last saw. */
 			jobs: (observed?.slots ?? []).filter((slot) => slot.state === "busy")
 				.length,
-			/** Out of service for an OS update run: waiting for its jobs, or installing. */
+			/**
+			 * Out of service for an OS update run (or a hand-off of its macOS):
+			 * waiting for its jobs, or installing.
+			 */
 			osUpdate: isOsUpdateDrain(drain)
 				? {
 						osUpdateRunId: drain.osUpdateRunId,
 						installing: Boolean(drain.installingAt),
+						handoff: handoffRuns.has(drain.osUpdateRunId),
 					}
 				: null,
 			periodicAssessment: state?.periodicAssessment ?? false,
@@ -832,6 +863,129 @@ export const listOsUpdateRunnerNodes = async (access: OsUpdateAccess) => {
 			lastRun: lastRunOf.get(row.githubRunnerNodeId) ?? null,
 		};
 	});
+};
+
+/**
+ * The Macs the member may see, with macOS as their runner controller last
+ * reported it, and their hand-offs: Dokploy never installs macOS updates, it
+ * takes the Mac out of service while its owner does.
+ */
+export const listOsUpdateMacs = async (access: OsUpdateAccess) => {
+	const ids = [...access.runnerNodeIds];
+	if (!ids.length) return [];
+	const macs = await db
+		.select({
+			githubRunnerNodeId: githubRunnerNodes.githubRunnerNodeId,
+			name: githubRunnerNodes.name,
+			host: githubRunnerNodes.host,
+			phase: githubRunnerNodes.phase,
+			enabled: githubRunnerNodes.enabled,
+			osReport: githubRunnerNodes.osReport,
+			poolName: githubRunnerPools.name,
+		})
+		.from(githubRunnerNodes)
+		.innerJoin(
+			githubRunnerPools,
+			eq(
+				githubRunnerPools.githubRunnerPoolId,
+				githubRunnerNodes.githubRunnerPoolId,
+			),
+		)
+		.where(
+			and(
+				eq(githubRunnerNodes.organizationId, access.organizationId),
+				eq(githubRunnerNodes.platform, "macos"),
+				inArray(githubRunnerNodes.githubRunnerNodeId, ids),
+			),
+		)
+		.orderBy(githubRunnerPools.name, githubRunnerNodes.name);
+	if (!macs.length) return [];
+	const handoffs = await db
+		.selectDistinctOn([osUpdateRuns.githubRunnerNodeId], {
+			githubRunnerNodeId: osUpdateRuns.githubRunnerNodeId,
+			osUpdateRunId: osUpdateRuns.osUpdateRunId,
+			status: osUpdateRuns.status,
+			createdAt: osUpdateRuns.createdAt,
+			startedAt: osUpdateRuns.startedAt,
+			finishedAt: osUpdateRuns.finishedAt,
+			deadline: osUpdateRuns.deadline,
+			message: osUpdateRuns.message,
+			step: sql<string | null>`${osUpdateRuns.progress}->>'step'`,
+		})
+		.from(osUpdateRuns)
+		.where(
+			and(
+				inArray(
+					osUpdateRuns.githubRunnerNodeId,
+					macs.map((mac) => mac.githubRunnerNodeId),
+				),
+				eq(osUpdateRuns.kind, "handoff"),
+			),
+		)
+		.orderBy(osUpdateRuns.githubRunnerNodeId, desc(osUpdateRuns.createdAt));
+	const lastOf = new Map(handoffs.map((run) => [run.githubRunnerNodeId, run]));
+	return macs.map(({ osReport, ...mac }) => ({
+		...mac,
+		/** macOS, from the runner controller's last report. */
+		macos: osReport?.host ?? null,
+		reportedAt: osReport?.at ?? null,
+		/** It can be handed off: set up, its runners under Dokploy's control. */
+		active: mac.phase === "ready" || mac.phase === "draining",
+		lastHandoff: lastOf.get(mac.githubRunnerNodeId) ?? null,
+	}));
+};
+
+/**
+ * "Hand off for a macOS update": the Mac takes no new job, its running jobs
+ * end, then its owner updates macOS; Dokploy gives it back once it reports
+ * another version, or after `maxHours`. A run of its own (kind handoff),
+ * with the history, log, cancel and notifications of the other runs.
+ */
+export const handOffMacos = async (
+	input: z.infer<typeof apiHandOffMacos>,
+	access: OsUpdateAccess,
+	requestedBy: string,
+) => {
+	const target = await findMachine(
+		{ kind: "runner", id: input.githubRunnerNodeId },
+		access,
+	);
+	if (target.platform !== "macos") {
+		throw new TRPCError({ code: "BAD_REQUEST", message: MACS_ONLY });
+	}
+	if (!target.active) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `${target.name} is not ready in GitHub Runners: nothing to hand off`,
+		});
+	}
+	await access.requireRunnerUpdate();
+	let run: typeof osUpdateRuns.$inferSelect | undefined;
+	try {
+		[run] = await db
+			.insert(osUpdateRuns)
+			.values({
+				organizationId: access.organizationId,
+				githubRunnerNodeId: target.id,
+				trigger: "manual",
+				kind: "handoff",
+				deadline: new Date(
+					Date.now() + input.maxHours * 60 * 60_000,
+				).toISOString(),
+				settings: DEFAULT_OS_UPDATE_SETTINGS,
+				requestedBy,
+			})
+			.returning();
+	} catch (error) {
+		if (!isUniqueViolation(error)) throw error;
+		throw new TRPCError({
+			code: "CONFLICT",
+			message: `${target.name} is already handed off`,
+		});
+	}
+	if (!run) throw new Error("The hand-off was not queued");
+	requestOsUpdatesTick();
+	return { run, machine: target };
 };
 
 /** A machine's row, created on first use (not assessed periodically by default). */
@@ -994,9 +1148,10 @@ export const installOsUpdatesNow = async (
 };
 
 /**
- * Cancels a run that has not started installing: a pending one, or a run of
- * a runner machine still waiting for its jobs to end (the machine takes jobs
- * again). One that installs cannot stop halfway.
+ * Cancels a run that has not started installing: a pending one, a run of a
+ * runner machine still waiting for its jobs to end, or a hand-off ("Give
+ * back now"): the machine takes jobs again. One that installs cannot stop
+ * halfway.
  */
 export const cancelOsUpdateRun = async (
 	osUpdateRunId: string,
@@ -1016,7 +1171,7 @@ export const cancelOsUpdateRun = async (
 		.set({
 			status: "cancelled",
 			finishedAt: new Date().toISOString(),
-			message: sql`CASE WHEN ${osUpdateRuns.status} = 'running' THEN 'Cancelled while the jobs of the machine ended: nothing was installed, and it takes jobs again.' ELSE 'Cancelled before it started.' END`,
+			message: sql`CASE WHEN ${osUpdateRuns.kind} = 'handoff' THEN 'Given back by a user: it takes jobs again.' WHEN ${osUpdateRuns.status} = 'running' THEN 'Cancelled while the jobs of the machine ended: nothing was installed, and it takes jobs again.' ELSE 'Cancelled before it started.' END`,
 			lockedBy: null,
 			lockedUntil: null,
 		})
@@ -1028,7 +1183,8 @@ export const cancelOsUpdateRun = async (
 					and(
 						eq(osUpdateRuns.status, "running"),
 						isNotNull(osUpdateRuns.githubRunnerNodeId),
-						sql`coalesce(${osUpdateRuns.progress}->>'step', 'drain') = 'drain'`,
+						// Waiting for its jobs, or (a hand-off) for its owner.
+						sql`coalesce(${osUpdateRuns.progress}->>'step', 'drain') IN ('drain', 'handoff')`,
 					),
 				),
 			),

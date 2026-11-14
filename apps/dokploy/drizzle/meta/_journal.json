@@ -1310,6 +1310,13 @@
       "when": 1794653576430,
       "tag": "0186_github_runner_pipelines",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1794654833725,
+      "tag": "0187_os_update_macos_handoff",
+      "breakpoints": true
     }
   ]
 }

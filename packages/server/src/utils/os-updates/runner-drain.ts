@@ -17,7 +17,7 @@ import {
 	githubRunnerNodes,
 	osUpdateRuns,
 } from "@dokploy/server/db/schema";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 
 export type OsUpdateDrain = GithubRunnerDrain & {
 	reason: "os-update";
@@ -63,9 +63,10 @@ const drainOf = (runId: string) =>
 	);
 
 /**
- * Takes a ready (or stopped) Linux machine out of service for a run: no new
- * job from now on. False when the machine is busy with something else (an
- * operator drain, the runner controller's own updates) or not set up.
+ * Takes a machine out of service for a run: no new job from now on. A Linux
+ * machine ready or stopped, a Mac ready (its VM runs). False when the
+ * machine is busy with something else (an operator drain, the runner
+ * controller's own updates) or not set up.
  * `abortAt`: the runner controller gives the machine back from then on if
  * the run never started installing (its process stopped for good).
  */
@@ -73,6 +74,8 @@ export const startOsUpdateDrain = async (input: {
 	nodeId: string;
 	runId: string;
 	abortAt: Date;
+	/** A Mac handed to its owner for a macOS update. */
+	handoff?: boolean;
 }) => {
 	const drain: OsUpdateDrain = {
 		mode: "wait",
@@ -82,6 +85,7 @@ export const startOsUpdateDrain = async (input: {
 		operationId: null,
 		abortAt: input.abortAt.toISOString(),
 		osUpdateRunId: input.runId,
+		...(input.handoff ? { handoff: true } : {}),
 		drainedAt: null,
 		installingAt: null,
 	};
@@ -91,8 +95,16 @@ export const startOsUpdateDrain = async (input: {
 		.where(
 			and(
 				eq(githubRunnerNodes.githubRunnerNodeId, input.nodeId),
-				eq(githubRunnerNodes.platform, "linux"),
-				inArray(githubRunnerNodes.phase, ["ready", "stopped"]),
+				or(
+					and(
+						eq(githubRunnerNodes.platform, "linux"),
+						inArray(githubRunnerNodes.phase, ["ready", "stopped"]),
+					),
+					and(
+						eq(githubRunnerNodes.platform, "macos"),
+						eq(githubRunnerNodes.phase, "ready"),
+					),
+				),
 				sql`${githubRunnerNodes.drain} IS NULL`,
 			),
 		)

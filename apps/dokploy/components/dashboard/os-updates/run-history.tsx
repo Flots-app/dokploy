@@ -34,14 +34,20 @@ import {
 
 type RunDetail = RouterOutputs["osUpdate"]["run"];
 
+/** What started a run. A window in its schedule's zone, as the configuration reads. */
+const originText = (run: RunDetail) => {
+	const by = run.requestedBy ? ` by ${run.requestedBy}` : "";
+	if (run.kind === "handoff") return `macOS hand-off${by}`;
+	if (run.trigger === "manual") return `Install now${by}`;
+	const zone = run.configuration?.schedule.timeZone;
+	const name = run.configuration ? `, ${run.configuration.name}` : "";
+	return `Window of ${zonedDateText(run.windowStart, zone)}${name}`;
+};
+
 const RunSummary = ({ run }: { run: RunDetail }) => {
 	const status = RUN_STATUS[run.status];
 	const zone = browserTimeZone();
-	// A window in its schedule's zone, as the configuration reads.
-	const origin =
-		run.trigger === "manual"
-			? `Install now${run.requestedBy ? ` by ${run.requestedBy}` : ""}`
-			: `Window of ${zonedDateText(run.windowStart, run.configuration?.schedule.timeZone)}${run.configuration ? `, ${run.configuration.name}` : ""}`;
+	const origin = originText(run);
 	return (
 		<>
 			<div className="flex flex-wrap items-center gap-2">
@@ -195,7 +201,11 @@ const CancelButton = ({ run }: { run: OsUpdateRunRow }) => {
 	const server = run.machineName ?? "this server";
 	return (
 		<DialogAction
-			title={`Cancel the update of ${server}?`}
+			title={
+				run.kind === "handoff"
+					? `Give ${server} back now?`
+					: `Cancel the update of ${server}?`
+			}
 			description={cancelRunText(run)}
 			type="destructive"
 			onClick={async () => {
@@ -205,7 +215,9 @@ const CancelButton = ({ run }: { run: OsUpdateRunRow }) => {
 						utils.osUpdate.runs.invalidate(),
 						utils.osUpdate.overview.invalidate(),
 					]);
-					toast.success("Run cancelled");
+					toast.success(
+						run.kind === "handoff" ? "Given back" : "Run cancelled",
+					);
 				} catch (error) {
 					toast.error(errorText(error, "The run could not be cancelled"));
 				}
@@ -215,7 +227,11 @@ const CancelButton = ({ run }: { run: OsUpdateRunRow }) => {
 				size="icon"
 				variant="ghost"
 				className="size-7"
-				aria-label={`Cancel the update of ${server}`}
+				aria-label={
+					run.kind === "handoff"
+						? `Give ${server} back now`
+						: `Cancel the update of ${server}`
+				}
 				disabled={cancel.isPending}
 			>
 				<X className="size-3.5" />
@@ -288,9 +304,11 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 									</TableCell>
 									<TableCell className="text-xs text-muted-foreground">
 										<span className="block max-w-36 whitespace-normal">
-											{run.trigger === "manual"
-												? "Install now"
-												: (run.configurationName ?? "Schedule")}
+											{run.kind === "handoff"
+												? "macOS hand-off"
+												: run.trigger === "manual"
+													? "Install now"
+													: (run.configurationName ?? "Schedule")}
 										</span>
 									</TableCell>
 									<TableCell className="text-xs">
@@ -319,12 +337,13 @@ export const RunHistory = ({ canRun }: { canRun: boolean }) => {
 											</Button>
 											{canRun &&
 												(run.status === "pending" ||
-													// A runner machine still waiting for its jobs.
+													// A runner machine still waiting for its jobs,
+													// or a Mac waiting for its owner.
 													(run.status === "running" &&
 														run.githubRunnerNodeId !== null &&
-														(run.progress?.step ?? "drain") === "drain")) && (
-													<CancelButton run={run} />
-												)}
+														["drain", "handoff"].includes(
+															run.progress?.step ?? "drain",
+														))) && <CancelButton run={run} />}
 										</span>
 									</TableCell>
 								</TableRow>

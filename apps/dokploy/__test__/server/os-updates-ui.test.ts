@@ -96,6 +96,19 @@ describe("OS updates page helpers", () => {
 		).toMatch(/does not install the updates of this Install now/);
 	});
 
+	it("say what giving a Mac back costs", () => {
+		expect(
+			cancelRunText({
+				trigger: "manual",
+				kind: "handoff",
+				machineName: "m6",
+				configurationName: null,
+			}),
+		).toMatch(
+			/^m6 takes jobs again at once, whether or not its owner updated macOS/,
+		);
+	});
+
 	it("label every reboot setting", () => {
 		expect(Object.keys(REBOOT_LABELS).sort()).toEqual([
 			"always",

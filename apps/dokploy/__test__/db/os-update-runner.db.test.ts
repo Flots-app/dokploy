@@ -18,6 +18,7 @@ import {
 } from "@dokploy/server/db/schema";
 import {
 	cancelOsUpdateRun,
+	handOffMacos,
 	listOsUpdateRunnerNodes,
 	type OsUpdateAccess,
 	requestOsUpdateAssessment,
@@ -819,20 +820,25 @@ describe("runner machines in a maintenance configuration", () => {
 		).toEqual([]);
 		const listed = await listOsUpdateRunnerNodes(await ownerAccess());
 		expect(listed.map((row) => row.name)).toContain("listed");
-		// The VM of a Mac follows its pool's update policy: not listed.
-		expect(listed.map((row) => row.name)).not.toContain("listed-mac");
+		// A Mac is listed as its Linux VM.
+		expect(
+			listed.find((row) => row.githubRunnerNodeId === mac.githubRunnerNodeId)
+				?.vmName,
+		).toBe("dokploy-runners");
 		await expect(
 			requestOsUpdateAssessment(
 				{ githubRunnerNodeId: node.githubRunnerNodeId },
 				await ownerAccess(false),
 			),
 		).rejects.toThrow(/githubRunner.update needed/);
+		// macOS is handed off, never a Linux machine.
 		await expect(
-			requestOsUpdateAssessment(
-				{ githubRunnerNodeId: mac.githubRunnerNodeId },
+			handOffMacos(
+				{ githubRunnerNodeId: node.githubRunnerNodeId, maxHours: 24 },
 				await ownerAccess(),
+				owner.email,
 			),
-		).rejects.toThrow(/Linux runner machines only/);
+		).rejects.toThrow(/hand-off is for Mac runner machines/);
 		await requestOsUpdateAssessment(
 			{ githubRunnerNodeId: node.githubRunnerNodeId },
 			await ownerAccess(),
