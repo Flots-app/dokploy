@@ -205,16 +205,25 @@ Dokploy decides; workflows read its Actions variables (no selector job).
 
 ## Phase 1: pool health and degraded routing
 
-- [ ] Pool health: healthy, degraded (until a cooldown ends) or down, with the reason.
-- [ ] Signals: no runner ON (as today), and jobs interrupted or hit by the OOM
-  killer within a sliding window.
-- [ ] While degraded, both routing variables point to the fallback; queued jobs are
-  moved and the re-runs of interrupted jobs land there.
-- [ ] Pool settings: interruptions threshold, window, cooldown (0 turns it off).
-- [ ] Manual override: auto, force the pool, force the fallback.
-- [ ] Pool page and alerts show the state, its reason and its end.
-- [ ] An interrupted job that GitHub reports successful is not re-run (controller
+- [x] Machine health: a machine that loses jobs is set aside until a cooldown
+  ends, with the reason; it takes no new job, its running jobs go on
+  (`health.ts`, admission "set aside until").
+- [x] Signals: no runner ON (as before), and jobs interrupted or hit by the OOM
+  killer within a sliding window; jobs marked interrupted right after a
+  controller takes the lead do not count.
+- [x] Once no machine is left, both routing variables point to the fallback;
+  queued jobs are moved and the re-runs of interrupted jobs land there.
+- [x] Pool settings: lost jobs threshold, window, cooldown (0 turns it off),
+  migration `0187_github_runner_failover`.
+- [x] Override: automatic, keep the jobs on the pool, send every job to the
+  fallback.
+- [x] Pool page: routing line names the machines set aside; the machine card
+  shows the admission reason.
+- [ ] Alerts name the machines set aside and why.
+- [x] An interrupted job that GitHub reports successful is not re-run (controller
   restarts marked finished jobs interrupted, 2026-11-14 18:06).
+- [ ] Database test of the set-aside against a real PostgreSQL.
+- [ ] Release, then see it set m4 aside and bring it back in production.
 
 ## Phase 2: providers and budgets
 

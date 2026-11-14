@@ -27,6 +27,8 @@ export const runsOnExpression = (variable: string, fallbackLabels: string[]) =>
 
 export interface RoutingInput {
 	previous: GithubRunnerRouting | null;
+	/** A target the pool forces (failover.mode), whatever its runners do. */
+	force?: GithubRunnerRouting["target"] | null;
 	/** At least one runner of the pool is ON: online, on a machine taking jobs. */
 	available: boolean;
 	/** At least one machine is enabled; when none is, nothing is coming back. */
@@ -39,10 +41,12 @@ export interface RoutingInput {
 /**
  * The pool while at least one of its runners is ON, the fallback otherwise.
  * Going back to the pool is immediate; leaving it waits for a short grace,
- * unless no machine is enabled any more.
+ * unless no machine is enabled any more. A machine set aside after losing jobs
+ * has none ON (see health.ts); a forced target overrides it all.
  */
 export const decideRouting = ({
 	previous,
+	force = null,
 	available,
 	anyEnabled,
 	labels,
@@ -59,7 +63,7 @@ export const decideRouting = ({
 		previous?.target === "pool" &&
 		now - Date.parse(unavailableSince ?? at) < ROUTING_GRACE_MS;
 	const target: GithubRunnerRouting["target"] =
-		available || graceful ? "pool" : "fallback";
+		force ?? (available || graceful ? "pool" : "fallback");
 	return {
 		variable: previous?.variable ?? null,
 		syncedValue: previous?.syncedValue ?? null,
