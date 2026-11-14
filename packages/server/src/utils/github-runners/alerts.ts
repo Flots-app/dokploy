@@ -35,6 +35,7 @@ export type RunnerAlertKind =
 	| "os-guest-updates"
 	| "firewall"
 	| "fallback"
+	| "set-aside"
 	| "routing"
 	| "no-capacity"
 	| "token";
@@ -128,6 +129,12 @@ export const osPatchFailureLasts = (
 	);
 };
 
+/** The health of a machine while it is set aside (see health.ts). */
+const setAside = (node: GithubRunnerNode, now: number) =>
+	node.health && Date.parse(node.health.degradedUntil) > now
+		? node.health
+		: null;
+
 const machineConditions = (input: {
 	pool: GithubRunnerPool;
 	node: GithubRunnerNode;
@@ -159,6 +166,15 @@ const machineConditions = (input: {
 			delayMs,
 		});
 	const name = node.name;
+	const aside = setAside(node, now);
+	if (aside) {
+		add(
+			"set-aside",
+			"warning",
+			`${name} is set aside after losing jobs`,
+			`${name} takes no new job until ${aside.degradedUntil.slice(11, 16)} UTC: ${aside.reason}. Its running jobs go on; new jobs go to the other machines of ${pool.name}, or to its fallback. See its events on the GitHub Runners page.`,
+		);
+	}
 	if (node.phase === "error") {
 		add(
 			"error",
@@ -308,6 +324,20 @@ export interface RunnerAlertInput {
  * be told yet (a process that just took the lead has not read the releases,
  * a stopped VM sends no OS report): their alerts stay as they are.
  */
+const asideNote = (nodes: GithubRunnerNode[], now: number) => {
+	const aside = nodes.flatMap((node) => {
+		const health = setAside(node, now);
+		return health
+			? [
+					`${node.name} until ${health.degradedUntil.slice(11, 16)} UTC (${health.reason})`,
+				]
+			: [];
+	});
+	return aside.length
+		? ` Set aside after losing jobs: ${aside.join(", ")}.`
+		: "";
+};
+
 export const runnerAlerts = (
 	input: RunnerAlertInput,
 ): { conditions: RunnerAlertCondition[]; unknown: string[] } => {
@@ -351,7 +381,7 @@ export const runnerAlerts = (
 			"fallback",
 			"warning",
 			`${pool.name}: jobs run on GitHub-hosted runners`,
-			`No machine of ${pool.name} can take jobs since ${day(pool.routing.since)}: jobs of private repositories run on ${pool.fallbackLabels.join(", ")} until one can again.`,
+			`No machine of ${pool.name} can take jobs since ${day(pool.routing.since)}: jobs of private repositories run on ${pool.fallbackLabels.join(", ")} until one can again.${asideNote(nodes, now)}`,
 		);
 	} else if (
 		!pool.routingVariable &&

@@ -1,7 +1,10 @@
 import {
 	apiCreateGithubRunnerPool,
+	type GithubRunnerNode,
 	type GithubRunnerNodeHealth,
+	type GithubRunnerPool,
 } from "@dokploy/server/db/schema";
+import { runnerAlertConditions } from "@dokploy/server/utils/github-runners/alerts";
 import {
 	DEFAULT_FAILOVER,
 	decideMachineHealth,
@@ -210,5 +213,94 @@ describe("recovery of a job the machine lost track of", () => {
 				],
 			),
 		).toEqual({ action: "skip", note: "the job succeeded" });
+	});
+});
+
+describe("alerts of a machine set aside", () => {
+	it("name the machine, why and until when, alone and in the fallback alert", () => {
+		const now = at("2026-11-14T16:00:00Z");
+		const health: GithubRunnerNodeHealth = {
+			degradedSince: "2026-11-14T15:56:40.000Z",
+			degradedUntil: "2026-11-14T16:26:40.000Z",
+			reason: "4 jobs lost within 10 minutes",
+		};
+		const pool = {
+			githubRunnerPoolId: "pool",
+			organizationId: "org",
+			name: "Flots-app",
+			authType: "app",
+			token: null,
+			runnerVersion: null,
+			updatePolicy: { auto: true, window: null },
+			routingVariable: "DOKPLOY_RUNS_ON",
+			routing: {
+				variable: "DOKPLOY_RUNS_ON",
+				target: "fallback",
+				value: '"ubuntu-24.04"',
+				since: "2026-11-14T15:58:40.000Z",
+				unavailableSince: "2026-11-14T15:56:40.000Z",
+				syncedValue: '"ubuntu-24.04"',
+				syncedAt: "2026-11-14T15:58:41.000Z",
+				attemptedAt: "2026-11-14T15:58:41.000Z",
+				error: null,
+			},
+			fallbackLabels: ["ubuntu-24.04"],
+			x64FallbackLabels: ["ubuntu-24.04"],
+		} as GithubRunnerPool;
+		const node = (name: string, aside: GithubRunnerNodeHealth | null) =>
+			({
+				githubRunnerNodeId: name,
+				githubRunnerPoolId: "pool",
+				name,
+				host: `${name}.tailnet.ts.net`,
+				platform: "macos",
+				enabled: true,
+				phase: "ready",
+				drain: null,
+				lastSeenAt: new Date(now).toISOString(),
+				lastError: null,
+				updatePolicy: null,
+				updateState: null,
+				osReport: null,
+				firewall: null,
+				health: aside,
+				observed: {
+					at: new Date(now).toISOString(),
+					reachable: true,
+					admission: { ok: true },
+					slots: [],
+					runtime: { version: 18, runnerVersion: "2.338.2" },
+				},
+			}) as unknown as GithubRunnerNode;
+		const conditions = runnerAlertConditions({
+			pool,
+			nodes: [
+				node("m4", health),
+				// Its cooldown ended: no alert left.
+				node("m6", { ...health, degradedUntil: "2026-11-14T15:59:00.000Z" }),
+			],
+			now,
+			runnerReleases: [
+				{ version: "2.338.2", publishedAt: "2026-11-01T00:00:00.000Z" },
+			],
+			osReleases: () => [],
+			token: null,
+		});
+		const asideAlerts = conditions.filter(
+			(alert) => alert.kind === "set-aside",
+		);
+		expect(asideAlerts).toHaveLength(1);
+		expect(asideAlerts[0]).toMatchObject({
+			subject: "m4:set-aside",
+			severity: "warning",
+			message: expect.stringContaining(
+				"m4 takes no new job until 16:26 UTC: 4 jobs lost within 10 minutes.",
+			),
+		});
+		expect(
+			conditions.find((alert) => alert.kind === "fallback")?.message,
+		).toContain(
+			"Set aside after losing jobs: m4 until 16:26 UTC (4 jobs lost within 10 minutes).",
+		);
 	});
 });

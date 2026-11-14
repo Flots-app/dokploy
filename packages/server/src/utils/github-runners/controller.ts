@@ -2105,8 +2105,10 @@ const { counters, lastMetricAt, lastCachesAt, lastHealAt } = state;
  * Counts the jobs a machine lost within the pool's failover window and sets it
  * aside, or brings it back, accordingly (see health.ts).
  */
-const refreshMachineHealth = async (
-	node: NodeWithRelations,
+export const refreshMachineHealth = async (
+	node: Pick<GithubRunnerNode, "githubRunnerNodeId" | "health"> & {
+		pool: Pick<GithubRunnerPool, "failover">;
+	},
 	now: number,
 	events: { at: string; message: string }[],
 ) => {
@@ -2144,7 +2146,8 @@ const refreshMachineHealth = async (
 				events,
 				`Set aside until ${health.degradedUntil.slice(11, 16)} UTC: ${health.reason}. It takes no new job; its jobs go to the other machines, or to the fallback`,
 			);
-		} else if (!health && wasAside) {
+		} else if (!health && previous) {
+			// Checked once the cooldown is over: what was stored is what ended.
 			recordEvent(events, "Back in the pool: no job lost during the cooldown");
 		}
 	}

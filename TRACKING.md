@@ -219,10 +219,12 @@ Dokploy decides; workflows read its Actions variables (no selector job).
   fallback.
 - [x] Pool page: routing line names the machines set aside; the machine card
   shows the admission reason.
-- [ ] Alerts name the machines set aside and why.
+- [x] Alerts name the machines set aside and why (machine alert `set-aside`,
+  and the pool's fallback alert).
 - [x] An interrupted job that GitHub reports successful is not re-run (controller
   restarts marked finished jobs interrupted, 2026-11-14 18:06).
-- [ ] Database test of the set-aside against a real PostgreSQL.
+- [x] Database test of the set-aside against a real PostgreSQL (it found the
+  missing "Back in the pool" event).
 - [ ] Release, then see it set m4 aside and bring it back in production.
 
 ## Phase 2: providers and budgets
