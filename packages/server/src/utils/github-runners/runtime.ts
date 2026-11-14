@@ -9,7 +9,7 @@ import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 import { X64_DOCKER_PLATFORM } from "./x64";
 
-export const RUNTIME_VERSION = 16;
+export const RUNTIME_VERSION = 17;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -29,7 +29,10 @@ export const RUNTIME_VERSION = 16;
  * of the amd64 libraries (a line continuation passed "\\" to apt-get):
  * optional, needed by the x86_64 runners. v16 keeps the build cache out of the
  * waste (it removed every record no image holds, so the next build started
- * cold) and removes caches by finer ages, the most recent last: optional.
+ * cold) and removes caches by finer ages, the most recent last: optional. v17
+ * keeps a machine short of memory from interrupting every job it runs (the
+ * runner units, see runnerUnit) and records the processes the kernel killed
+ * for memory during each job: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 /**
@@ -927,7 +930,15 @@ const recordJob = sh`	{
 		printf 'workflow=%s\n' "\${GITHUB_WORKFLOW:-}"
 		printf 'job=%s\n' "\${GITHUB_JOB:-}"
 		printf 'started=%s\n' "$(date +%s)"
+		printf 'oom_kills=%s\n' "$(oom_kills)"
 	} >"$state.tmp" 2>/dev/null && mv -f "$state.tmp" "$state" 2>/dev/null || true`;
+
+/**
+ * Processes the kernel killed for memory since the machine started
+ * (/proc/vmstat). The job file keeps the count at the start and at the end of
+ * the job: a job that failed while it rose is re-run like an interrupted one.
+ */
+const oomKills = sh`oom_kills() { awk '$1 == "oom_kill" { print $2 }' /proc/vmstat 2>/dev/null || true; }`;
 
 /**
  * Runs after the job file is written: a cleanup that needs every cache idle
@@ -939,7 +950,7 @@ const waitForCleanup = sh`	if [ -e /var/lib/dokploy-runners/gc.lock ]; then
 		while [ -n "$(find /var/lib/dokploy-runners/gc.lock -mmin -20 2>/dev/null)" ]; do sleep 3; done
 	fi`;
 
-const recordCompletion = sh`	printf 'completed=%s\n' "$(date +%s)" >>"$state" 2>/dev/null || true`;
+const recordCompletion = sh`	printf 'completed=%s\noom_kills_end=%s\n' "$(date +%s)" "$(oom_kills)" >>"$state" 2>/dev/null || true`;
 
 /**
  * The job guard of the pool, before anything of the job runs. Its settings come
@@ -1043,7 +1054,8 @@ export const jobGuardFile = (guard: GithubRunnerJobGuard) => {
 
 const jobHook = (phase: "started" | "completed") => sh`#!/bin/bash
 # Managed by Dokploy: ${phase === "started" ? "applies the job guard, " : ""}records the job of this runner slot, then runs the pool hook.
-${phase === "started" ? `${jobGuardCheck}\n` : ""}slot="\${DOKPLOY_RUNNER_SLOT:-}"
+${phase === "started" ? `${jobGuardCheck}\n` : ""}${oomKills}
+slot="\${DOKPLOY_RUNNER_SLOT:-}"
 if [[ "$slot" =~ ^[0-9]+$ ]]; then
 	state="/var/lib/dokploy-runners/jobs/$slot"
 ${phase === "started" ? `${recordJob}\n${waitForCleanup}` : recordCompletion}
@@ -1087,6 +1099,16 @@ Environment=DOKPLOY_RUNNER_SLOT=%i
 # run.sh forwards SIGTERM to the listener as SIGINT: the job is cancelled and
 # reported to GitHub instead of being cut off.
 Environment=RUNNER_MANUALLY_TRAP_SIG=1
+# One job short of memory must not take down the others. The runner gives the
+# processes it starts an oom_score_adj of 500 (actions/runner ProcessInvoker),
+# its \`docker exec\` clients included: the kernel killed those first, a few MiB
+# each, one per job, before the process that used the memory, and systemd then
+# stopped every runner that lost one. Its processes now start level with the
+# jobs' own (the kernel takes the largest), the runner itself is kept out of
+# it, and a runner whose job loses a process stays up to report the job.
+Environment=PIPELINE_JOB_OOMSCOREADJ=0
+OOMScoreAdjust=-800
+OOMPolicy=continue
 ExecStart=/opt/dokploy-runners/slots/%i/run.sh
 KillMode=mixed
 # run.sh exits with 143 after forwarding SIGTERM: a clean stop.

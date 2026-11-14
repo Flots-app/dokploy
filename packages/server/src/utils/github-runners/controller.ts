@@ -171,7 +171,12 @@ import {
 	runnerNamePrefix,
 	slotOfRunner,
 } from "./reconcile";
-import { decideRerun, initialRerunStatus } from "./rerun";
+import {
+	decideRerun,
+	initialRerunStatus,
+	oomRerun,
+	pickRerunDecision,
+} from "./rerun";
 import { canaryProgress, rolloutGate, UPDATE_KIND_LABELS } from "./rollout";
 import {
 	decideRouting,
@@ -2381,6 +2386,8 @@ const recordJobs = async (node: NodeWithRelations, runtime: RuntimeStatus) => {
 			0,
 			Math.round((Date.parse(completedAt) - Date.parse(startedAt)) / 1000),
 		);
+		// The kernel killed processes for memory while it ran: maybe its own.
+		const rerun = oomRerun(file.job, node.pool.rerunInterruptedJobs);
 		rows.set(runnerName, {
 			...owner,
 			runnerName,
@@ -2394,8 +2401,9 @@ const recordJobs = async (node: NodeWithRelations, runtime: RuntimeStatus) => {
 			outcome: "completed",
 			finishedAt: completedAt,
 			durationSeconds,
+			...rerun,
 		});
-		return [{ runnerName, completedAt, durationSeconds }];
+		return [{ runnerName, completedAt, durationSeconds, rerun }];
 	});
 	if (rows.size) {
 		await db
@@ -2411,6 +2419,7 @@ const recordJobs = async (node: NodeWithRelations, runtime: RuntimeStatus) => {
 					outcome: "completed",
 					finishedAt: job.completedAt,
 					durationSeconds: job.durationSeconds,
+					...job.rerun,
 				})
 				.where(
 					and(
@@ -4553,7 +4562,9 @@ const recoverInterruptedJobs = async (pool: GithubRunnerPool) => {
 				client.getRun(first.repository, first.runId),
 				client.listRunJobs(first.repository, first.runId),
 			]);
-			const decision = decideRerun(first, run, runJobs);
+			const decision = pickRerunDecision(
+				jobs.map((job) => decideRerun(job, run, runJobs)),
+			);
 			if (decision.action === "wait") return;
 			if (decision.action === "cancel") {
 				// A plain cancel first: the run's always() jobs still run.

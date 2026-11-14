@@ -118,6 +118,7 @@ import {
 	parseCaches,
 	parseCleanup,
 	parseDockerSize,
+	parseJob,
 	parseLinuxFacts,
 	parseMacStatus,
 	parseRecords,
@@ -138,6 +139,8 @@ import {
 	FORCE_CANCEL_AFTER_MS,
 	initialRerunStatus,
 	MAX_RUN_ATTEMPTS,
+	oomRerun,
+	pickRerunDecision,
 } from "@dokploy/server/utils/github-runners/rerun";
 import {
 	decideRouting,
@@ -1180,6 +1183,71 @@ describe("runtime scripts", () => {
 		);
 		return file;
 	};
+
+	it("keeps every runner up when one job runs the machine out of memory", () => {
+		const unit = extractRuntimeFile(
+			files().install,
+			"/etc/systemd/system/dokploy-runner@.service",
+		);
+		// Production, 14 November 2026: the runner's default oom_score_adj of 500
+		// made the kernel kill the `docker exec` client of every running job, and
+		// systemd's default OOMPolicy=stop then stopped each of their runners.
+		expect(unit).toMatch(/^Environment=PIPELINE_JOB_OOMSCOREADJ=0$/m);
+		expect(unit).toMatch(/^OOMPolicy=continue$/m);
+		// Below the jobs' processes, so the kernel takes one of theirs first; the
+		// runner (unprivileged) may still raise its children back to 0.
+		expect(unit).toMatch(/^OOMScoreAdjust=-800$/m);
+	});
+
+	it("records the processes the kernel killed for memory during the job", () => {
+		const { started, completed } = files();
+		const vmstat = join(dir, "vmstat");
+		const run = (hook: string, kills: number) => {
+			writeFileSync(vmstat, `pgfault 12\noom_kill ${kills}\npgmajfault 3\n`);
+			const file = join(dir, `oom-${hook.length}.sh`);
+			writeFileSync(
+				file,
+				hook
+					.replace("/var/lib/dokploy-runners/jobs", dir)
+					.replace("/proc/vmstat", vmstat),
+			);
+			execFileSync(
+				"bash",
+				["--noprofile", "--norc", "-e", "-o", "pipefail", file],
+				{
+					env: {
+						...process.env,
+						DOKPLOY_RUNNER_SLOT: "5",
+						GITHUB_REPOSITORY: "Flots-app/monorepo",
+						GITHUB_RUN_ID: "43603068295",
+						GITHUB_RUN_ATTEMPT: "2",
+						GITHUB_JOB: "static",
+						GITHUB_EVENT_NAME: "push",
+						GITHUB_EVENT_PATH: pushEvent(),
+					},
+				},
+			);
+		};
+		run(started, 7);
+		expect(readFileSync(join(dir, "5"), "utf8")).toMatch(/^oom_kills=7$/m);
+		run(completed, 9);
+		const job = parseJob(readFileSync(join(dir, "5")).toString("base64"));
+		expect(job).toMatchObject({ runAttempt: "2", oomKills: 2 });
+		expect(job?.completedAt).not.toBeNull();
+		// A machine without the counter (or an older runtime) records nothing.
+		expect(
+			parseJob(
+				Buffer.from("run_id=1\ncompleted=1700000000\n").toString("base64"),
+			)?.oomKills,
+		).toBeNull();
+		expect(
+			parseJob(
+				Buffer.from(
+					"run_id=1\noom_kills=\ncompleted=1\noom_kills_end=\n",
+				).toString("base64"),
+			)?.oomKills,
+		).toBeNull();
+	});
 
 	it("records the job and chains the pool hook", () => {
 		const { started } = files();
@@ -2331,6 +2399,67 @@ describe("recovery of interrupted jobs", () => {
 				runJob(job.runnerName, "in_progress"),
 			]),
 		).toEqual({ action: "wait" });
+	});
+
+	it("queues a job that ended while the machine ran out of memory", () => {
+		expect(oomRerun({ oomKills: 3, runAttempt: "1" }, true)).toEqual({
+			rerunStatus: "pending",
+			rerunNote:
+				"the machine ran out of memory during the job (3 processes killed)",
+		});
+		expect(
+			oomRerun({ oomKills: 1, runAttempt: String(MAX_RUN_ATTEMPTS) }, true),
+		).toMatchObject({ rerunStatus: "skipped" });
+		expect(oomRerun({ oomKills: 0, runAttempt: "1" }, true)).toEqual({});
+		expect(oomRerun({ oomKills: null, runAttempt: "1" }, true)).toEqual({});
+		expect(oomRerun({ oomKills: 2, runAttempt: "1" }, false)).toEqual({});
+	});
+
+	it("re-runs such a job only if it failed, and never cancels its run", () => {
+		const ended = { ...job, outcome: "completed" };
+		// Its runner reported it: the run is never cancelled for it.
+		expect(
+			decideRerun(ended, run(), [runJob(job.runnerName, "in_progress")]),
+		).toEqual({ action: "wait" });
+		expect(
+			decideRerun(ended, run(), [
+				runJob(job.runnerName, "completed", "failure"),
+			]),
+		).toEqual({ action: "wait" });
+		expect(
+			decideRerun(ended, run({ status: "completed", conclusion: "failure" }), [
+				runJob(job.runnerName, "completed", "failure"),
+			]),
+		).toMatchObject({ action: "rerun" });
+		// It lost nothing, or the run was cancelled on purpose.
+		expect(
+			decideRerun(ended, run(), [
+				runJob(job.runnerName, "completed", "success"),
+			]),
+		).toMatchObject({ action: "skip" });
+		expect(
+			decideRerun(
+				ended,
+				run({ status: "completed", conclusion: "cancelled" }),
+				[runJob(job.runnerName, "completed", "cancelled")],
+			),
+		).toMatchObject({ action: "skip" });
+		// An interrupted job keeps its own path.
+		expect(
+			decideRerun({ ...job, outcome: "interrupted" }, run(), [
+				runJob(job.runnerName, "in_progress"),
+			]),
+		).toMatchObject({ action: "cancel" });
+	});
+
+	it("decides for every queued job of a run together", () => {
+		const skip = { action: "skip", note: "the job did not fail" } as const;
+		const cancel = { action: "cancel", note: "last one" } as const;
+		const rerun = { action: "rerun", note: "attempt 2" } as const;
+		expect(pickRerunDecision([skip, { action: "wait" }, cancel])).toBe(cancel);
+		expect(pickRerunDecision([skip, rerun])).toBe(rerun);
+		expect(pickRerunDecision([skip])).toBe(skip);
+		expect(pickRerunDecision([])).toEqual({ action: "wait" });
 	});
 
 	it("forces a cancel the run did not follow, never at once", () => {
