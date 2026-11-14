@@ -200,7 +200,7 @@
 - [x] Fail over to a chain of providers (Blacksmith, GitHub-hosted) within
   monthly budgets (failover phase 2), in
   [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78).
-- [ ] Publish `v0.29.14-flots.28` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.28` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
@@ -240,7 +240,7 @@ Dokploy decides; workflows read its Actions variables (no selector job).
 
 ## Phase 2: providers and budgets
 
-Design, in [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78):
+Released in `v0.29.14-flots.28` ([Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78)); the Flots-app pool has no chain yet, so nothing changed in production:
 
 - A pool's fallback becomes an ordered chain of providers (Blacksmith,
   GitHub-hosted), each with its labels for general and x86_64 jobs.
@@ -270,6 +270,9 @@ Design, in [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78):
   read access, amounts; then see the usage read in production.
 
 ## Phase 3: job classes
+
+Tracked in [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79), with phases 4 to 6.
+
 
 - [ ] Classes beyond x86_64 (ARM64 general, heavy or Android), each with its
   variable and chain; architecture-aware labels (Blacksmith and GitHub arm64).
