@@ -196,7 +196,7 @@
 - [x] Set aside a runner machine that keeps losing jobs, and leave the pool once
   none is left (failover phase 1), in
   [Flots-app/dokploy#77](https://github.com/Flots-app/dokploy/pull/77).
-- [ ] Publish `v0.29.14-flots.27` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.27` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
@@ -229,16 +229,32 @@ Dokploy decides; workflows read its Actions variables (no selector job).
   restarts marked finished jobs interrupted, 2026-11-14 18:06).
 - [x] Database test of the set-aside against a real PostgreSQL (it found the
   missing "Back in the pool" event).
-- [ ] Release, then see it set m4 aside and bring it back in production.
+- [x] Released in `v0.29.14-flots.27`: the pool has the default settings, m4 is
+  not set aside, the routing stays on the pool.
+- [ ] Seen setting a machine aside and bringing it back in production (at the
+  next incident).
 
 ## Phase 2: providers and budgets
 
+Design, in [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78):
+
+- A pool's fallback becomes an ordered chain of providers (Blacksmith,
+  GitHub-hosted), each with its labels for general and x86_64 jobs.
+- Budgets are in minutes of the provider's month, priced: free minutes, the
+  price of a minute past them, the overspend allowed past them (in euros, 0 stops
+  at the free minutes), and a warning level.
+- Usage this month comes from each provider (Blacksmith usage API, GitHub billing
+  usage API), with the credentials kept encrypted in the pool.
+- When the routing leaves the pool, it goes to the first provider still within
+  its budget; with none left, the jobs stay on the pool (they wait) and an alert
+  says so.
+
 - [ ] Ordered fallback chain per pool: Blacksmith, GitHub-hosted, labels per job class.
-- [ ] Per provider: free allowance, monthly budget, allowed overspend, hard cap.
-- [ ] Metering: jobs Dokploy scans (provider from the runner name), Blacksmith usage
-  API, GitHub billing API.
+- [ ] Per provider: free minutes, price per minute, allowed overspend, warning level.
+- [ ] Metering: Blacksmith usage API, GitHub billing usage API (credentials
+  encrypted in the pool).
 - [ ] A provider over its budget is skipped; alerts at the warning level and the cap.
-- [ ] Pool page: spend this month and projection per provider.
+- [ ] Pool page: usage and spend this month per provider, with a projection.
 
 ## Phase 3: job classes
 
