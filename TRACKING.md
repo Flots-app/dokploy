@@ -172,7 +172,10 @@
 - [x] Publish `v0.29.14-flots.20` from `canary` and deploy it to production.
 - [x] Register Rosetta in the plain Mac VMs (runtime v14), which Lima skips, in
   [Flots-app/dokploy#66](https://github.com/Flots-app/dokploy/pull/66).
-- [ ] Publish `v0.29.14-flots.21` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.21` from `canary` and deploy it to production.
+- [x] Install the amd64 libraries of the x86_64 runners (runtime v15) in
+  [Flots-app/dokploy#68](https://github.com/Flots-app/dokploy/pull/68).
+- [ ] Publish `v0.29.14-flots.22` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
