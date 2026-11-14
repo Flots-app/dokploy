@@ -32,7 +32,9 @@ export const RUNTIME_VERSION = 17;
  * cold) and removes caches by finer ages, the most recent last: optional. v17
  * keeps a machine short of memory from interrupting every job it runs (the
  * runner units, see runnerUnit) and records the processes the kernel killed
- * for memory during each job: optional.
+ * for memory during each job: optional. Its installer also keeps the apt
+ * sources of a VM with x86_64 runners to arm64 across reboots
+ * (keepSourcesNative); no machine had installed v17 before that fix.
  */
 export const MIN_RUNTIME_VERSION = 6;
 /**
@@ -66,6 +68,33 @@ export const sh = (strings: TemplateStringsArray, ...values: unknown[]) =>
 		...values,
 	);
 
+const X64_SOURCES_FILE = "/etc/apt/sources.list.d/dokploy-amd64.sources";
+const CLOUD_APT_CONFIG = "/etc/cloud/cloud.cfg.d/90-dokploy-runners-apt.cfg";
+
+/**
+ * x86_64 runners add amd64 to dpkg, and the arm64 mirror (ports.ubuntu.com) has
+ * no amd64 index: every source but Dokploy's own amd64 one keeps to the native
+ * architecture, or each apt-get update fails with 404. Lima gives a VM a new
+ * cloud-init instance at every boot, and cloud-init then writes ubuntu.sources
+ * again without that restriction (m4, 2026-11-14: the runtime update after a VM
+ * resize failed). So cloud-init is told to keep the sources as they are, and the
+ * restriction is put back before any apt-get update.
+ */
+const keepSourcesNative = sh`keep_sources_native() {
+	local native file
+	native=$(dpkg --print-architecture)
+	for file in /etc/apt/sources.list.d/*.sources; do
+		[ -f "$file" ] && [ "$file" != ${X64_SOURCES_FILE} ] || continue
+		grep -q '^Architectures:' "$file" || sed -i "/^Types:/a Architectures: $native" "$file"
+	done
+	if [ -f /etc/apt/sources.list ]; then
+		sed -i -E "s|^(deb(-src)?) (https?://)|\\1 [arch=$native] \\3|" /etc/apt/sources.list
+	fi
+	if [ -d /etc/cloud/cloud.cfg.d ]; then
+		printf '# Managed by Dokploy (GitHub runners): the apt sources keep to %s.\napt:\n  preserve_sources_list: true\n' "$native" >${CLOUD_APT_CONFIG}
+	fi
+}`;
+
 const runnerctl = sh`#!/bin/bash
 # Managed by Dokploy (GitHub runners): reinstalled with the runtime, do not edit.
 set -euo pipefail
@@ -95,7 +124,8 @@ unit_of() { echo "dokploy-runner@$1.service"; }
 kib_free() { df -Pk "$ROOT" | awk 'NR==2 {print $4}'; }
 
 # x86_64 runners (see x64.ts): Rosetta, shared by the Mac, runs their programs.
-X64_SOURCES=/etc/apt/sources.list.d/dokploy-amd64.sources
+X64_SOURCES=${X64_SOURCES_FILE}
+${keepSourcesNative}
 rosetta_ready() { [ "$(head -n 1 /proc/sys/fs/binfmt_misc/rosetta 2>/dev/null)" = enabled ]; }
 
 # Lima mounts the Rosetta share and registers it only in a VM that is not
@@ -141,22 +171,17 @@ releases_of() {
 
 # The amd64 C library and what .NET loads (ICU, OpenSSL, GSSAPI, zlib), next to
 # the arm64 system. The arm64 mirror (ports.ubuntu.com) has no amd64 packages:
-# its sources keep to arm64, and amd64 comes from the main archive.
+# its sources keep to arm64 (keep_sources_native), and amd64 comes from the main
+# archive.
 x64_prepare() {
-	local native codename file icu ssl attempt
+	local native codename icu ssl attempt
 	cmd_rosetta >/dev/null
 	rosetta_ready || die "Rosetta is not available in this VM: x86_64 runners need it"
 	native=$(dpkg --print-architecture)
 	[ "$native" = arm64 ] || die "x86_64 runners run in an arm64 VM, not $native"
 	codename=$(. /etc/os-release && echo "\${VERSION_CODENAME:-}")
 	[[ "$codename" =~ ^[a-z]+$ ]] || die "unknown Ubuntu release"
-	for file in /etc/apt/sources.list.d/*.sources; do
-		[ -f "$file" ] && [ "$file" != "$X64_SOURCES" ] || continue
-		grep -q '^Architectures:' "$file" || sed -i "/^Types:/a Architectures: $native" "$file"
-	done
-	if [ -f /etc/apt/sources.list ]; then
-		sed -i -E "s|^(deb(-src)?) (https?://)|\\1 [arch=$native] \\3|" /etc/apt/sources.list
-	fi
+	keep_sources_native
 	cat >"$X64_SOURCES.new" <<SOURCES
 Types: deb
 URIs: http://archive.ubuntu.com/ubuntu
@@ -894,7 +919,7 @@ cmd_uninstall() {
 		# The amd64 libraries of the x86_64 runners go with the runtime.
 		dpkg-query -W -f='\${binary:Package}\n' | grep ':amd64$' | xargs -r apt-get -o DPkg::Lock::Timeout=300 purge -y -qq >/dev/null 2>&1 || true
 		dpkg --remove-architecture amd64 >/dev/null 2>&1 || true
-		rm -f "$X64_SOURCES"
+		rm -f "$X64_SOURCES" ${CLOUD_APT_CONFIG}
 	fi
 	userdel "$RUNNER_USER" >/dev/null 2>&1 || true
 	rm -rf "$ROOT" "$STATE" "$ETC"
@@ -1284,9 +1309,12 @@ apt_update() {
 	done
 	fail "apt-get update kept failing"
 }
+${keepSourcesNative}
 
 if command -v apt-get >/dev/null 2>&1; then
 	log "Installing packages"
+	# A machine with x86_64 runners: a reboot may have rewritten the sources.
+	if dpkg --print-foreign-architectures | grep -qx amd64; then keep_sources_native; fi
 	apt_update
 	apt-get -o DPkg::Lock::Timeout=300 install -y -qq ca-certificates curl tar jq git >/dev/null
 	if ! command -v docker >/dev/null 2>&1; then
