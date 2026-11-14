@@ -192,8 +192,58 @@
 - [x] Give a Mac VM 4 GiB of compressed swap (zswap in front of a swap file,
   runtime v18), so a job that overshoots the VM's memory slows down instead of
   losing a process.
-- [ ] Publish `v0.29.14-flots.26` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.26` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
+
+---
+
+# Runner pool failover to Blacksmith and GitHub-hosted runners
+
+Jobs leave the pool not only when no runner is online, but whenever its machines
+lose jobs, and go to the next provider of a chain within the budget set for it.
+Dokploy decides; workflows read its Actions variables (no selector job).
+
+## Phase 1: pool health and degraded routing
+
+- [ ] Pool health: healthy, degraded (until a cooldown ends) or down, with the reason.
+- [ ] Signals: no runner ON (as today), and jobs interrupted or hit by the OOM
+  killer within a sliding window.
+- [ ] While degraded, both routing variables point to the fallback; queued jobs are
+  moved and the re-runs of interrupted jobs land there.
+- [ ] Pool settings: interruptions threshold, window, cooldown (0 turns it off).
+- [ ] Manual override: auto, force the pool, force the fallback.
+- [ ] Pool page and alerts show the state, its reason and its end.
+- [ ] An interrupted job that GitHub reports successful is not re-run (controller
+  restarts marked finished jobs interrupted, 2026-11-14 18:06).
+
+## Phase 2: providers and budgets
+
+- [ ] Ordered fallback chain per pool: Blacksmith, GitHub-hosted, labels per job class.
+- [ ] Per provider: free allowance, monthly budget, allowed overspend, hard cap.
+- [ ] Metering: jobs Dokploy scans (provider from the runner name), Blacksmith usage
+  API, GitHub billing API.
+- [ ] A provider over its budget is skipped; alerts at the warning level and the cap.
+- [ ] Pool page: spend this month and projection per provider.
+
+## Phase 3: job classes
+
+- [ ] Classes beyond x86_64 (ARM64 general, heavy or Android), each with its
+  variable and chain; architecture-aware labels (Blacksmith and GitHub arm64).
+
+## Phase 4: dead man's switch
+
+- [ ] A heartbeat outside Dokploy (for example a Cloudflare Worker cron) moves the
+  variables to the fallback when Dokploy stays silent.
+
+## Phase 5: spillover
+
+- [ ] When the pool is healthy but saturated (queue wait above N minutes), part of
+  the jobs go to a provider, within its budget.
+
+## Phase 6: workflows
+
+- [ ] Monorepo and the other guarded repositories read the Dokploy variables; the
+  external runner router reads Dokploy's decision or goes.
 
 ---
 
