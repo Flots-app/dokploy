@@ -249,12 +249,21 @@ Design, in [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78):
   its budget; with none left, the jobs stay on the pool (they wait) and an alert
   says so.
 
-- [ ] Ordered fallback chain per pool: Blacksmith, GitHub-hosted, labels per job class.
-- [ ] Per provider: free minutes, price per minute, allowed overspend, warning level.
-- [ ] Metering: Blacksmith usage API, GitHub billing usage API (credentials
-  encrypted in the pool).
-- [ ] A provider over its budget is skipped; alerts at the warning level and the cap.
-- [ ] Pool page: usage and spend this month per provider, with a projection.
+- [x] Ordered fallback chain per pool: Blacksmith, GitHub-hosted, labels for the
+  general and the x86_64 jobs; without a chain, the plain fallback labels.
+- [x] Per provider: free minutes, price per minute, allowed overspend, warning
+  level (migration `0188_github_runner_fallback_providers`).
+- [x] Metering every 15 minutes, outside the tick: GitHub billing usage API
+  (organization, then user; the pool credentials or a billing token), the pinned
+  Blacksmith CLI (checksum, token on stdin, own home removed); credentials
+  encrypted in the pool, never returned to the browser.
+- [x] A provider over its budget, or whose usage is unknown or over two hours old,
+  is skipped; with none left the jobs stay on the pool. Alerts: near the budget,
+  over it, usage unknown, and critical when no machine and no provider takes jobs.
+- [x] Pool page: providers in order, editable; usage, spend and projection this
+  month; the routing line names the provider.
+- [ ] Configure the Flots-app pool: Blacksmith token and organization, billing
+  read access, amounts; then see the usage read in production.
 
 ## Phase 3: job classes
 

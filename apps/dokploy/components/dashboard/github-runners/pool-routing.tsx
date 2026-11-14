@@ -1,3 +1,4 @@
+import { PROVIDER_NAMES } from "@dokploy/server/utils/github-runners/providers";
 import { fallbackRunsOn } from "@dokploy/server/utils/github-runners/routing";
 import { x64Label } from "@dokploy/server/utils/github-runners/x64";
 import { format } from "date-fns";
@@ -22,13 +23,16 @@ import {
 import { Switch } from "@/components/ui/switch";
 import type { RunnerPool } from "./format";
 import type { PoolFormValues } from "./pool-form";
+import { ProvidersFields, ProvidersUsage } from "./pool-providers";
 import { NumberInput } from "./shared";
 
 /** Step 3: where jobs go while no runner of the pool is ON. */
 export const RoutingFields = ({
 	form,
+	pool,
 }: {
 	form: UseFormReturn<PoolFormValues>;
+	pool?: RunnerPool;
 }) => {
 	const [enabled, scope] = useWatch({
 		control: form.control,
@@ -111,6 +115,7 @@ export const RoutingFields = ({
 						)}
 					/>
 					<FailoverFields form={form} />
+					<ProvidersFields form={form} pool={pool} />
 				</div>
 			)}
 		</div>
@@ -287,7 +292,7 @@ export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
 		const aside = setAside(pool);
 		line = {
 			tone: "bg-orange-500",
-			text: `No runner ON since ${time(routing.since)}: jobs go to ${fallback} (GitHub-hosted)${aside.length ? `. Set aside: ${aside.join("; ")}` : ""}`,
+			text: `No runner ON since ${time(routing.since)}: jobs go to ${routing.value} (${routing.provider ? PROVIDER_NAMES[routing.provider] : "GitHub-hosted"})${aside.length ? `. Set aside: ${aside.join("; ")}` : ""}`,
 		};
 	}
 	return (
@@ -297,6 +302,7 @@ export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
 				{line.text}
 			</span>
 			<X64RoutingLine pool={pool} />
+			<ProvidersUsage pool={pool} />
 			<Reroutes pool={pool} />
 		</div>
 	);
@@ -331,7 +337,7 @@ const X64RoutingLine = ({ pool }: { pool: RunnerPool }) => {
 				}
 			: {
 					tone: "bg-orange-500",
-					text: `No x86_64 runner ON: x86_64 jobs go to ${fallbackRunsOn(pool.x64FallbackLabels)} (GitHub-hosted)`,
+					text: `No x86_64 runner ON: x86_64 jobs go to ${routing.value} (${routing.provider ? PROVIDER_NAMES[routing.provider] : "GitHub-hosted"})`,
 				};
 	return (
 		<span className="flex items-start gap-2 text-sm text-foreground">

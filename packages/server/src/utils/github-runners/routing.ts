@@ -29,6 +29,8 @@ export interface RoutingInput {
 	previous: GithubRunnerRouting | null;
 	/** A target the pool forces (failover.mode), whatever its runners do. */
 	force?: GithubRunnerRouting["target"] | null;
+	/** The provider of the fallback chain the fallback labels belong to. */
+	provider?: GithubRunnerRouting["provider"];
 	/** At least one runner of the pool is ON: online, on a machine taking jobs. */
 	available: boolean;
 	/** At least one machine is enabled; when none is, nothing is coming back. */
@@ -47,6 +49,7 @@ export interface RoutingInput {
 export const decideRouting = ({
 	previous,
 	force = null,
+	provider = null,
 	available,
 	anyEnabled,
 	labels,
@@ -73,6 +76,7 @@ export const decideRouting = ({
 		target,
 		value:
 			target === "pool" ? poolRunsOn(labels) : fallbackRunsOn(fallbackLabels),
+		provider: target === "fallback" ? provider : null,
 		since: previous?.target === target ? previous.since : at,
 		unavailableSince,
 	};
