@@ -193,6 +193,10 @@
   runtime v18), so a job that overshoots the VM's memory slows down instead of
   losing a process.
 - [x] Publish `v0.29.14-flots.26` from `canary` and deploy it to production.
+- [x] Set aside a runner machine that keeps losing jobs, and leave the pool once
+  none is left (failover phase 1), in
+  [Flots-app/dokploy#77](https://github.com/Flots-app/dokploy/pull/77).
+- [ ] Publish `v0.29.14-flots.27` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
