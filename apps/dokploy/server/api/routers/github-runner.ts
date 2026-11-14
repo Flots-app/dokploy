@@ -13,6 +13,7 @@ import {
 	findGithubRunnerOperation,
 	findGithubRunnerPool,
 	finishGithubRunnerEnrollment,
+	getGithubRunnerDurationKpis,
 	getGithubRunnerJobStats,
 	getGithubRunnerMetrics,
 	getGithubRunnerOverview,
@@ -639,6 +640,15 @@ export const githubRunnerRouter = createTRPCRouter({
 		.input(apiFindGithubRunnerPool)
 		.query(({ input, ctx }) =>
 			getGithubRunnerJobStats(
+				input.githubRunnerPoolId,
+				ctx.session.activeOrganizationId,
+			),
+		),
+
+	durationKpis: read
+		.input(apiFindGithubRunnerPool)
+		.query(({ input, ctx }) =>
+			getGithubRunnerDurationKpis(
 				input.githubRunnerPoolId,
 				ctx.session.activeOrganizationId,
 			),

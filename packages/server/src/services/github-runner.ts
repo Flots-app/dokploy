@@ -15,6 +15,7 @@ import {
 	githubRunnerMetrics,
 	githubRunnerNodes,
 	githubRunnerOperations,
+	githubRunnerPipelines,
 	githubRunnerPools,
 	githubRunnerReroutes,
 	sshKeys,
@@ -45,6 +46,11 @@ import {
 	tokenExpiration,
 } from "@dokploy/server/utils/github-runners/github-api";
 import { osStatus } from "@dokploy/server/utils/github-runners/os";
+import {
+	durationStats,
+	KPI_WINDOW_MS,
+	pipelineStats,
+} from "@dokploy/server/utils/github-runners/pipelines";
 import { nextMachine } from "@dokploy/server/utils/github-runners/placement";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
 import { RUNTIME_VERSION } from "@dokploy/server/utils/github-runners/runtime";
@@ -1133,4 +1139,46 @@ export const getGithubRunnerJobStats = async (
 				: null,
 		};
 	});
+};
+
+/**
+ * Duration KPIs of the pool over the last 24 hours: its jobs (completed ones),
+ * and the pipelines they belong to (whole workflow runs, see pipelines.ts).
+ */
+export const getGithubRunnerDurationKpis = async (
+	poolId: string,
+	organizationId: string,
+) => {
+	await findGithubRunnerPool(poolId, organizationId);
+	const since = new Date(Date.now() - KPI_WINDOW_MS).toISOString();
+	const [jobs, pipelines] = await Promise.all([
+		db.query.githubRunnerJobs.findMany({
+			where: and(
+				eq(githubRunnerJobs.githubRunnerPoolId, poolId),
+				gte(githubRunnerJobs.startedAt, since),
+				eq(githubRunnerJobs.outcome, "completed"),
+			),
+			columns: { durationSeconds: true },
+		}),
+		db.query.githubRunnerPipelines.findMany({
+			where: and(
+				eq(githubRunnerPipelines.githubRunnerPoolId, poolId),
+				gte(githubRunnerPipelines.completedAt, since),
+			),
+			columns: {
+				repository: true,
+				workflow: true,
+				conclusion: true,
+				durationSeconds: true,
+			},
+		}),
+	]);
+	return {
+		jobs: durationStats(
+			jobs.flatMap((job) =>
+				job.durationSeconds === null ? [] : [job.durationSeconds],
+			),
+		),
+		pipelines: pipelineStats(pipelines),
+	};
 };

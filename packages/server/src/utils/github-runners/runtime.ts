@@ -9,7 +9,7 @@ import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 import { X64_DOCKER_PLATFORM } from "./x64";
 
-export const RUNTIME_VERSION = 13;
+export const RUNTIME_VERSION = 15;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -23,11 +23,19 @@ export const RUNTIME_VERSION = 13;
  * (forks, Dependabot, other repositories or events): optional. v12 gives the
  * tool cache back to the runner account before each job, after container jobs
  * wrote it as root: optional. v13 runs x86_64 runners through Rosetta on a Mac
- * (see x64.ts): optional, needed by the machines that have some.
+ * (see x64.ts): optional, needed by the machines that have some. v14 mounts
+ * the VM's Rosetta share and registers it itself, which Lima leaves out of a
+ * plain VM: optional, needed by the x86_64 runners. v15 fixes the installation
+ * of the amd64 libraries (a line continuation passed "\\" to apt-get):
+ * optional, needed by the x86_64 runners.
  */
 export const MIN_RUNTIME_VERSION = 6;
-/** The first runtime with x86_64 runners (`runnerctl arm <slot> <kib> x64`). */
-export const X64_RUNTIME = 13;
+/**
+ * The first runtime whose x86_64 runners work (`runnerctl arm <slot> <kib> x64`):
+ * v13 relied on Lima for Rosetta, which Lima skips in a plain VM, and v14 could
+ * not install the amd64 libraries.
+ */
+export const X64_RUNTIME = 15;
 /** The first runtime with `runnerctl guard` and the check in job-started.sh. */
 export const JOB_GUARD_RUNTIME = 11;
 const JOB_GUARD_FILE = "/etc/dokploy-runners/job-guard";
@@ -85,6 +93,39 @@ kib_free() { df -Pk "$ROOT" | awk 'NR==2 {print $4}'; }
 X64_SOURCES=/etc/apt/sources.list.d/dokploy-amd64.sources
 rosetta_ready() { [ "$(head -n 1 /proc/sys/fs/binfmt_misc/rosetta 2>/dev/null)" = enabled ]; }
 
+# Lima mounts the Rosetta share and registers it only in a VM that is not
+# plain (hostagent: "Disable Rosetta in Plain mode"), and Dokploy's VMs are
+# plain: no folder of the Mac in them. Virtualization.framework still shares
+# Rosetta with the VM, as the virtiofs tag vz-rosetta: the runtime mounts it and
+# registers the same binfmt_misc entry as Lima (boot.Linux/05-rosetta-volume.sh),
+# at every boot (dokploy-rosetta.service). F opens the interpreter now, so the
+# share must be mounted first.
+ROSETTA_MOUNT=/mnt/lima-rosetta
+ROSETTA_BINFMT=':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/mnt/lima-rosetta/rosetta:OCF'
+
+cmd_rosetta() {
+	if rosetta_ready; then
+		echo "rosetta ready"
+		return 0
+	fi
+	if [ ! -x "$ROSETTA_MOUNT/rosetta" ]; then
+		mkdir -p "$ROSETTA_MOUNT"
+		# No share: the Mac has no Rosetta, or the VM was not started with it.
+		if ! mount -t virtiofs -o ro vz-rosetta "$ROSETTA_MOUNT" 2>/dev/null; then
+			echo "rosetta absent"
+			return 0
+		fi
+	fi
+	[ -e /proc/sys/fs/binfmt_misc/register ] || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+	if [ -f /proc/sys/fs/binfmt_misc/rosetta ]; then
+		echo 1 >/proc/sys/fs/binfmt_misc/rosetta
+	else
+		printf '%s\n' "$ROSETTA_BINFMT" >/proc/sys/fs/binfmt_misc/register
+	fi
+	rosetta_ready || die "Rosetta did not register in binfmt_misc"
+	echo "rosetta ready"
+}
+
 releases_of() {
 	case "\${1:-}" in
 	native) echo "$ROOT/releases" ;;
@@ -98,6 +139,7 @@ releases_of() {
 # its sources keep to arm64, and amd64 comes from the main archive.
 x64_prepare() {
 	local native codename file icu ssl attempt
+	cmd_rosetta >/dev/null
 	rosetta_ready || die "Rosetta is not available in this VM: x86_64 runners need it"
 	native=$(dpkg --print-architecture)
 	[ "$native" = arm64 ] || die "x86_64 runners run in an arm64 VM, not $native"
@@ -136,7 +178,7 @@ SOURCES
 	[ -n "$icu" ] || die "no ICU package for amd64"
 	ssl=libssl3t64
 	apt-cache show "$ssl:amd64" >/dev/null 2>&1 || ssl=libssl3
-	DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends \\
+	DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends \
 		libc6:amd64 libstdc++6:amd64 zlib1g:amd64 libgssapi-krb5-2:amd64 "$ssl:amd64" "$icu:amd64" >/dev/null ||
 		die "the amd64 libraries of the x86_64 runners could not be installed"
 }
@@ -370,7 +412,10 @@ cmd_arm() {
 	[[ "$min_free_kib" =~ ^[0-9]+$ ]] || die "invalid disk reserve"
 	arch=\${3:-native}
 	releases=$(releases_of "$arch")
-	if [ "$arch" = x64 ]; then rosetta_ready || die "Rosetta is not available in this VM"; fi
+	if [ "$arch" = x64 ]; then
+		cmd_rosetta >/dev/null
+		rosetta_ready || die "Rosetta is not available in this VM"
+	fi
 	unit=$(unit_of "$slot")
 	state=$(systemctl show -p ActiveState --value "$unit" 2>/dev/null || echo inactive)
 	case "$state" in
@@ -802,6 +847,10 @@ cmd_gc() {
 
 cmd_uninstall() {
 	systemctl disable --now dokploy-runner-autoarm.timer >/dev/null 2>&1 || true
+	systemctl disable --now dokploy-rosetta.service >/dev/null 2>&1 || true
+	rm -f /etc/systemd/system/dokploy-rosetta.service
+	[ ! -f /proc/sys/fs/binfmt_misc/rosetta ] || echo -1 >/proc/sys/fs/binfmt_misc/rosetta || true
+	umount "$ROSETTA_MOUNT" >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/dokploy-runner-autoarm.timer /etc/systemd/system/dokploy-runner-autoarm.service
 	cmd_stop_all >/dev/null || echo "warning: removing the runtime anyway" >&2
 	systemctl stop "$SLICE" >/dev/null 2>&1 || true
@@ -844,8 +893,9 @@ spare-add) cmd_spare_add "\${2:-}" ;;
 spare-drop) cmd_spare_drop "\${2:-}" "\${3:-}" ;;
 autonomy) cmd_autonomy "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" ;;
 autoarm) cmd_autoarm ;;
+rosetta) cmd_rosetta ;;
 uninstall) cmd_uninstall ;;
-*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|guard|install-release|spare-add|spare-drop|autonomy|autoarm|uninstall" ;;
+*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|guard|install-release|spare-add|spare-drop|autonomy|autoarm|rosetta|uninstall" ;;
 esac
 `;
 
@@ -1065,6 +1115,21 @@ Type=oneshot
 ExecStart=${RUNNERCTL} autoarm
 `;
 
+/** Mounts and registers Rosetta at boot, before Docker starts (see runnerctl rosetta). */
+const rosettaService = `[Unit]
+Description=Dokploy GitHub Actions runners: Rosetta for the x86_64 runners
+After=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${RUNNERCTL} rosetta
+
+[Install]
+WantedBy=multi-user.target
+`;
+
 const autoarmTimer = `[Unit]
 Description=Dokploy GitHub Actions runners: autonomy check
 
@@ -1127,6 +1192,11 @@ const files: { path: string; mode: string; content: string }[] = [
 		path: "/etc/systemd/system/dokploy-runner-autoarm.timer",
 		mode: "0644",
 		content: autoarmTimer,
+	},
+	{
+		path: "/etc/systemd/system/dokploy-rosetta.service",
+		mode: "0644",
+		content: rosettaService,
 	},
 	{
 		path: "/etc/needrestart/conf.d/50-dokploy-runners.conf",
@@ -1252,6 +1322,9 @@ systemctl enable --now fstrim.timer >/dev/null 2>&1 || true
 systemctl start dokploy-runners.slice
 install -d -m 0700 /var/lib/dokploy-runners/spares
 systemctl enable --now dokploy-runner-autoarm.timer >/dev/null
+# Rosetta for the x86_64 runners, when the VM shares it: now, and at every boot.
+systemctl enable dokploy-rosetta.service >/dev/null
+systemctl restart dokploy-rosetta.service || echo "warning: Rosetta could not be registered: the x86_64 runners wait"
 echo ${RUNTIME_VERSION} >/etc/dokploy-runners/runtime-version
 log "Runtime ${RUNTIME_VERSION} installed"
 `;

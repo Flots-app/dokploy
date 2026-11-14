@@ -59,6 +59,7 @@ describe("migration 0180 on an empty database", () => {
 			"github_runner_metric",
 			"github_runner_node",
 			"github_runner_operation",
+			"github_runner_pipeline",
 			"github_runner_pool",
 			"github_runner_reroute",
 		]);
