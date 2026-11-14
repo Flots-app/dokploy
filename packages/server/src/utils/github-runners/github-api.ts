@@ -143,8 +143,8 @@ export interface GithubRunnerClient {
 }
 
 const REQUEST_TIMEOUT_MS = 20_000;
-const API_VERSION = "2022-11-28";
-const USER_AGENT = "dokploy-github-runners";
+export const API_VERSION = "2022-11-28";
+export const USER_AGENT = "dokploy-github-runners";
 /** Conditional GETs remembered per client: pages of runners, queued runs per repository. */
 const MAX_ETAGS = 500;
 

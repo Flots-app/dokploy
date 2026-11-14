@@ -165,6 +165,11 @@ import {
 	type RuntimeStatus,
 } from "./probe";
 import {
+	chooseFallback,
+	type FallbackChoice,
+	USAGE_REFRESH_MS,
+} from "./providers";
+import {
 	isKillDrain,
 	isRunnerOf,
 	isStale,
@@ -212,6 +217,11 @@ import {
 	updateDecision,
 	updateWindowEnd,
 } from "./updates";
+import {
+	readBlacksmithUsage,
+	readChainUsage,
+	readGithubBillingUsage,
+} from "./usage";
 import { type RunnerReleaseInfo, runnerVersionStatus } from "./versions";
 import {
 	isX64Slot,
@@ -291,6 +301,10 @@ interface ControllerState {
 	lastRerouteScan: Map<string, number>;
 	/** Pools whose reroute scan runs, in the background. */
 	rerouteScans: Set<string>;
+	/** Last read of the fallback providers' usage of each pool (see usage.ts). */
+	lastUsageRead: Map<string, number>;
+	/** Pools whose providers' usage is being read, in the background. */
+	usageReads: Set<string>;
 	/** Labels of the jobs waiting for a runner, per repository of each pool. */
 	queuedJobs: Map<string, Map<string, { at: number; labels: string[][] }>>;
 	lastQueuedJobScan: Map<string, number>;
@@ -391,6 +405,8 @@ shared.__dokployGithubRunners ??= {
 	repositories: new Map(),
 	lastRerouteScan: new Map(),
 	rerouteScans: new Set(),
+	lastUsageRead: new Map(),
+	usageReads: new Set(),
 	queuedJobs: new Map(),
 	lastQueuedJobScan: new Map(),
 	queuedJobScans: new Set(),
@@ -459,6 +475,8 @@ state.version ??= null;
 state.startedAt ??= new Date().toISOString();
 state.lastOrphanCheck ??= 0;
 state.rerouteScans ??= new Set();
+state.lastUsageRead ??= new Map();
+state.usageReads ??= new Set();
 state.queuedJobs ??= new Map();
 state.lastQueuedJobScan ??= new Map();
 state.queuedJobScans ??= new Set();
@@ -4697,6 +4715,76 @@ const runnerOn = (node: GithubRunnerNode, runners: GithubRunner[]): boolean =>
 			isRunnerOf(runnerNamePrefix(node.name), runner.name),
 	);
 
+/** Where the jobs of a pool go when they leave it (see providers.ts). */
+const fallbackChoice = (pool: GithubRunnerPool, now: number) =>
+	chooseFallback({
+		chain: pool.fallbackChain ?? [],
+		usage: pool.fallbackUsage ?? {},
+		fallbackLabels: pool.fallbackLabels,
+		x64FallbackLabels: pool.x64FallbackLabels,
+		now,
+	});
+
+/**
+ * Reads the usage of the providers of a pool's chain now and then, outside the
+ * tick: the Blacksmith CLI takes seconds, and a slow provider must not hold
+ * the routing.
+ */
+const refreshFallbackUsage = (
+	pool: GithubRunnerPool,
+	client: GithubRunnerClient,
+	now: number,
+) => {
+	const poolId = pool.githubRunnerPoolId;
+	const chain = pool.fallbackChain ?? [];
+	if (!chain.some((provider) => provider.budget)) return;
+	if (
+		state.usageReads.has(poolId) ||
+		now - (state.lastUsageRead.get(poolId) ?? 0) < USAGE_REFRESH_MS
+	) {
+		return;
+	}
+	state.lastUsageRead.set(poolId, now);
+	state.usageReads.add(poolId);
+	const { billingToken, blacksmithToken, blacksmithOrganization } = pool;
+	void readChainUsage(
+		chain,
+		{
+			github: async (at) =>
+				readGithubBillingUsage({
+					target: client.target,
+					authorization: billingToken
+						? `Bearer ${billingToken}`
+						: await client.authorization(),
+					now: at,
+				}),
+			blacksmith:
+				blacksmithToken && blacksmithOrganization
+					? (at) =>
+							readBlacksmithUsage({
+								token: blacksmithToken,
+								organization: blacksmithOrganization,
+								now: at,
+							})
+					: null,
+		},
+		now,
+	)
+		.then((fallbackUsage) =>
+			db
+				.update(githubRunnerPools)
+				.set({ fallbackUsage })
+				.where(eq(githubRunnerPools.githubRunnerPoolId, poolId)),
+		)
+		.catch((error) =>
+			console.error(
+				`[github-runners] ${pool.name}: provider usage not read`,
+				error,
+			),
+		)
+		.finally(() => state.usageReads.delete(poolId));
+};
+
 /** The target a pool forces, whatever its machines do (failover.mode). */
 const forcedTarget = (pool: GithubRunnerPool) => {
 	const mode = pool.failover?.mode ?? "auto";
@@ -4761,13 +4849,18 @@ export const routePool = async (pool: GithubRunnerPool) => {
 	);
 	// Without a recent view of GitHub, the jobs keep going where they go.
 	if (candidates.length && (!listed || now - listed.at > 60_000)) return;
+	refreshFallbackUsage(pool, client, now);
+	// The fallback: the first provider of the chain within its budget; with
+	// none left, the jobs stay on the pool and wait (see providers.ts).
+	const choice = fallbackChoice(pool, now);
 	let routing = decideRouting({
 		previous: pool.routing,
-		force: forcedTarget(pool),
+		force: forcedTarget(pool) ?? (choice.exhausted ? "pool" : null),
+		provider: choice.provider?.kind ?? null,
 		available: candidates.some((node) => runnerOn(node, listed?.runners ?? [])),
 		anyEnabled: nodes.some((node) => node.enabled),
 		labels: pool.labels,
-		fallbackLabels: pool.fallbackLabels,
+		fallbackLabels: choice.labels,
 		now,
 	});
 	routing = await syncRoutingVariable(client, routing, variable, now);
@@ -4803,7 +4896,7 @@ export const routePool = async (pool: GithubRunnerPool) => {
 			.finally(() => state.rerouteScans.delete(poolId));
 	}
 	await advanceReroutes(pool, client);
-	await routeX64(pool, client, nodes, listed?.runners ?? [], now);
+	await routeX64(pool, client, nodes, listed?.runners ?? [], now, choice);
 };
 
 /** Writes the routing variable when due; the result says how it went. */
@@ -4858,6 +4951,7 @@ const routeX64 = async (
 	nodes: GithubRunnerNode[],
 	runners: GithubRunner[],
 	now: number,
+	choice: FallbackChoice = fallbackChoice(pool, now),
 ) => {
 	const poolId = pool.githubRunnerPoolId;
 	const previous = pool.x64Routing;
@@ -4917,11 +5011,12 @@ const routeX64 = async (
 	);
 	let routing = decideRouting({
 		previous,
-		force: forcedTarget(pool),
+		force: forcedTarget(pool) ?? (choice.exhausted ? "pool" : null),
+		provider: choice.provider?.kind ?? null,
 		available,
 		anyEnabled: machines.length > 0,
 		labels: pool.labels.map(x64Label),
-		fallbackLabels: pool.x64FallbackLabels,
+		fallbackLabels: choice.x64Labels,
 		now,
 	});
 	routing = await syncRoutingVariable(client, routing, variable, now);

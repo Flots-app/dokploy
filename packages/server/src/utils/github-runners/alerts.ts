@@ -15,6 +15,7 @@ import {
 } from "@dokploy/server/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
 import { type OsRelease, osSupportNotice, osUpdatesNotice } from "./os";
+import { chooseFallback, PROVIDER_NAMES, providerState } from "./providers";
 import { effectiveUpdatePolicy } from "./updates";
 import { machineRunnerStatus, type RunnerReleaseInfo } from "./versions";
 
@@ -38,6 +39,10 @@ export type RunnerAlertKind =
 	| "set-aside"
 	| "routing"
 	| "no-capacity"
+	// Fallback providers (see providers.ts): one alert per provider and kind.
+	| "provider-budget"
+	| "provider-usage"
+	| "no-fallback"
 	| "token";
 
 export interface RunnerAlertCondition {
@@ -338,6 +343,85 @@ const asideNote = (nodes: GithubRunnerNode[], now: number) => {
 		: "";
 };
 
+/**
+ * The budgets of a pool's fallback providers: a warning past each warning
+ * level, an alert once a provider is over its budget or its usage cannot be
+ * read, and a critical one when no provider is left while no machine takes jobs.
+ */
+const providerConditions = (
+	pool: GithubRunnerPool,
+	enabled: GithubRunnerNode[],
+	now: number,
+): RunnerAlertCondition[] => {
+	const chain = pool.fallbackChain ?? [];
+	if (!pool.routingVariable || !chain.length) return [];
+	const usage = pool.fallbackUsage ?? {};
+	const poolId = pool.githubRunnerPoolId;
+	const conditions: RunnerAlertCondition[] = [];
+	const add = (
+		subject: string,
+		kind: RunnerAlertKind,
+		severity: GithubRunnerAlertSeverity,
+		title: string,
+		message: string,
+		delayMs = 0,
+	) =>
+		conditions.push({
+			subject: `${poolId}:${subject}`,
+			poolId,
+			nodeId: null,
+			kind,
+			severity,
+			title,
+			message,
+			delayMs,
+		});
+	for (const provider of chain) {
+		const name = PROVIDER_NAMES[provider.kind];
+		const state = providerState(provider, usage[provider.id], now);
+		const figures =
+			state.minutes === null
+				? ""
+				: ` ${Math.round(state.minutes)} minutes this month${state.limitMinutes === null ? "" : ` of ${Math.round(state.limitMinutes)}`}, ${state.spend} spent past the free minutes, ${state.projectedMinutes} minutes expected by the end of the month.`;
+		if (state.status === "warning" || state.status === "exhausted") {
+			add(
+				`provider-budget:${provider.id}`,
+				"provider-budget",
+				"warning",
+				`${pool.name}: ${name} ${state.status === "exhausted" ? "is over its budget" : "nears its budget"}`,
+				`${name} has ${state.reason}.${figures}${state.status === "exhausted" ? " Jobs no longer go to it this month; raise its overspend in the pool settings to use it again." : ""}`,
+			);
+		} else if (state.status === "unknown") {
+			add(
+				`provider-usage:${provider.id}`,
+				"provider-usage",
+				"warning",
+				`${pool.name}: ${name} usage unknown`,
+				`The usage of ${name} cannot be read (${state.reason}): it is skipped until it can, so its budget is kept.`,
+				30 * MINUTE,
+			);
+		}
+	}
+	const choice = chooseFallback({
+		chain,
+		usage,
+		fallbackLabels: pool.fallbackLabels,
+		x64FallbackLabels: pool.x64FallbackLabels,
+		now,
+	});
+	if (choice.exhausted && enabled.length && !enabled.some(accepting)) {
+		add(
+			"no-fallback",
+			"no-fallback",
+			"critical",
+			`${pool.name}: no machine and no provider takes jobs`,
+			`No machine of ${pool.name} can take jobs, and every provider of its fallback chain is over its budget or unreadable (${choice.skipped.map((skip) => `${PROVIDER_NAMES[skip.kind]}: ${skip.reason}`).join("; ")}): jobs wait in GitHub's queue.`,
+			5 * MINUTE,
+		);
+	}
+	return conditions;
+};
+
 export const runnerAlerts = (
 	input: RunnerAlertInput,
 ): { conditions: RunnerAlertCondition[]; unknown: string[] } => {
@@ -380,8 +464,8 @@ export const runnerAlerts = (
 		add(
 			"fallback",
 			"warning",
-			`${pool.name}: jobs run on GitHub-hosted runners`,
-			`No machine of ${pool.name} can take jobs since ${day(pool.routing.since)}: jobs of private repositories run on ${pool.fallbackLabels.join(", ")} until one can again.${asideNote(nodes, now)}`,
+			`${pool.name}: jobs run on ${pool.routing.provider ? `${PROVIDER_NAMES[pool.routing.provider]} runners` : "GitHub-hosted runners"}`,
+			`No machine of ${pool.name} can take jobs since ${day(pool.routing.since)}: jobs of private repositories run on ${pool.routing.provider ? `${PROVIDER_NAMES[pool.routing.provider]} (${pool.routing.value})` : pool.fallbackLabels.join(", ")} until one can again.${asideNote(nodes, now)}`,
 		);
 	} else if (
 		!pool.routingVariable &&
@@ -396,6 +480,7 @@ export const runnerAlerts = (
 			5 * MINUTE,
 		);
 	}
+	conditions.push(...providerConditions(pool, enabled, now));
 	const names = new Map(
 		nodes.map((node) => [node.githubRunnerNodeId, node.name]),
 	);

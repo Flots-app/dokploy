@@ -1317,6 +1317,13 @@
       "when": 1794680026371,
       "tag": "0187_github_runner_failover",
       "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1794683524193,
+      "tag": "0188_github_runner_fallback_providers",
+      "breakpoints": true
     }
   ]
 }
