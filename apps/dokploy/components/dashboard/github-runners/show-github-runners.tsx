@@ -16,7 +16,15 @@ import {
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { api } from "@/utils/api";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
+import { api, type RouterOutputs } from "@/utils/api";
 import { FirewallTargetDialog } from "../firewalls/attach-firewall";
 import { AddMachine } from "./add-machine";
 import { ControllerStatus } from "./controller-status";
@@ -51,10 +59,55 @@ const PoolFirewall = ({ pool }: { pool: RunnerPool }) => {
 	);
 };
 
+type DurationKpis = RouterOutputs["githubRunner"]["durationKpis"];
+
+/** The pipelines of the last 24 hours, per workflow: how long a whole run takes. */
+const PipelineBreakdown = ({
+	workflows,
+}: {
+	workflows: DurationKpis["pipelines"]["workflows"];
+}) => (
+	<Table>
+		<TableHeader>
+			<TableRow>
+				<TableHead>Pipeline (24 h)</TableHead>
+				<TableHead className="text-right">Runs</TableHead>
+				<TableHead className="text-right">Average</TableHead>
+				<TableHead className="text-right">p90</TableHead>
+			</TableRow>
+		</TableHeader>
+		<TableBody>
+			{workflows.map((row) => (
+				<TableRow key={`${row.repository}/${row.workflow}`}>
+					<TableCell>
+						<span className="font-medium">{row.workflow || "—"}</span>
+						<span className="block text-xs text-muted-foreground">
+							{row.repository}
+						</span>
+					</TableCell>
+					<TableCell className="text-right tabular-nums">
+						{row.succeeded}/{row.runs}
+					</TableCell>
+					<TableCell className="text-right tabular-nums">
+						{formatDuration(row.averageSeconds)}
+					</TableCell>
+					<TableCell className="text-right tabular-nums">
+						{formatDuration(row.p90Seconds)}
+					</TableCell>
+				</TableRow>
+			))}
+		</TableBody>
+	</Table>
+);
+
 const PoolStats = ({ pool }: { pool: RunnerPool }) => {
 	const { data: stats } = api.githubRunner.jobStats.useQuery(
 		{ githubRunnerPoolId: pool.githubRunnerPoolId },
 		{ refetchInterval: 30_000 },
+	);
+	const { data: kpis } = api.githubRunner.durationKpis.useQuery(
+		{ githubRunnerPoolId: pool.githubRunnerPoolId },
+		{ refetchInterval: 60_000 },
 	);
 	const active = pool.nodes.filter(
 		(node) => node.phase === "ready" && node.enabled,
@@ -74,21 +127,8 @@ const PoolStats = ({ pool }: { pool: RunnerPool }) => {
 	const total = stats?.reduce((sum, entry) => sum + entry.total, 0) ?? 0;
 	const interrupted =
 		stats?.reduce((sum, entry) => sum + entry.interrupted, 0) ?? 0;
-	const durations =
-		stats?.filter((entry) => entry.averageSeconds !== null) ?? [];
-	const average = durations.length
-		? Math.round(
-				durations.reduce(
-					(sum, entry) => sum + (entry.averageSeconds ?? 0) * entry.completed,
-					0,
-				) /
-					Math.max(
-						1,
-						durations.reduce((sum, entry) => sum + entry.completed, 0),
-					),
-			)
-		: null;
-	const items = [
+	const pipelines = kpis?.pipelines;
+	const items: [string, string, string?][] = [
 		[
 			"Machines active",
 			// Machines still waiting for their setup script are not counted yet.
@@ -100,16 +140,37 @@ const PoolStats = ({ pool }: { pool: RunnerPool }) => {
 			"Jobs in 24 h",
 			`${total}${interrupted ? ` (${interrupted} interrupted)` : ""}`,
 		],
-		["Average job", formatDuration(average)],
+		[
+			"Average job",
+			formatDuration(kpis?.jobs.averageSeconds),
+			kpis?.jobs.count
+				? `p90 ${formatDuration(kpis.jobs.p90Seconds)}`
+				: undefined,
+		],
+		[
+			"Average pipeline",
+			formatDuration(pipelines?.averageSeconds),
+			pipelines?.runs
+				? `p90 ${formatDuration(pipelines.p90Seconds)} · ${pipelines.succeeded}/${pipelines.runs} succeeded`
+				: "Whole workflow runs, once completed",
+		],
 	];
 	return (
-		<div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-			{items.map(([label, value]) => (
-				<div key={label} className="rounded-lg border p-3">
-					<p className="text-xs text-muted-foreground">{label}</p>
-					<p className="text-lg font-semibold tabular-nums">{value}</p>
-				</div>
-			))}
+		<div className="grid gap-3">
+			<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+				{items.map(([label, value, detail]) => (
+					<div key={label} className="rounded-lg border p-3">
+						<p className="text-xs text-muted-foreground">{label}</p>
+						<p className="text-lg font-semibold tabular-nums">{value}</p>
+						{detail && (
+							<p className="text-xs text-muted-foreground">{detail}</p>
+						)}
+					</div>
+				))}
+			</div>
+			{pipelines && pipelines.workflows.length > 0 && (
+				<PipelineBreakdown workflows={pipelines.workflows} />
+			)}
 		</div>
 	);
 };
