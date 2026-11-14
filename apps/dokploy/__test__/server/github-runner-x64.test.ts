@@ -422,6 +422,35 @@ describe("Rosetta on the Mac and in the VM", () => {
 	});
 });
 
+describe("Rosetta in a plain VM (runtime v14)", () => {
+	const install = installRuntimeScript();
+
+	it("mounts the VM's Rosetta share and registers Lima's own binfmt entry", () => {
+		// Lima skips both in a plain VM; this is its entry, byte for byte
+		// (lima-vm/lima v2.2.1, pkg/driver/vz/boot.Linux/05-rosetta-volume.sh).
+		const lima = String.raw`:rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/mnt/lima-rosetta/rosetta:OCF`;
+		expect(install).toContain(`ROSETTA_BINFMT='${lima}'`);
+		expect(install).toContain(
+			'mount -t virtiofs -o ro vz-rosetta "$ROSETTA_MOUNT"',
+		);
+		expect(install).toContain("rosetta) cmd_rosetta ;;");
+	});
+
+	it("does it at every boot, and before any x86_64 work", () => {
+		expect(install).toContain(
+			"write_file /etc/systemd/system/dokploy-rosetta.service 0644",
+		);
+		expect(install).toContain(
+			"ExecStart=/opt/dokploy-runners/bin/runnerctl rosetta",
+		);
+		expect(install).toContain("systemctl enable dokploy-rosetta.service");
+		// x64_prepare and an x86_64 arm both try before they give up.
+		expect(
+			install.match(/cmd_rosetta >\/dev\/null\n\s+rosetta_ready \|\| die/g),
+		).toHaveLength(2);
+	});
+});
+
 describe("runtime v13", () => {
 	const install = installRuntimeScript();
 
