@@ -4442,7 +4442,11 @@ const actOnNode = async (
 						memoryCurrentBytes: usage.memoryBytes,
 					},
 		runtime: runtime
-			? { version: runtime.runtimeVersion, runnerVersion: runtime.release }
+			? {
+					version: runtime.runtimeVersion,
+					runnerVersion: runtime.release,
+					swapBytes: runtime.host?.swapBytes ?? null,
+				}
 			: node.observed?.runtime,
 		admission,
 		...(node.x64Runners > 0

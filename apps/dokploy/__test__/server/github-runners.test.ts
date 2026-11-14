@@ -577,6 +577,15 @@ describe("probe parsing", () => {
 		const parsed = parseRuntimeStatus(parseRecords(status));
 		expect(parsed.runtimeVersion).toBe(1);
 		expect(parsed.host).toMatchObject({ cpus: 8, arch: "aarch64", load: 1.25 });
+		// A runtime older than v18 does not report its swap.
+		expect(parsed.host?.swapBytes).toBeNull();
+		expect(
+			parseRuntimeStatus(
+				parseRecords(
+					"runtime version=18\nhost cpus=10 memory_kib=12000000 available_kib=9000000 swap_kib=4194304 arch=aarch64 load=0.5",
+				),
+			).host?.swapBytes,
+		).toBe(4 * 1024 ** 3);
 		expect(parsed.disk?.freeBytes).toBe(52428800 * 1024);
 		expect(parsed.release).toBe("2.329.0");
 		expect(parsed.slice).toEqual({
@@ -1586,6 +1595,29 @@ apt_update && echo updated`,
 		expect(runnerctl).toContain(
 			'rm -f "$X64_SOURCES" /etc/cloud/cloud.cfg.d/90-dokploy-runners-apt.cfg',
 		);
+	});
+
+	it("gives a Mac VM 4 GiB of compressed swap, at every boot", () => {
+		const { install, runnerctl } = files();
+		const unit = extractRuntimeFile(
+			install,
+			"/etc/systemd/system/dokploy-swap.service",
+		);
+		// Only in a VM of Virtualization.framework: a Linux machine keeps its swap.
+		expect(unit).toMatch(/^ConditionVirtualization=apple$/m);
+		expect(unit).toMatch(
+			/^ExecStart=\/opt\/dokploy-runners\/bin\/runnerctl swap$/m,
+		);
+		expect(unit).toMatch(/^RemainAfterExit=yes$/m);
+		expect(unit).toMatch(/^WantedBy=multi-user\.target$/m);
+		expect(install).toContain("systemctl enable dokploy-swap.service");
+		expect(install).toContain("systemctl restart dokploy-swap.service ||");
+		expect(runnerctl).toContain("SWAP_KIB=$((4 * 1024 * 1024))");
+		expect(runnerctl).toContain("SWAP_MIN_FREE_KIB=$((10 * 1024 * 1024))");
+		expect(runnerctl).toContain("swap) cmd_swap ;;");
+		// Uninstalling turns it off and gives the disk back.
+		expect(runnerctl).toContain("systemctl disable --now dokploy-swap.service");
+		expect(runnerctl).toContain('swapoff "$SWAP_FILE"');
 	});
 
 	it("gives runners time to stop, starts each one clean, and keeps the budget", () => {
@@ -4473,6 +4505,94 @@ run idle-enough no noatime auto 13500 13650`);
 				`  home cache: removed, lock: gone, ${waste}`,
 				"",
 			]);
+		},
+	);
+
+	it.skipIf(!linuxShell)(
+		"turns on the compressed swap once, and only with the disk to spare",
+		() => {
+			const dir = realpathSync(mkdtempSync(join(tmpdir(), "dokploy-swap-")));
+			try {
+				const bin = join(dir, "bin");
+				const calls = join(dir, "calls");
+				const active = join(dir, "active");
+				mkdirSync(bin);
+				mkdirSync(join(dir, "zswap"));
+				const stub = (name: string, body: string) => {
+					writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`);
+					chmodSync(join(bin, name), 0o755);
+				};
+				stub(
+					"df",
+					`printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\n/dev/vda1 1 1 %s 1%% /\\n' "$FREE_KIB"`,
+				);
+				stub(
+					"swapon",
+					`if [ "$1" = --show=NAME ]; then cat ${shellQuote(active)} 2>/dev/null; exit 0; fi
+echo "swapon $*" >>${shellQuote(calls)}
+echo "$3" >>${shellQuote(active)}`,
+				);
+				stub(
+					"fallocate",
+					`echo "fallocate $*" >>${shellQuote(calls)}\ntruncate -s "$2" "$3"`,
+				);
+				stub("mkswap", `echo "mkswap $*" >>${shellQuote(calls)}`);
+				const file = join(dir, "swap/dokploy-runners.swap");
+				const swap = (freeKib: number) =>
+					bash(`set -euo pipefail
+export PATH=${shellQuote(bin)}:/usr/bin:/bin FREE_KIB=${freeKib}
+die() { echo "runnerctl: $*" >&2; exit 1; }
+SWAP_FILE=${shellQuote(file)}
+SWAP_KIB=4096
+SWAP_MIN_FREE_KIB=1024
+ZSWAP_PARAMS=${shellQuote(join(dir, "zswap"))}
+${shellFunction(runnerctlScript(), "cmd_swap")}
+cmd_swap`);
+				const called = () =>
+					existsSync(calls)
+						? readFileSync(calls, "utf8").trim().split("\n")
+						: [];
+
+				// Not enough disk for the file and the margin: no swap file at all.
+				expect(swap(5000)).toMatchObject({
+					status: 0,
+					stdout: "swap skipped: 4 MiB free\n",
+				});
+				expect(existsSync(file)).toBe(false);
+				expect(called()).toEqual([]);
+				// zswap is set up either way.
+				expect(readFileSync(join(dir, "zswap/enabled"), "utf8")).toBe("1\n");
+				expect(readFileSync(join(dir, "zswap/compressor"), "utf8")).toBe(
+					"zstd\n",
+				);
+				expect(readFileSync(join(dir, "zswap/max_pool_percent"), "utf8")).toBe(
+					"25\n",
+				);
+
+				// Enough disk: the file is made aside, then turned on.
+				expect(swap(6000)).toMatchObject({
+					status: 0,
+					stdout: "swap on kib=4096 zswap=1\n",
+				});
+				expect(called()).toEqual([
+					`fallocate -l 4096K ${file}.new`,
+					`mkswap -q ${file}.new`,
+					`swapon -p 10 ${file}`,
+				]);
+				expect(existsSync(`${file}.new`)).toBe(false);
+				expect(execFileSync("stat", ["-c", "%a", file]).toString().trim()).toBe(
+					"600",
+				);
+
+				// Already on: nothing to do. After a reboot: turned on again, not remade.
+				swap(6000);
+				expect(called()).toHaveLength(3);
+				rmSync(active);
+				expect(swap(5000).stdout).toBe("swap on kib=4096 zswap=1\n");
+				expect(called().slice(3)).toEqual([`swapon -p 10 ${file}`]);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
 		},
 	);
 

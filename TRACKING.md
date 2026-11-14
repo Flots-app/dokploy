@@ -188,7 +188,11 @@
 - [x] Publish `v0.29.14-flots.24` from `canary` and deploy it to production.
 - [x] Keep the apt sources of a Mac VM with x86_64 runners to arm64 across
   reboots, so the runtime v17 installs on m4.
-- [ ] Publish `v0.29.14-flots.25` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.25` from `canary` and deploy it to production.
+- [x] Give a Mac VM 4 GiB of compressed swap (zswap in front of a swap file,
+  runtime v18), so a job that overshoots the VM's memory slows down instead of
+  losing a process.
+- [ ] Publish `v0.29.14-flots.26` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
