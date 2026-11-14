@@ -181,7 +181,12 @@ export interface GithubRunnerNodeObservation {
 		diskTotalBytes?: number | null;
 		memoryCurrentBytes: number | null;
 	};
-	runtime?: { version: number; runnerVersion: string | null };
+	runtime?: {
+		version: number;
+		runnerVersion: string | null;
+		/** Swap of the machine (a Mac VM: runtime v18's compressed swap). */
+		swapBytes?: number | null;
+	};
 	admission: { ok: boolean; reason?: string };
 	/** The x86_64 runners, when the machine has some: why they wait, if they do. */
 	x64?: { runners: number; release: string | null; blocked: string | null };

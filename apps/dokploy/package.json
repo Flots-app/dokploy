@@ -1,6 +1,6 @@
 {
 	"name": "dokploy",
-	"version": "v0.29.14-flots.25",
+	"version": "v0.29.14-flots.26",
 	"private": true,
 	"license": "Apache-2.0",
 	"type": "module",

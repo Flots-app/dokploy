@@ -9,7 +9,7 @@ import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 import { X64_DOCKER_PLATFORM } from "./x64";
 
-export const RUNTIME_VERSION = 17;
+export const RUNTIME_VERSION = 18;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -34,7 +34,10 @@ export const RUNTIME_VERSION = 17;
  * runner units, see runnerUnit) and records the processes the kernel killed
  * for memory during each job: optional. Its installer also keeps the apt
  * sources of a VM with x86_64 runners to arm64 across reboots
- * (keepSourcesNative); no machine had installed v17 before that fix.
+ * (keepSourcesNative); no machine had installed v17 before that fix. v18
+ * gives a Mac VM 4 GiB of compressed swap (zswap in front of a swap file, see
+ * runnerctl swap), so a job that overshoots the VM's memory slows down instead
+ * of losing a process: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 /**
@@ -161,6 +164,42 @@ cmd_rosetta() {
 	echo "rosetta ready"
 }
 
+# Compressed swap for a Mac VM (dokploy-swap.service, ConditionVirtualization=
+# apple). The VM is the machine's whole memory budget: a job that overshot it
+# lost a process to the OOM killer. zswap keeps the pages the kernel evicts in
+# RAM, compressed (zstd), and only what does not fit reaches the swap file.
+SWAP_FILE=/var/swap/dokploy-runners.swap
+SWAP_KIB=$((4 * 1024 * 1024))
+# The swap file takes the disk only if this much stays free after it.
+SWAP_MIN_FREE_KIB=$((10 * 1024 * 1024))
+ZSWAP_PARAMS=/sys/module/zswap/parameters
+
+cmd_swap() {
+	local free
+	if [ -d "$ZSWAP_PARAMS" ]; then
+		echo zstd >"$ZSWAP_PARAMS/compressor" 2>/dev/null || true
+		echo 25 >"$ZSWAP_PARAMS/max_pool_percent" 2>/dev/null || true
+		echo 1 >"$ZSWAP_PARAMS/enabled" 2>/dev/null || true
+	fi
+	if ! swapon --show=NAME --noheadings | grep -qxF "$SWAP_FILE"; then
+		if [ ! -s "$SWAP_FILE" ]; then
+			install -d -m 0700 "$(dirname "$SWAP_FILE")"
+			free=$(df -Pk "$(dirname "$SWAP_FILE")" | awk 'NR==2 {print $4}')
+			if ((free < SWAP_KIB + SWAP_MIN_FREE_KIB)); then
+				echo "swap skipped: $((free / 1024)) MiB free"
+				return 0
+			fi
+			rm -f "$SWAP_FILE.new"
+			fallocate -l "\${SWAP_KIB}K" "$SWAP_FILE.new" || die "the swap file could not be allocated"
+			chmod 0600 "$SWAP_FILE.new"
+			mkswap -q "$SWAP_FILE.new" >/dev/null || die "the swap file could not be formatted"
+			mv -f "$SWAP_FILE.new" "$SWAP_FILE"
+		fi
+		swapon -p 10 "$SWAP_FILE" || die "the swap file did not turn on"
+	fi
+	echo "swap on kib=$(($(stat -c %s "$SWAP_FILE") / 1024)) zswap=$(cat "$ZSWAP_PARAMS/enabled" 2>/dev/null || echo absent)"
+}
+
 releases_of() {
 	case "\${1:-}" in
 	native) echo "$ROOT/releases" ;;
@@ -217,7 +256,7 @@ cmd_status() {
 	# The controller probes every few seconds: the machine knows it is watched.
 	touch "$STATE/controller-seen" 2>/dev/null || true
 	echo "runtime version=$(cat "$ETC/runtime-version" 2>/dev/null || echo 0)"
-	echo "host cpus=$(nproc --all) memory_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo) available_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) arch=$(uname -m) load=$(cut -d' ' -f1 /proc/loadavg)"
+	echo "host cpus=$(nproc --all) memory_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo) available_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) swap_kib=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo) arch=$(uname -m) load=$(cut -d' ' -f1 /proc/loadavg)"
 	df -Pk "$ROOT" | awk 'NR==2 {print "disk total_kib=" $2 " free_kib=" $4}'
 	local release=""
 	if [ -L "$ROOT/releases/current" ]; then release=$(basename "$(readlink -f "$ROOT/releases/current")"); fi
@@ -898,6 +937,9 @@ cmd_uninstall() {
 	systemctl disable --now dokploy-runner-autoarm.timer >/dev/null 2>&1 || true
 	systemctl disable --now dokploy-rosetta.service >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/dokploy-rosetta.service
+	systemctl disable --now dokploy-swap.service >/dev/null 2>&1 || true
+	swapoff "$SWAP_FILE" >/dev/null 2>&1 || true
+	rm -f /etc/systemd/system/dokploy-swap.service "$SWAP_FILE" "$SWAP_FILE.new"
 	[ ! -f /proc/sys/fs/binfmt_misc/rosetta ] || echo -1 >/proc/sys/fs/binfmt_misc/rosetta || true
 	umount "$ROSETTA_MOUNT" >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/dokploy-runner-autoarm.timer /etc/systemd/system/dokploy-runner-autoarm.service
@@ -943,8 +985,9 @@ spare-drop) cmd_spare_drop "\${2:-}" "\${3:-}" ;;
 autonomy) cmd_autonomy "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" ;;
 autoarm) cmd_autoarm ;;
 rosetta) cmd_rosetta ;;
+swap) cmd_swap ;;
 uninstall) cmd_uninstall ;;
-*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|guard|install-release|spare-add|spare-drop|autonomy|autoarm|rosetta|uninstall" ;;
+*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|guard|install-release|spare-add|spare-drop|autonomy|autoarm|rosetta|swap|uninstall" ;;
 esac
 `;
 
@@ -1183,6 +1226,24 @@ Type=oneshot
 ExecStart=${RUNNERCTL} autoarm
 `;
 
+/**
+ * Compressed swap at every boot of a Mac VM (see runnerctl swap). Elsewhere the
+ * condition leaves the unit skipped: a Linux machine keeps its own swap.
+ */
+const swapService = `[Unit]
+Description=Dokploy GitHub Actions runners: compressed swap for a Mac VM
+ConditionVirtualization=apple
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${RUNNERCTL} swap
+
+[Install]
+WantedBy=multi-user.target
+`;
+
 /** Mounts and registers Rosetta at boot, before Docker starts (see runnerctl rosetta). */
 const rosettaService = `[Unit]
 Description=Dokploy GitHub Actions runners: Rosetta for the x86_64 runners
@@ -1265,6 +1326,11 @@ const files: { path: string; mode: string; content: string }[] = [
 		path: "/etc/systemd/system/dokploy-rosetta.service",
 		mode: "0644",
 		content: rosettaService,
+	},
+	{
+		path: "/etc/systemd/system/dokploy-swap.service",
+		mode: "0644",
+		content: swapService,
 	},
 	{
 		path: "/etc/needrestart/conf.d/50-dokploy-runners.conf",
@@ -1396,6 +1462,9 @@ systemctl enable --now dokploy-runner-autoarm.timer >/dev/null
 # Rosetta for the x86_64 runners, when the VM shares it: now, and at every boot.
 systemctl enable dokploy-rosetta.service >/dev/null
 systemctl restart dokploy-rosetta.service || echo "warning: Rosetta could not be registered: the x86_64 runners wait"
+# Compressed swap on a Mac VM, now and at every boot; skipped elsewhere.
+systemctl enable dokploy-swap.service >/dev/null
+systemctl restart dokploy-swap.service || echo "warning: the compressed swap of the VM could not be turned on"
 echo ${RUNTIME_VERSION} >/etc/dokploy-runners/runtime-version
 log "Runtime ${RUNTIME_VERSION} installed"
 `;
