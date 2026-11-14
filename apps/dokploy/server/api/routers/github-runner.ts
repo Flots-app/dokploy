@@ -383,6 +383,7 @@ export const githubRunnerRouter = createTRPCRouter({
 					cpuPercent: node.cpuPercent,
 					memoryPercent: node.memoryPercent,
 					maxRunners: node.maxRunners,
+					x64Runners: node.x64Runners,
 					diskReserveGb: node.diskReserveGb,
 					diskCleanupPercent: node.diskCleanupPercent,
 					updatePolicy: node.updatePolicy,

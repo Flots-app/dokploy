@@ -13,6 +13,7 @@ import {
 	type GithubRunnerOsReport,
 	type GithubRunnerPool,
 	type GithubRunnerRollout,
+	type GithubRunnerRouting,
 	type GithubRunnerUpdateKind,
 	github,
 	githubRunnerAlerts,
@@ -165,6 +166,7 @@ import {
 	type PlannedAction,
 	planNode,
 	runnerNamePrefix,
+	slotOfRunner,
 } from "./reconcile";
 import { decideRerun, initialRerunStatus } from "./rerun";
 import { canaryProgress, rolloutGate, UPDATE_KIND_LABELS } from "./rollout";
@@ -186,6 +188,7 @@ import {
 	RUNTIME_VERSION,
 	runnerEnvironment,
 	shellQuote,
+	X64_RUNTIME,
 } from "./runtime";
 import {
 	closeSharedSessions,
@@ -200,6 +203,15 @@ import {
 	updateWindowEnd,
 } from "./updates";
 import { type RunnerReleaseInfo, runnerVersionStatus } from "./versions";
+import {
+	isX64Slot,
+	nativeMaxRunners,
+	x64Blocker,
+	x64Label,
+	x64ReleaseDue,
+	x64RunnerLabels,
+	x64Slots,
+} from "./x64";
 
 const GiB = 1024 ** 3;
 export const TICK_MS = 5_000;
@@ -331,6 +343,12 @@ interface ControllerState {
 	 * holds the memory of that job (see mac-relief.ts).
 	 */
 	macJobAt: Map<string, number>;
+	/** Why each machine's x86_64 runners wait, as last told in its events. */
+	x64Waiting: Map<string, string>;
+	/** Last x86_64 runner installation tried on each machine (epoch ms). */
+	x64InstallAt: Map<string, number>;
+	/** Why the last x86_64 runner installation of each machine failed. */
+	x64InstallError: Map<string, string>;
 	/** Whether this process leads: only the leader ticks. */
 	leader: boolean;
 	heartbeat: NodeJS.Timeout | null;
@@ -384,6 +402,9 @@ shared.__dokployGithubRunners ??= {
 	autonomyApplied: new Map(),
 	updateWaiting: new Map(),
 	macJobAt: new Map(),
+	x64Waiting: new Map(),
+	x64InstallAt: new Map(),
+	x64InstallError: new Map(),
 	leader: false,
 	heartbeat: null,
 	kind: "dokploy",
@@ -408,6 +429,9 @@ state.firewallExpected ??= new Map();
 state.autonomyApplied ??= new Map();
 state.updateWaiting ??= new Map();
 state.macJobAt ??= new Map();
+state.x64Waiting ??= new Map();
+state.x64InstallAt ??= new Map();
+state.x64InstallError ??= new Map();
 state.leader ??= false;
 state.heartbeat ??= null;
 state.kind ??= "dokploy";
@@ -523,44 +547,44 @@ export const poolClient = async (pool: GithubRunnerPool) => {
 
 const releases = state.releases;
 
-export const desiredRelease = async (
+/**
+ * A release read from GitHub once, then from the cache while `fresh` says so,
+ * with the pool's credentials on github.com (anonymous calls share 60 an hour).
+ */
+const cachedRelease = async (
 	pool: GithubRunnerPool,
-	arch: string,
-): Promise<RunnerRelease> => {
-	const key = `${pool.runnerVersion ?? "latest"}:${arch}`;
+	key: string,
+	resolve: (options: { authorization?: string }) => Promise<RunnerRelease>,
+	fresh: (at: number) => boolean = () => true,
+) => {
 	const cached = releases.get(key);
-	if (
-		cached &&
-		(pool.runnerVersion || Date.now() - cached.at < RELEASE_TTL_MS)
-	) {
-		return cached.release;
-	}
+	if (cached && fresh(cached.at)) return cached.release;
 	const authorization =
 		new URL(pool.apiUrl).hostname === "api.github.com"
 			? await (await poolClient(pool)).authorization().catch(() => undefined)
 			: undefined;
-	const release = await resolveRunnerRelease(pool.runnerVersion, arch, {
-		authorization,
-	});
+	const release = await resolve({ authorization });
 	releases.set(key, { release, at: Date.now() });
 	return release;
 };
 
+export const desiredRelease = (
+	pool: GithubRunnerPool,
+	arch: string,
+): Promise<RunnerRelease> =>
+	cachedRelease(
+		pool,
+		`${pool.runnerVersion ?? "latest"}:${arch}`,
+		(options) => resolveRunnerRelease(pool.runnerVersion, arch, options),
+		// A pinned version never changes; "latest" is read again now and then.
+		(at) => Boolean(pool.runnerVersion) || Date.now() - at < RELEASE_TTL_MS,
+	);
+
 /** The pinned Lima release for a Mac, resolved once per architecture. */
-const limaRelease = async (pool: GithubRunnerPool, arch: string) => {
-	const key = `lima:${LIMA_VERSION}:${arch}`;
-	const cached = releases.get(key);
-	if (cached) return cached.release;
-	const authorization =
-		new URL(pool.apiUrl).hostname === "api.github.com"
-			? await (await poolClient(pool)).authorization().catch(() => undefined)
-			: undefined;
-	const release = await resolveLimaRelease(LIMA_VERSION, arch, {
-		authorization,
-	});
-	releases.set(key, { release, at: Date.now() });
-	return release;
-};
+const limaRelease = (pool: GithubRunnerPool, arch: string) =>
+	cachedRelease(pool, `lima:${LIMA_VERSION}:${arch}`, (options) =>
+		resolveLimaRelease(LIMA_VERSION, arch, options),
+	);
 
 /** Installs Dokploy's own Lima for the account it logs in with, when missing or older. */
 const ensureLima = async (
@@ -612,6 +636,23 @@ export const runnerLabels = (
 		return true;
 	});
 };
+
+/** Labels of the x86_64 runners of a Mac (see x64.ts). */
+export const x64Labels = (pool: GithubRunnerPool, node: GithubRunnerNode) =>
+	x64RunnerLabels({
+		poolLabels: pool.labels,
+		extraLabels: node.extraLabels,
+		machineLabel: machineLabel(node),
+	});
+
+/** The x86_64 build of an actions/runner version, for the x86_64 slots. */
+const x64Release = (pool: GithubRunnerPool, version: string) =>
+	cachedRelease(pool, `${version}:x86_64`, (options) =>
+		resolveRunnerRelease(version, "x86_64", options),
+	);
+
+/** Failed x86_64 runner installations are tried again after this long. */
+const X64_INSTALL_RETRY_MS = 10 * 60_000;
 
 /** The job guard counts from the runtime that reads it: older ones keep their hash. */
 export const environmentHash = (
@@ -1180,6 +1221,7 @@ const prepareMachine = async (
 ) => {
 	let applied: GithubRunnerAppliedConfig | null = node.applied;
 	let vmCreated = applied?.vmCreatedByDokploy ?? false;
+	let rosetta = applied?.rosetta ?? false;
 	let host: { cpus: number; memoryBytes: number };
 
 	if (node.platform === "macos") {
@@ -1189,6 +1231,7 @@ const prepareMachine = async (
 		if (!status.host) throw new Error("Unable to read the Mac facts");
 		host = status.host;
 		const size = vmSize(status.host, node);
+		const wantRosetta = vmRosetta(node, status.setup?.rosetta ?? null);
 		if (status.vm.status === "missing") {
 			await log(
 				`Creating VM ${node.vmName}: ${formatCpus(size.cpus)}, ${formatBytes(size.memoryBytes)}, ${node.vmDiskGb} GiB disk`,
@@ -1198,10 +1241,12 @@ const prepareMachine = async (
 					cpus: size.cpus,
 					memoryGiB: size.memoryGiB,
 					diskGb: node.vmDiskGb,
+					rosetta: wantRosetta === true,
 				}),
 				{ timeoutMs: 30 * 60_000, label: "VM creation" },
 			);
 			vmCreated = true;
+			rosetta = wantRosetta === true;
 			// Recorded now: removing the machine deletes this VM even when the
 			// rest of the provisioning fails.
 			await db
@@ -1234,9 +1279,11 @@ const prepareMachine = async (
 						status.vm.diskBytes && node.vmDiskGb * GiB > status.vm.diskBytes
 							? node.vmDiskGb
 							: null,
+					rosetta: wantRosetta,
 				}),
 				{ timeoutMs: 5 * 60_000, label: "VM resize" },
 			);
+			if (wantRosetta) rosetta = true;
 		} else if (
 			status.vm.cpus !== size.cpus ||
 			status.vm.memoryBytes !== size.memoryBytes
@@ -1262,6 +1309,7 @@ const prepareMachine = async (
 			memoryBytes: after.vm.memoryBytes ?? size.memoryBytes,
 			envHash: "",
 			vmCreatedByDokploy: vmCreated,
+			rosetta,
 		};
 	} else {
 		const facts = await readLinuxFacts(driver.session);
@@ -1297,6 +1345,8 @@ const prepareMachine = async (
 		envHash: environmentHash(node.pool, RUNTIME_VERSION),
 		vmCreatedByDokploy: node.platform === "macos" ? vmCreated : undefined,
 		bootScript: node.platform === "macos" ? MAC_BOOT_SCRIPT_VERSION : undefined,
+		rosetta:
+			node.platform === "macos" ? (applied?.rosetta ?? false) : undefined,
 	} satisfies GithubRunnerAppliedConfig;
 };
 
@@ -1532,14 +1582,17 @@ export const enableRunnerNode = async (
 /** Whether the new settings need the macOS VM to restart. */
 export const needsVmRestart = (
 	node: GithubRunnerNode,
-	host: { cpus: number; memoryBytes: number } | null,
+	host: { cpus: number; memoryBytes: number; rosetta?: boolean | null } | null,
 ) => {
 	if (node.platform !== "macos" || !node.applied || !host) return false;
 	const size = vmSize(host, node);
 	return (
 		size.cpus !== node.applied.cpus ||
 		size.memoryBytes !== node.applied.memoryBytes ||
-		node.vmDiskGb > (node.applied.vmDiskGb ?? 0)
+		node.vmDiskGb > (node.applied.vmDiskGb ?? 0) ||
+		// x86_64 runners need Rosetta in the VM, which only a restart turns on:
+		// not before the Mac has it (its setup script installs it).
+		(node.x64Runners > 0 && !node.applied.rosetta && host.rosetta === true)
 	);
 };
 
@@ -1651,9 +1704,15 @@ const resizeStoppedVm = async (
 	const status = await readMacStatus(driver.session, node.vmName);
 	if (!status.host) throw new Error("Unable to read the Mac facts");
 	const size = vmSize(status.host, node);
+	const rosetta = vmRosetta(node, status.setup?.rosetta ?? null);
 	await log(
-		`Resizing VM ${node.vmName} to ${formatCpus(size.cpus)} and ${formatBytes(size.memoryBytes)}`,
+		`Resizing VM ${node.vmName} to ${formatCpus(size.cpus)} and ${formatBytes(size.memoryBytes)}${rosetta ? ", with Rosetta for the x86_64 runners" : ""}`,
 	);
+	if (node.x64Runners > 0 && !rosetta) {
+		await log(
+			"Rosetta is not installed on the Mac: the x86_64 runners wait until the setup script of the machine runs again",
+		);
+	}
 	await driver.host(
 		macResizeVmScript(node.vmName, {
 			cpus: size.cpus,
@@ -1662,6 +1721,7 @@ const resizeStoppedVm = async (
 				status.vm.diskBytes && node.vmDiskGb * GiB > status.vm.diskBytes
 					? node.vmDiskGb
 					: null,
+			rosetta,
 		}),
 		{ timeoutMs: 5 * 60_000, label: "VM resize" },
 	);
@@ -1675,10 +1735,20 @@ const resizeStoppedVm = async (
 				vmDiskGb: Math.max(node.vmDiskGb, node.applied?.vmDiskGb ?? 0),
 				cpus: size.cpus,
 				memoryBytes: size.memoryBytes,
+				rosetta: rosetta ?? node.applied?.rosetta ?? false,
 			},
 		})
 		.where(eq(githubRunnerNodes.githubRunnerNodeId, node.githubRunnerNodeId));
 };
+
+/**
+ * Rosetta for the VM: on for x86_64 runners once the Mac says it has it (a VM
+ * asking for a Rosetta the Mac lacks does not start), left as it is otherwise.
+ */
+const vmRosetta = (
+	node: Pick<GithubRunnerNode, "x64Runners">,
+	hostRosetta: boolean | null,
+) => (node.x64Runners > 0 && hostRosetta === true ? true : null);
 
 export const removeRunnerNode = async (
 	nodeId: string,
@@ -2622,6 +2692,8 @@ const executeActions = async (
 	client: GithubRunnerClient,
 	labels: string[],
 	events: { at: string; message: string }[],
+	/** Labels of the x86_64 slots (see x64.ts). */
+	x64SlotLabels: string[] = [],
 ) => {
 	const { node, driver } = observation;
 	const prefix = runnerNamePrefix(node.name);
@@ -2665,7 +2737,10 @@ const executeActions = async (
 			switch (action.type) {
 				case "arm": {
 					const name = `${prefix}${action.slot}-${randomBytes(3).toString("hex")}`;
-					const jit = await client.generateJitConfig({ name, labels });
+					const jit = await client.generateJitConfig({
+						name,
+						labels: action.x64 ? x64SlotLabels : labels,
+					});
 					try {
 						const files = decodeJitConfig(jit.encodedJitConfig);
 						const input = `${[
@@ -2673,7 +2748,7 @@ const executeActions = async (
 							`name ${name}`,
 						].join("\n")}\n`;
 						const result = await driver.guest(
-							`${RUNNERCTL} arm ${action.slot} ${minFreeKib}`,
+							`${RUNNERCTL} arm ${action.slot} ${minFreeKib}${action.x64 ? " x64" : ""}`,
 							{
 								input,
 								allowFailure: true,
@@ -2697,7 +2772,10 @@ const executeActions = async (
 									.join(" ") || `exit ${result.exitCode}`,
 							);
 						}
-						recordEvent(events, `Slot ${action.slot}: runner ${name} started`);
+						recordEvent(
+							events,
+							`Slot ${action.slot}: ${action.x64 ? "x86_64 " : ""}runner ${name} started`,
+						);
 					} catch (error) {
 						await client.deleteRunner(jit.runnerId).catch(() => "missing");
 						throw error;
@@ -3694,6 +3772,8 @@ const actOnNode = async (
 	let admission: GithubRunnerNodeObservation["admission"] = { ok: true };
 	/** What a Mac needs of its VM (see mac-relief.ts). */
 	let relief: MacRelief = { action: "none" };
+	/** Why the x86_64 runners wait (see x64.ts); null once they take jobs. */
+	let x64Blocked: string | null = null;
 	let busy = 0;
 	let slots: GithubRunnerNodeObservation["slots"] = [];
 	let drained = false;
@@ -3901,6 +3981,50 @@ const actOnNode = async (
 				if (decision.allowed) await startPatch(node, decision.reason, events);
 			}
 			refreshOsReport(node, driver, probe.vm?.status === "Running");
+			// The x86_64 runners follow the native release (see x64.ts).
+			if (
+				node.platform === "macos" &&
+				node.x64Runners > 0 &&
+				node.enabled &&
+				phase === "ready" &&
+				!updateStarted &&
+				node.applied?.rosetta &&
+				runtime.runtimeVersion >= X64_RUNTIME &&
+				runtime.release &&
+				x64ReleaseDue(runtime.x64, runtime.release) &&
+				now - (state.x64InstallAt.get(nodeId) ?? 0) >= X64_INSTALL_RETRY_MS
+			) {
+				state.x64InstallAt.set(nodeId, now);
+				const version = runtime.release;
+				const started = runTask(
+					nodeId,
+					null,
+					async ({ node, driver }) => {
+						const release = await x64Release(node.pool, version);
+						await driver.guest(
+							`${RUNNERCTL} install-release ${release.version} ${release.url} ${release.sha256} x64`,
+							{ timeoutMs: 20 * 60_000, label: "x86_64 runner installation" },
+						);
+						state.x64InstallError.delete(nodeId);
+						pushEvent(nodeId, `x86_64 runner ${release.version} installed`);
+					},
+					async (error) => {
+						const message =
+							error instanceof Error ? error.message : String(error);
+						state.x64InstallError.set(nodeId, message);
+						pushEvent(
+							nodeId,
+							`x86_64 runner ${version} not installed: ${message}`,
+						);
+					},
+				);
+				if (started) {
+					recordEvent(
+						events,
+						`Installing the x86_64 runner ${version}, run through Rosetta`,
+					);
+				}
+			}
 
 			// Kept out of the planning: a machine whose environment or limits
 			// cannot be written still runs, drains and cleans its disk.
@@ -4011,18 +4135,70 @@ const actOnNode = async (
 			node,
 			runtime?.host?.arch ?? host?.arch ?? "x86_64",
 		);
+		const maxNative = nativeMaxRunners(
+			resolveMaxRunners(node.maxRunners, node.platform, host, node),
+			node.x64Runners,
+		);
+		// x86_64 runners through Rosetta, on a Mac (see x64.ts).
+		const x64SlotLabels = x64Labels(node.pool, node);
+		x64Blocked =
+			node.x64Runners > 0 && runtime
+				? x64Blocker({
+						x64Runners: node.x64Runners,
+						platform: node.platform,
+						runtimeVersion: runtime.runtimeVersion,
+						minRuntime: X64_RUNTIME,
+						vmRosetta: Boolean(node.applied?.rosetta),
+						hostRosetta: probe.host?.rosetta ?? null,
+						hostArch: probe.host?.arch ?? null,
+						status: runtime.x64,
+						installError: state.x64InstallError.get(nodeId) ?? null,
+					})
+				: null;
+		// Rosetta came to the Mac after the setting (its setup script ran
+		// again): the VM restarts with it once no job runs, as when it is set.
+		if (
+			node.platform === "macos" &&
+			node.x64Runners > 0 &&
+			node.enabled &&
+			phase === "ready" &&
+			!node.drain &&
+			!node.applied?.rosetta &&
+			probe.host?.rosetta === true &&
+			runtime
+		) {
+			// It reads the machine as the last tick saved it: Rosetta shows there
+			// one tick after the probe sees it, and the drain then starts.
+			const operation = await applyRunnerNodeConfig(nodeId, "wait", null).catch(
+				(error) => {
+					lastError = `VM restart with Rosetta not planned: ${error instanceof Error ? error.message : String(error)}`;
+					return null;
+				},
+			);
+			if (operation) {
+				recordEvent(
+					events,
+					"Rosetta is on the Mac now: the VM restarts with it once no job runs",
+				);
+			}
+		}
+		if (node.x64Runners > 0 && runtime) {
+			const told = state.x64Waiting.get(nodeId);
+			if (x64Blocked && told !== x64Blocked) {
+				state.x64Waiting.set(nodeId, x64Blocked);
+				recordEvent(events, `x86_64 runners wait: ${x64Blocked}`);
+			} else if (!x64Blocked && told) {
+				state.x64Waiting.delete(nodeId);
+				recordEvent(events, "x86_64 runners ready");
+			}
+		}
 		const plan = planNode({
 			now,
 			node: {
 				enabled: node.enabled,
 				phase,
 				drain: node.drain,
-				maxRunners: resolveMaxRunners(
-					node.maxRunners,
-					node.platform,
-					host,
-					node,
-				),
+				maxRunners: maxNative,
 				namePrefix: runnerNamePrefix(node.name),
 				labels,
 				runnerVersion: runtime?.release ?? null,
@@ -4031,6 +4207,15 @@ const actOnNode = async (
 				stopIdle: blocked ?? (relief.action === "none" ? null : relief.reason),
 				maxArmsPerTick: MAX_ARMS_PER_TICK,
 				waiting,
+				x64:
+					node.platform === "macos" && node.x64Runners > 0
+						? {
+								slots: x64Slots(node.x64Runners),
+								labels: x64SlotLabels,
+								runnerVersion: runtime?.x64?.release ?? null,
+								ready: Boolean(runtime) && !x64Blocked,
+							}
+						: undefined,
 			},
 			slots: effectiveSlots,
 			runners: runners ?? [],
@@ -4049,7 +4234,14 @@ const actOnNode = async (
 								action.type === "stop" && isKillDrain(node.drain, now),
 						)
 					: plan.actions;
-			await executeActions(observation, actions, client, labels, events);
+			await executeActions(
+				observation,
+				actions,
+				client,
+				labels,
+				events,
+				x64SlotLabels,
+			);
 			await recordJobs(node, runtime);
 			if (node.platform === "macos") {
 				if (plan.busy > 0) state.macJobAt.set(nodeId, now);
@@ -4090,12 +4282,8 @@ const actOnNode = async (
 					labels,
 					accepting: node.enabled && phase === "ready" && !node.drain,
 					admitted: admission.ok,
-					maxRunners: resolveMaxRunners(
-						node.maxRunners,
-						node.platform,
-						host,
-						node,
-					),
+					// The reserve arms native slots only: no x86_64 one arms itself.
+					maxRunners: maxNative,
 					events,
 				}).catch((error) => {
 					lastError = `Reserve not kept: ${error instanceof Error ? error.message : String(error)}`;
@@ -4207,6 +4395,9 @@ const actOnNode = async (
 					memoryBytes: probe.host.memoryBytes,
 					diskFreeBytes: probe.host.diskFreeBytes,
 					diskTotalBytes: probe.host.diskTotalBytes,
+					...(probe.host.rosetta === undefined
+						? {}
+						: { rosetta: probe.host.rosetta }),
 				}
 			: node.observed?.host,
 		sandbox:
@@ -4234,6 +4425,15 @@ const actOnNode = async (
 			? { version: runtime.runtimeVersion, runnerVersion: runtime.release }
 			: node.observed?.runtime,
 		admission,
+		...(node.x64Runners > 0
+			? {
+					x64: {
+						runners: node.x64Runners,
+						release: runtime?.x64?.release ?? null,
+						blocked: x64Blocked,
+					},
+				}
+			: {}),
 		slots,
 		usage,
 		caches: node.observed?.caches,
@@ -4418,6 +4618,8 @@ export const routePool = async (pool: GithubRunnerPool) => {
 	const variable = pool.routingVariable;
 	const now = Date.now();
 	if (!variable) {
+		// The x86_64 variable goes too (see routeX64).
+		await routeX64(pool, client, [], [], now);
 		// Routing turned off: the variable goes, and workflows use their default.
 		// The routing state stays, with the error, until GitHub deleted it.
 		const previous = pool.routing;
@@ -4467,36 +4669,7 @@ export const routePool = async (pool: GithubRunnerPool) => {
 		fallbackLabels: pool.fallbackLabels,
 		now,
 	});
-	if (routingSyncDue(routing, variable, now)) {
-		const at = new Date(now).toISOString();
-		try {
-			await client.setVariable(variable, routing.value);
-			// Renamed: the previous variable goes once the new one holds the value.
-			// Until then the sync counts as failed, so it is tried again.
-			const previous = routing.variable;
-			if (previous && previous !== variable) {
-				await client.deleteVariable(previous).catch((error: unknown) => {
-					throw new Error(
-						`${variable} is written, but ${previous} could not be deleted: ${error instanceof Error ? error.message : String(error)}`,
-					);
-				});
-			}
-			routing = {
-				...routing,
-				variable,
-				syncedValue: routing.value,
-				syncedAt: at,
-				attemptedAt: at,
-				error: null,
-			};
-		} catch (error) {
-			routing = {
-				...routing,
-				attemptedAt: at,
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
-	}
+	routing = await syncRoutingVariable(client, routing, variable, now);
 	if (routing.target !== pool.routing?.target) {
 		console.log(
 			`[github-runners] ${pool.name}: jobs now go to ${routing.target === "pool" ? "the pool" : routing.value}`,
@@ -4529,6 +4702,138 @@ export const routePool = async (pool: GithubRunnerPool) => {
 			.finally(() => state.rerouteScans.delete(poolId));
 	}
 	await advanceReroutes(pool, client);
+	await routeX64(pool, client, nodes, listed?.runners ?? [], now);
+};
+
+/** Writes the routing variable when due; the result says how it went. */
+const syncRoutingVariable = async (
+	client: GithubRunnerClient,
+	routing: GithubRunnerRouting,
+	variable: string,
+	now: number,
+): Promise<GithubRunnerRouting> => {
+	if (!routingSyncDue(routing, variable, now)) return routing;
+	const at = new Date(now).toISOString();
+	try {
+		await client.setVariable(variable, routing.value);
+		// Renamed: the previous variable goes once the new one holds the value.
+		// Until then the sync counts as failed, so it is tried again.
+		const previous = routing.variable;
+		if (previous && previous !== variable) {
+			await client.deleteVariable(previous).catch((error: unknown) => {
+				throw new Error(
+					`${variable} is written, but ${previous} could not be deleted: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+		}
+		return {
+			...routing,
+			variable,
+			syncedValue: routing.value,
+			syncedAt: at,
+			attemptedAt: at,
+			error: null,
+		};
+	} catch (error) {
+		return {
+			...routing,
+			attemptedAt: at,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+/** The variable of the jobs that need x86_64: the routing variable, suffixed. */
+export const x64RoutingVariable = (variable: string) => `${variable}_X64`;
+
+/**
+ * Publishes where the jobs that need x86_64 go (see x64.ts): the x86_64
+ * runners of the pool while one is ON, the x86_64 fallback otherwise. The
+ * queued jobs of a route that fell back are not moved: the main route does it.
+ */
+const routeX64 = async (
+	pool: GithubRunnerPool,
+	client: GithubRunnerClient,
+	nodes: GithubRunnerNode[],
+	runners: GithubRunner[],
+	now: number,
+) => {
+	const poolId = pool.githubRunnerPoolId;
+	const previous = pool.x64Routing;
+	const variable = pool.routingVariable
+		? x64RoutingVariable(pool.routingVariable)
+		: null;
+	if (!variable) {
+		if (previous?.variable) {
+			const error = await client
+				.deleteVariable(previous.variable)
+				.then(() => null)
+				.catch((failure: unknown) =>
+					failure instanceof Error ? failure.message : String(failure),
+				);
+			if (error) {
+				await db
+					.update(githubRunnerPools)
+					.set({
+						x64Routing: {
+							...previous,
+							attemptedAt: new Date(now).toISOString(),
+							error: `Cannot delete ${previous.variable}: ${error}`,
+						},
+					})
+					.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+				return;
+			}
+		}
+		if (previous) {
+			await db
+				.update(githubRunnerPools)
+				.set({ x64Routing: null })
+				.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+		}
+		return;
+	}
+	const machines = nodes.filter(
+		(node) =>
+			node.enabled &&
+			node.phase === "ready" &&
+			node.platform === "macos" &&
+			node.x64Runners > 0,
+	);
+	const available = machines.some(
+		(node) =>
+			node.observed?.reachable !== false &&
+			node.observed?.admission?.ok !== false &&
+			!node.observed?.x64?.blocked &&
+			runners.some((runner) => {
+				const slot = slotOfRunner(runnerNamePrefix(node.name), runner.name);
+				return (
+					runner.status === "online" &&
+					slot !== null &&
+					isX64Slot(slot, node.x64Runners)
+				);
+			}),
+	);
+	let routing = decideRouting({
+		previous,
+		available,
+		anyEnabled: machines.length > 0,
+		labels: pool.labels.map(x64Label),
+		fallbackLabels: pool.x64FallbackLabels,
+		now,
+	});
+	routing = await syncRoutingVariable(client, routing, variable, now);
+	if (routing.target !== previous?.target) {
+		console.log(
+			`[github-runners] ${pool.name}: x86_64 jobs now go to ${routing.target === "pool" ? "the pool" : routing.value}`,
+		);
+	}
+	if (routingChanged(previous, routing)) {
+		await db
+			.update(githubRunnerPools)
+			.set({ x64Routing: routing })
+			.where(eq(githubRunnerPools.githubRunnerPoolId, poolId));
+	}
 };
 
 const poolRepositories = async (
@@ -4819,6 +5124,7 @@ const routePools = async () => {
 		where: or(
 			isNotNull(githubRunnerPools.routingVariable),
 			isNotNull(githubRunnerPools.routing),
+			isNotNull(githubRunnerPools.x64Routing),
 		),
 	});
 	await Promise.all(
@@ -4953,14 +5259,32 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
  * keep the pool (its credentials may be gone): it is returned for the operator.
  */
 export const clearPoolRouting = async (pool: GithubRunnerPool) => {
-	const variable = pool.routing?.variable ?? pool.routingVariable;
-	if (!variable) return null;
-	try {
-		await (await poolClient(pool)).deleteVariable(variable);
-		return null;
-	} catch (error) {
-		return `The Actions variable ${variable} could not be deleted (${error instanceof Error ? error.message : String(error)}): delete it on GitHub, or the workflows keep reading it.`;
-	}
+	const main = pool.routing?.variable ?? pool.routingVariable;
+	// The variable of the jobs that need x86_64 goes too (see routeX64).
+	const x64 =
+		pool.x64Routing?.variable ??
+		(pool.routingVariable ? x64RoutingVariable(pool.routingVariable) : null);
+	const variables = [main, x64].filter((variable): variable is string =>
+		Boolean(variable),
+	);
+	if (!variables.length) return null;
+	const failed = (variable: string, error: unknown) =>
+		`The Actions variable ${variable} could not be deleted (${error instanceof Error ? error.message : String(error)}): delete it on GitHub, or the workflows keep reading it.`;
+	const failures = await poolClient(pool).then(
+		(client) =>
+			Promise.all(
+				variables.map((variable) =>
+					client.deleteVariable(variable).then(
+						() => null,
+						(error: unknown) => failed(variable, error),
+					),
+				),
+			),
+		// Without credentials, nothing could be deleted.
+		(error: unknown) => variables.map((variable) => failed(variable, error)),
+	);
+	const messages = failures.filter(Boolean);
+	return messages.length ? messages.join(" ") : null;
 };
 
 const LIVE_SLOT = new Set(["active", "activating", "reloading"]);
@@ -4976,8 +5300,10 @@ export const placementMachine = (
 	const busyRunners = new Set(
 		runners.filter((runner) => runner.busy).map((runner) => runner.name),
 	);
+	// The x86_64 slots take only their own jobs: placement leaves them out.
 	const busy = (probe.runtime?.slots ?? []).filter(
 		(slot) =>
+			!isX64Slot(slot.slot, node.x64Runners) &&
 			LIVE_SLOT.has(slot.active) &&
 			((slot.job && !slot.job.completedAt) ||
 				(slot.runnerName !== null && busyRunners.has(slot.runnerName))),
@@ -4991,7 +5317,10 @@ export const placementMachine = (
 			Boolean(probe.runtime) &&
 			node.observed?.admission?.ok !== false,
 		maxRunners: host
-			? resolveMaxRunners(node.maxRunners, node.platform, host, node)
+			? nativeMaxRunners(
+					resolveMaxRunners(node.maxRunners, node.platform, host, node),
+					node.x64Runners,
+				)
 			: 0,
 		busy,
 		speed: node.benchmark

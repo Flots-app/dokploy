@@ -37,11 +37,22 @@ export interface PlannerNode {
 	 * the pool); without it every free slot waits.
 	 */
 	waiting?: WaitingTarget;
+	/**
+	 * The x86_64 slots of a Mac (see x64.ts): their own labels, always waiting
+	 * for a job once `ready`, outside the placement of the native slots.
+	 */
+	x64?: {
+		slots: number[];
+		labels: string[];
+		/** Release of the x86_64 slots: a runner is recycled when older. */
+		runnerVersion?: string | null;
+		ready: boolean;
+	};
 }
 
 export type PlannedAction =
-	/** Register a JIT runner on GitHub and start it in this slot. */
-	| { type: "arm"; slot: number }
+	/** Register a JIT runner on GitHub and start it in this slot (x86_64 with `x64`). */
+	| { type: "arm"; slot: number; x64?: boolean }
 	/**
 	 * Unregister an idle runner, then stop its slot. GitHub refuses to unregister
 	 * a runner that took a job meanwhile, which makes this safe against races.
@@ -144,9 +155,12 @@ export const planNode = (input: {
 		age: number;
 	}[] = [];
 
+	const x64Slots = new Set(node.x64?.slots ?? []);
+
 	for (const slot of [...live].sort((a, b) => a.slot - b.slot)) {
 		const runner = slot.runnerName ? byName.get(slot.runnerName) : undefined;
 		if (slot.runnerName) attached.add(slot.runnerName);
+		const x64 = x64Slots.has(slot.slot);
 		const jobRunning = Boolean(slot.job && !slot.job.completedAt);
 		const busy = Boolean(runner?.busy) || jobRunning;
 		const age = slot.since ? now - slot.since * 1000 : 0;
@@ -154,6 +168,7 @@ export const planNode = (input: {
 
 		observations.push({
 			slot: slot.slot,
+			...(x64 ? { arch: "x64" as const } : {}),
 			state:
 				slot.active === "deactivating"
 					? "stopping"
@@ -193,9 +208,23 @@ export const planNode = (input: {
 			continue;
 		}
 
-		const stale = runner ? isStale(runner, node) : false;
+		const stale = runner
+			? isStale(
+					runner,
+					x64 && node.x64
+						? {
+								...node,
+								labels: node.x64.labels,
+								runnerVersion: node.x64.runnerVersion ?? null,
+							}
+						: node,
+				)
+			: false;
 		const wanted =
-			accepting && !node.stopIdle && slot.slot <= node.maxRunners && !stale;
+			accepting &&
+			!node.stopIdle &&
+			(x64 ? Boolean(node.x64?.ready) : slot.slot <= node.maxRunners) &&
+			!stale;
 		if (!wanted) {
 			// Never interrupt a job here: an ephemeral runner exits after its job.
 			if (busy || slot.job?.completedAt) continue;
@@ -212,7 +241,9 @@ export const planNode = (input: {
 								? "draining"
 								: !node.enabled
 									? "machine disabled"
-									: "above the concurrency limit",
+									: x64
+										? "x86_64 runners not available"
+										: "above the concurrency limit",
 				});
 			} else {
 				actions.push({
@@ -236,7 +267,8 @@ export const planNode = (input: {
 			});
 			continue;
 		}
-		if (!busy && !slot.job?.completedAt) {
+		// The x86_64 slots wait whatever the placement: no other slot takes their jobs.
+		if (!busy && !slot.job?.completedAt && !x64) {
 			waiting.push({ slot: slot.slot, runner, age });
 		}
 	}
@@ -294,6 +326,14 @@ export const planNode = (input: {
 			if (used.has(slot)) continue;
 			actions.push({ type: "arm", slot });
 			armed++;
+		}
+		if (node.x64?.ready) {
+			for (const slot of node.x64.slots) {
+				if (armed >= node.maxArmsPerTick) break;
+				if (used.has(slot)) continue;
+				actions.push({ type: "arm", slot, x64: true });
+				armed++;
+			}
 		}
 	}
 

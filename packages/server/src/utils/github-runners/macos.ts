@@ -1,7 +1,7 @@
 import { LIMA_SSH_PORTS } from "../firewall/backends";
 import { macFirewallStatus, macWaitForFirewall } from "./firewall";
 import { shellQuote, statusCommand } from "./runtime";
-import { BOOT_DAEMON } from "./setup-constants";
+import { BOOT_DAEMON, ROSETTA_LINUX } from "./setup-constants";
 
 /**
  * On a Mac the runners live in a Lima VM whose size is the budget. Commands run
@@ -50,7 +50,8 @@ admin=$(id -Gn | tr ' ' '\n' | grep -qx admin && echo yes || echo no)
 sleep_minutes=$(pmset -g 2>/dev/null | awk '$1 == "sleep" {print $2; exit}')
 filevault=$(fdesetup isactive >/dev/null 2>&1 && echo on || echo off)
 daemon=$([ -f /Library/LaunchDaemons/${BOOT_DAEMON}.plist ] && echo yes || echo no)
-echo "macsetup admin=$admin sleep=\${sleep_minutes:-unknown} filevault=$filevault daemon=$daemon"
+rosetta=$([ -e ${ROSETTA_LINUX} ] && echo yes || echo no)
+echo "macsetup admin=$admin sleep=\${sleep_minutes:-unknown} filevault=$filevault daemon=$daemon rosetta=$rosetta"
 ${macFirewallStatus}
 ${withGuest ? "" : networkCheck}
 if ! command -v limactl >/dev/null 2>&1; then
@@ -94,15 +95,18 @@ const pickSshPort = `pick_ssh_port() {
 	return 1
 }`;
 
-/** Creates the VM like the CI runbook: plain mode, no host mount, no port forwarding. */
+/**
+ * Creates the VM like the CI runbook: plain mode, no host mount, no port
+ * forwarding. With Rosetta, x86_64 programs run in it (see x64.ts).
+ */
 export const macCreateVmScript = (
 	vmName: string,
-	size: { cpus: number; memoryGiB: string; diskGb: number },
+	size: { cpus: number; memoryGiB: string; diskGb: number; rosetta?: boolean },
 ) => `${prelude}
 set -eu
 ${pickSshPort}
 port=$(pick_ssh_port)
-limactl create --tty=false --name=${vm(vmName)} --plain --vm-type=vz \\
+limactl create --tty=false --name=${vm(vmName)} --plain --vm-type=vz${size.rosetta ? " --rosetta" : ""} \\
 	--ssh-port="$port" \\
 	--cpus=${size.cpus} --memory=${shellQuote(size.memoryGiB)} --disk=${size.diskGb} \\
 	template:ubuntu-24.04
@@ -168,13 +172,21 @@ if [ "$(limactl list --format '{{.Status}}' "$name" 2>/dev/null)" = Running ]; t
 fi
 `;
 
-/** Resizes a stopped VM. The disk can only grow. */
+/**
+ * Resizes a stopped VM. The disk can only grow. `rosetta` turns Rosetta on or
+ * off (see x64.ts); null leaves it as it is.
+ */
 export const macResizeVmScript = (
 	vmName: string,
-	size: { cpus: number; memoryGiB: string; diskGb: number | null },
+	size: {
+		cpus: number;
+		memoryGiB: string;
+		diskGb: number | null;
+		rosetta?: boolean | null;
+	},
 ) => `${prelude}
 set -eu
-limactl edit --tty=false ${vm(vmName)} --cpus=${size.cpus} --memory=${shellQuote(size.memoryGiB)}${size.diskGb ? ` --disk=${size.diskGb}` : ""}
+limactl edit --tty=false ${vm(vmName)} --cpus=${size.cpus} --memory=${shellQuote(size.memoryGiB)}${size.diskGb ? ` --disk=${size.diskGb}` : ""}${size.rosetta === true ? " --rosetta" : size.rosetta === false ? " --rosetta=false" : ""}
 `;
 
 /** Deletes the VM; the boot daemon no longer starts it. */

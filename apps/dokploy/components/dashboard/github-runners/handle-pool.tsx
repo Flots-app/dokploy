@@ -241,7 +241,10 @@ const TargetingFields = ({
 				{routingEnabled && (
 					<span className="text-muted-foreground">
 						The variable holds <code>{poolRunsOn}</code> while a runner of the
-						pool is ON, and the fallback otherwise.
+						pool is ON, and the fallback otherwise. Jobs that need x86_64 use{" "}
+						<code>{`${routingVariable}_X64`}</code> instead: the x86_64 runners
+						of the Macs, through Rosetta, carry the pool labels suffixed with{" "}
+						<code>-x64</code>.
 					</span>
 				)}
 				{!parseLabels(labels).length && (
