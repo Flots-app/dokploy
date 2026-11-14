@@ -520,7 +520,13 @@ describe("the drain of a runner machine", () => {
 		expect(done?.message).toMatch(/Jobs still ran on outlast/);
 		expect(fake.sent("systemd-run --unit=")).toBe(false);
 		expect(fake.violations).toEqual([]);
-		expect((await nodeOf(node.githubRunnerNodeId)).phase).toBe("ready");
+		// The run is marked skipped first, and gives the machine back in its
+		// `finally` right after: wait for it.
+		const back = await settle(
+			() => nodeOf(node.githubRunnerNodeId),
+			(current) => current.phase === "ready",
+		);
+		expect(back.drain).toBeNull();
 	});
 
 	it("gives the machine back when the run is cancelled while the job runs", async () => {
