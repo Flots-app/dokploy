@@ -293,6 +293,16 @@ const finished = (runId: string) =>
 		(run) => ENDED.includes(run?.status ?? ""),
 	);
 
+/**
+ * The run records its outcome first and gives the machine back in its
+ * `finally` right after: wait for it.
+ */
+const givenBack = (nodeId: string) =>
+	settle(
+		() => nodeOf(nodeId),
+		(node) => node.phase === "ready",
+	);
+
 const drainedBy = (nodeId: string, runId: string) =>
 	settle(
 		() => nodeOf(nodeId),
@@ -459,8 +469,7 @@ describe("the Linux VM of a Mac", () => {
 		).toBe(false);
 		expectMacosUntouched(fake);
 		expect(fake.violations).toEqual([]);
-		const back = await nodeOf(node.githubRunnerNodeId);
-		expect(back.phase).toBe("ready");
+		const back = await givenBack(node.githubRunnerNodeId);
 		expect(back.drain).toBeNull();
 	});
 
@@ -553,7 +562,7 @@ describe("the macOS hand-off", () => {
 		expect(done?.message).toBe(
 			"macOS updated: macOS 26.0 (25A100) → macOS 26.1 (25B78). handoff takes jobs again.",
 		);
-		expect((await nodeOf(node.githubRunnerNodeId)).phase).toBe("ready");
+		expect((await givenBack(node.githubRunnerNodeId)).drain).toBeNull();
 		// Dokploy installed nothing anywhere, and never rebooted the Mac.
 		expect(fake.guestScripts).toEqual([]);
 		expectMacosUntouched(fake);
@@ -627,7 +636,7 @@ describe("the macOS hand-off", () => {
 		expect(done?.message).toMatch(
 			/macOS did not change before the hand-off expired/,
 		);
-		expect((await nodeOf(node.githubRunnerNodeId)).phase).toBe("ready");
+		expect((await givenBack(node.githubRunnerNodeId)).drain).toBeNull();
 		expectMacosUntouched(fake);
 		expect(notices).toContainEqual(
 			expect.objectContaining({
