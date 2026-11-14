@@ -347,6 +347,8 @@ interface ControllerState {
 	x64Waiting: Map<string, string>;
 	/** Last x86_64 runner installation tried on each machine (epoch ms). */
 	x64InstallAt: Map<string, number>;
+	/** Why the last x86_64 runner installation of each machine failed. */
+	x64InstallError: Map<string, string>;
 	/** Whether this process leads: only the leader ticks. */
 	leader: boolean;
 	heartbeat: NodeJS.Timeout | null;
@@ -402,6 +404,7 @@ shared.__dokployGithubRunners ??= {
 	macJobAt: new Map(),
 	x64Waiting: new Map(),
 	x64InstallAt: new Map(),
+	x64InstallError: new Map(),
 	leader: false,
 	heartbeat: null,
 	kind: "dokploy",
@@ -428,6 +431,7 @@ state.updateWaiting ??= new Map();
 state.macJobAt ??= new Map();
 state.x64Waiting ??= new Map();
 state.x64InstallAt ??= new Map();
+state.x64InstallError ??= new Map();
 state.leader ??= false;
 state.heartbeat ??= null;
 state.kind ??= "dokploy";
@@ -543,44 +547,44 @@ export const poolClient = async (pool: GithubRunnerPool) => {
 
 const releases = state.releases;
 
-export const desiredRelease = async (
+/**
+ * A release read from GitHub once, then from the cache while `fresh` says so,
+ * with the pool's credentials on github.com (anonymous calls share 60 an hour).
+ */
+const cachedRelease = async (
 	pool: GithubRunnerPool,
-	arch: string,
-): Promise<RunnerRelease> => {
-	const key = `${pool.runnerVersion ?? "latest"}:${arch}`;
+	key: string,
+	resolve: (options: { authorization?: string }) => Promise<RunnerRelease>,
+	fresh: (at: number) => boolean = () => true,
+) => {
 	const cached = releases.get(key);
-	if (
-		cached &&
-		(pool.runnerVersion || Date.now() - cached.at < RELEASE_TTL_MS)
-	) {
-		return cached.release;
-	}
+	if (cached && fresh(cached.at)) return cached.release;
 	const authorization =
 		new URL(pool.apiUrl).hostname === "api.github.com"
 			? await (await poolClient(pool)).authorization().catch(() => undefined)
 			: undefined;
-	const release = await resolveRunnerRelease(pool.runnerVersion, arch, {
-		authorization,
-	});
+	const release = await resolve({ authorization });
 	releases.set(key, { release, at: Date.now() });
 	return release;
 };
 
+export const desiredRelease = (
+	pool: GithubRunnerPool,
+	arch: string,
+): Promise<RunnerRelease> =>
+	cachedRelease(
+		pool,
+		`${pool.runnerVersion ?? "latest"}:${arch}`,
+		(options) => resolveRunnerRelease(pool.runnerVersion, arch, options),
+		// A pinned version never changes; "latest" is read again now and then.
+		(at) => Boolean(pool.runnerVersion) || Date.now() - at < RELEASE_TTL_MS,
+	);
+
 /** The pinned Lima release for a Mac, resolved once per architecture. */
-const limaRelease = async (pool: GithubRunnerPool, arch: string) => {
-	const key = `lima:${LIMA_VERSION}:${arch}`;
-	const cached = releases.get(key);
-	if (cached) return cached.release;
-	const authorization =
-		new URL(pool.apiUrl).hostname === "api.github.com"
-			? await (await poolClient(pool)).authorization().catch(() => undefined)
-			: undefined;
-	const release = await resolveLimaRelease(LIMA_VERSION, arch, {
-		authorization,
-	});
-	releases.set(key, { release, at: Date.now() });
-	return release;
-};
+const limaRelease = (pool: GithubRunnerPool, arch: string) =>
+	cachedRelease(pool, `lima:${LIMA_VERSION}:${arch}`, (options) =>
+		resolveLimaRelease(LIMA_VERSION, arch, options),
+	);
 
 /** Installs Dokploy's own Lima for the account it logs in with, when missing or older. */
 const ensureLima = async (
@@ -642,20 +646,10 @@ export const x64Labels = (pool: GithubRunnerPool, node: GithubRunnerNode) =>
 	});
 
 /** The x86_64 build of an actions/runner version, for the x86_64 slots. */
-const x64Release = async (pool: GithubRunnerPool, version: string) => {
-	const key = `${version}:x86_64`;
-	const cached = releases.get(key);
-	if (cached) return cached.release;
-	const authorization =
-		new URL(pool.apiUrl).hostname === "api.github.com"
-			? await (await poolClient(pool)).authorization().catch(() => undefined)
-			: undefined;
-	const release = await resolveRunnerRelease(version, "x86_64", {
-		authorization,
-	});
-	releases.set(key, { release, at: Date.now() });
-	return release;
-};
+const x64Release = (pool: GithubRunnerPool, version: string) =>
+	cachedRelease(pool, `${version}:x86_64`, (options) =>
+		resolveRunnerRelease(version, "x86_64", options),
+	);
 
 /** Failed x86_64 runner installations are tried again after this long. */
 const X64_INSTALL_RETRY_MS = 10 * 60_000;
@@ -4011,12 +4005,16 @@ const actOnNode = async (
 							`${RUNNERCTL} install-release ${release.version} ${release.url} ${release.sha256} x64`,
 							{ timeoutMs: 20 * 60_000, label: "x86_64 runner installation" },
 						);
+						state.x64InstallError.delete(nodeId);
 						pushEvent(nodeId, `x86_64 runner ${release.version} installed`);
 					},
 					async (error) => {
+						const message =
+							error instanceof Error ? error.message : String(error);
+						state.x64InstallError.set(nodeId, message);
 						pushEvent(
 							nodeId,
-							`x86_64 runner ${version} not installed: ${error instanceof Error ? error.message : String(error)}`,
+							`x86_64 runner ${version} not installed: ${message}`,
 						);
 					},
 				);
@@ -4152,9 +4150,38 @@ const actOnNode = async (
 						minRuntime: X64_RUNTIME,
 						vmRosetta: Boolean(node.applied?.rosetta),
 						hostRosetta: probe.host?.rosetta ?? null,
+						hostArch: probe.host?.arch ?? null,
 						status: runtime.x64,
+						installError: state.x64InstallError.get(nodeId) ?? null,
 					})
 				: null;
+		// Rosetta came to the Mac after the setting (its setup script ran
+		// again): the VM restarts with it once no job runs, as when it is set.
+		if (
+			node.platform === "macos" &&
+			node.x64Runners > 0 &&
+			node.enabled &&
+			phase === "ready" &&
+			!node.drain &&
+			!node.applied?.rosetta &&
+			probe.host?.rosetta === true &&
+			runtime
+		) {
+			// It reads the machine as the last tick saved it: Rosetta shows there
+			// one tick after the probe sees it, and the drain then starts.
+			const operation = await applyRunnerNodeConfig(nodeId, "wait", null).catch(
+				(error) => {
+					lastError = `VM restart with Rosetta not planned: ${error instanceof Error ? error.message : String(error)}`;
+					return null;
+				},
+			);
+			if (operation) {
+				recordEvent(
+					events,
+					"Rosetta is on the Mac now: the VM restarts with it once no job runs",
+				);
+			}
+		}
 		if (node.x64Runners > 0 && runtime) {
 			const told = state.x64Waiting.get(nodeId);
 			if (x64Blocked && told !== x64Blocked) {
@@ -5232,14 +5259,32 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
  * keep the pool (its credentials may be gone): it is returned for the operator.
  */
 export const clearPoolRouting = async (pool: GithubRunnerPool) => {
-	const variable = pool.routing?.variable ?? pool.routingVariable;
-	if (!variable) return null;
-	try {
-		await (await poolClient(pool)).deleteVariable(variable);
-		return null;
-	} catch (error) {
-		return `The Actions variable ${variable} could not be deleted (${error instanceof Error ? error.message : String(error)}): delete it on GitHub, or the workflows keep reading it.`;
-	}
+	const main = pool.routing?.variable ?? pool.routingVariable;
+	// The variable of the jobs that need x86_64 goes too (see routeX64).
+	const x64 =
+		pool.x64Routing?.variable ??
+		(pool.routingVariable ? x64RoutingVariable(pool.routingVariable) : null);
+	const variables = [main, x64].filter((variable): variable is string =>
+		Boolean(variable),
+	);
+	if (!variables.length) return null;
+	const failed = (variable: string, error: unknown) =>
+		`The Actions variable ${variable} could not be deleted (${error instanceof Error ? error.message : String(error)}): delete it on GitHub, or the workflows keep reading it.`;
+	const failures = await poolClient(pool).then(
+		(client) =>
+			Promise.all(
+				variables.map((variable) =>
+					client.deleteVariable(variable).then(
+						() => null,
+						(error: unknown) => failed(variable, error),
+					),
+				),
+			),
+		// Without credentials, nothing could be deleted.
+		(error: unknown) => variables.map((variable) => failed(variable, error)),
+	);
+	const messages = failures.filter(Boolean);
+	return messages.length ? messages.join(" ") : null;
 };
 
 const LIVE_SLOT = new Set(["active", "activating", "reloading"]);

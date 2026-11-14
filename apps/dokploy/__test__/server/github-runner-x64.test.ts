@@ -1,4 +1,5 @@
 import {
+	clearPoolRouting,
 	needsVmRestart,
 	x64Labels,
 } from "@dokploy/server/utils/github-runners/controller";
@@ -29,7 +30,7 @@ import {
 	x64RunnerLabels,
 	x64Slots,
 } from "@dokploy/server/utils/github-runners/x64";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const NOW = Date.parse("2026-11-14T08:00:00Z");
 const prefix = runnerNamePrefix("m4");
@@ -161,6 +162,18 @@ describe("x64Blocker", () => {
 		expect(
 			x64Blocker({ ...ready, status: { rosetta: true, release: null } }),
 		).toMatch(/installing the x86_64 runner/);
+		// An installation that failed says so, with why.
+		expect(
+			x64Blocker({
+				...ready,
+				status: { rosetta: true, release: null },
+				installError: "apt-get update kept failing",
+			}),
+		).toBe(
+			"the x86_64 runner could not be installed (apt-get update kept failing); Dokploy tries again every 10 minutes",
+		);
+		// An Intel Mac runs x86_64 natively: nothing to wait for.
+		expect(x64Blocker({ ...ready, hostArch: "x86_64" })).toMatch(/Intel Mac/);
 	});
 
 	it("installs the x86_64 runner of the native release once Rosetta runs", () => {
@@ -434,6 +447,59 @@ describe("runtime v13", () => {
 		// The runner's own installer only knows the native packages.
 		expect(install).toContain(
 			'if [ "$arch" = native ] && [ -x "$tmp/runner/bin/installdependencies.sh" ]; then',
+		);
+	});
+});
+
+describe("deleting a pool", () => {
+	const fetched: string[] = [];
+	const routing = (variable: string) => ({
+		variable,
+		target: "pool" as const,
+		value: "[]",
+		since: "2026-11-14T08:00:00.000Z",
+		unavailableSince: null,
+		syncedValue: "[]",
+		syncedAt: "2026-11-14T08:00:00.000Z",
+		attemptedAt: "2026-11-14T08:00:00.000Z",
+		error: null,
+	});
+	beforeAll(() =>
+		vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+			fetched.push(`${init?.method ?? "GET"} ${url}`);
+			return url.endsWith("_X64")
+				? new Response(JSON.stringify({ message: "Forbidden" }), {
+						status: 403,
+					})
+				: new Response(null, { status: 204 });
+		}),
+	);
+	afterAll(() => vi.unstubAllGlobals());
+
+	it("deletes the variable of the x86_64 jobs too, and says when it cannot", async () => {
+		const warning = await clearPoolRouting({
+			githubRunnerPoolId: "pool-x64-delete",
+			name: "Lab",
+			scope: "organization",
+			owner: "Flots-app",
+			repository: null,
+			runnerGroup: "Default",
+			apiUrl: "https://api.github.com",
+			authType: "token",
+			token: "t",
+			labels: ["ci"],
+			fallbackLabels: ["ubuntu-24.04"],
+			x64FallbackLabels: ["ubuntu-24.04"],
+			routingVariable: "DOKPLOY_RUNS_ON",
+			routing: routing("DOKPLOY_RUNS_ON"),
+			x64Routing: routing("DOKPLOY_RUNS_ON_X64"),
+		} as never);
+		expect([...fetched].sort()).toEqual([
+			"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON",
+			"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_X64",
+		]);
+		expect(warning).toMatch(
+			/^The Actions variable DOKPLOY_RUNS_ON_X64 could not be deleted .*delete it on GitHub/,
 		);
 	});
 });

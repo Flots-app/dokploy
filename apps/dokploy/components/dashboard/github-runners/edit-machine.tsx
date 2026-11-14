@@ -178,7 +178,9 @@ const EditMachineForm = ({
 				diskCleanupPercent: budget.diskCleanupPercent,
 				vmDiskGb: Math.max(budget.vmDiskGb, machine.applied?.vmDiskGb ?? 0),
 				extraLabels: parseLabels(budget.extraLabels),
-				...(machine.platform === "macos" ? { x64Runners } : {}),
+				...(machine.platform === "macos" && host?.arch !== "x86_64"
+					? { x64Runners }
+					: {}),
 				updatePolicy,
 				mode,
 			});
@@ -219,7 +221,7 @@ const EditMachineForm = ({
 					once it does.
 				</AlertBlock>
 			)}
-			{machine.platform === "macos" && (
+			{machine.platform === "macos" && host?.arch !== "x86_64" && (
 				<X64RunnersField value={x64Runners} onChange={setX64Runners} />
 			)}
 			<div className="grid gap-3">

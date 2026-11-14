@@ -82,11 +82,18 @@ export const x64Blocker = (input: {
 	minRuntime: number;
 	vmRosetta: boolean;
 	hostRosetta: boolean | null;
+	/** The Mac's architecture: an Intel Mac runs x86_64 natively. */
+	hostArch?: string | null;
 	status: X64Status | null;
+	/** Why the last installation of the x86_64 runner failed, if it did. */
+	installError?: string | null;
 }): string | null => {
 	if (input.x64Runners <= 0) return null;
 	if (input.platform !== "macos") {
 		return "x86_64 runners run on Macs only";
+	}
+	if (input.hostArch === "x86_64") {
+		return "this Mac is an Intel Mac: its native runners are x86_64 already";
 	}
 	if (input.hostRosetta !== true) {
 		return "Rosetta is not installed on the Mac: run the setup script of the machine again, it installs it";
@@ -101,7 +108,11 @@ export const x64Blocker = (input: {
 		return "Rosetta is not available in the VM";
 	}
 	// A release behind the native one still runs jobs while the new one installs.
-	if (!input.status.release) return "installing the x86_64 runner";
+	if (!input.status.release) {
+		return input.installError
+			? `the x86_64 runner could not be installed (${input.installError}); Dokploy tries again every 10 minutes`
+			: "installing the x86_64 runner";
+	}
 	return null;
 };
 

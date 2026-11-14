@@ -713,6 +713,38 @@ describe("x86_64 runners on a Mac", () => {
 		);
 	});
 
+	it("restarts the VM with Rosetta once the Mac has it, after the setting", async () => {
+		const row = {
+			...m4("mac-x4", false),
+			observed: {
+				at: new Date().toISOString(),
+				reachable: true,
+				admission: { ok: true },
+				slots: [],
+				host: {
+					os: "macOS 27.2",
+					arch: "arm64",
+					cpus: 10,
+					memoryBytes: 17179869184,
+					diskFreeBytes: 200 * 1024 ** 3,
+					diskTotalBytes: 460 * 1024 ** 3,
+					rosetta: true,
+				},
+			},
+		};
+		load(row as never);
+		machine("mac-x4", macProbe("rosetta enabled=no release="));
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		expect(
+			updates.map((update) => update.values.drain).find(Boolean),
+		).toMatchObject({ reason: "apply", mode: "wait" });
+		expect(observedOf(updates).events.map((event) => event.message)).toContain(
+			"Rosetta is on the Mac now: the VM restarts with it once no job runs",
+		);
+	});
+
 	it("waits for the VM to restart with Rosetta", async () => {
 		const row = m4("mac-x3", false);
 		load(row);
