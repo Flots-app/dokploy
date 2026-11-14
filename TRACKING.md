@@ -164,7 +164,12 @@
 - [x] Give a Mac its memory and disk back from the runner VM (stop it below
   the disk reserve, restart it after jobs when the Mac is short of memory) in
   [Flots-app/dokploy#62](https://github.com/Flots-app/dokploy/pull/62).
-- [ ] Publish `v0.29.14-flots.19` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.19` from `canary` and deploy it to production.
+- [x] Give the tool cache back to the runner account before each job in
+  [Flots-app/dokploy#60](https://github.com/Flots-app/dokploy/pull/60).
+- [x] Run x86_64 runners on the Macs through Rosetta, with the `_X64` routing
+  variable, in [Flots-app/dokploy#64](https://github.com/Flots-app/dokploy/pull/64).
+- [ ] Publish `v0.29.14-flots.20` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
