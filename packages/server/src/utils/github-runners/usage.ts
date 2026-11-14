@@ -5,7 +5,7 @@
  * Flots reads it the same way, from the same pinned release).
  */
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -216,7 +216,12 @@ export const readBlacksmithUsage = async (input: {
 		if (!bytes.length || bytes.length > MAX_BINARY_BYTES) {
 			throw new Error("Blacksmith CLI download has an invalid size");
 		}
-		if (createHash("sha256").update(bytes).digest("hex") !== asset.sha256) {
+		const digest = createHash("sha256").update(bytes).digest();
+		const expected = Buffer.from(asset.sha256, "hex");
+		if (
+			digest.length !== expected.length ||
+			!timingSafeEqual(digest, expected)
+		) {
 			throw new Error("Blacksmith CLI checksum mismatch");
 		}
 		await writeFile(binary, bytes, { mode: 0o700 });

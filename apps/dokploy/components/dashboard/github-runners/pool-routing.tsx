@@ -252,49 +252,62 @@ const Reroutes = ({ pool }: { pool: RunnerPool }) =>
 		</ul>
 	) : null;
 
-/** Where the jobs of the pool go right now, and the runs moved to the fallback. */
-export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
-	const routing = pool.routing;
-	// Routing turned off: shown only while GitHub still holds the variable.
-	if (!pool.routingVariable && !routing?.error) return null;
+const providerName = (routing: NonNullable<RunnerPool["routing"]>) =>
+	routing.provider ? PROVIDER_NAMES[routing.provider] : "GitHub-hosted";
+
+/** The line saying where the jobs of a pool go, and why. */
+const routingLine = (
+	pool: RunnerPool,
+	routing: NonNullable<RunnerPool["routing"]>,
+	variable: string,
+): { tone: string; text: string } => {
 	const fallback = fallbackRunsOn(pool.fallbackLabels);
-	let line: { tone: string; text: string };
-	if (!pool.routingVariable) {
-		line = { tone: "bg-red-500", text: routing?.error ?? "" };
-	} else if (!routing) {
-		line = {
-			tone: "bg-muted-foreground",
-			text: `Publishing ${pool.routingVariable}…`,
-		};
-	} else if (routing.error) {
-		line = {
+	if (routing.error) {
+		return {
 			tone: "bg-red-500",
-			text: `Cannot update ${pool.routingVariable}: ${routing.error}`,
+			text: `Cannot update ${variable}: ${routing.error}`,
 		};
-	} else if (pool.failover?.mode === "pool") {
-		line = {
+	}
+	if (pool.failover?.mode === "pool") {
+		return {
 			tone: "bg-blue-500",
 			text: "Failover off: jobs stay on these machines whatever happens",
 		};
-	} else if (pool.failover?.mode === "fallback") {
-		line = {
-			tone: "bg-orange-500",
-			text: `Every job goes to ${fallback} (GitHub-hosted), as the pool settings ask`,
-		};
-	} else if (routing.target === "pool") {
-		line = {
+	}
+	if (routing.target === "pool") {
+		return {
 			tone: "bg-emerald-500",
 			text: routing.unavailableSince
 				? `No runner ON since ${time(routing.unavailableSince)}: jobs move to ${fallback} in two minutes unless one comes back`
 				: "Jobs go to these machines",
 		};
-	} else {
-		const aside = setAside(pool);
-		line = {
+	}
+	if (pool.failover?.mode === "fallback") {
+		return {
 			tone: "bg-orange-500",
-			text: `No runner ON since ${time(routing.since)}: jobs go to ${routing.value} (${routing.provider ? PROVIDER_NAMES[routing.provider] : "GitHub-hosted"})${aside.length ? `. Set aside: ${aside.join("; ")}` : ""}`,
+			text: `Every job goes to ${routing.value} (${providerName(routing)}), as the pool settings ask`,
 		};
 	}
+	const aside = setAside(pool);
+	return {
+		tone: "bg-orange-500",
+		text: `No runner ON since ${time(routing.since)}: jobs go to ${routing.value} (${providerName(routing)})${aside.length ? `. Set aside: ${aside.join("; ")}` : ""}`,
+	};
+};
+
+/** Where the jobs of the pool go right now, and the runs moved to the fallback. */
+export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
+	const routing = pool.routing;
+	// Routing turned off: shown only while GitHub still holds the variable.
+	if (!pool.routingVariable && !routing?.error) return null;
+	const line = !pool.routingVariable
+		? { tone: "bg-red-500", text: routing?.error ?? "" }
+		: routing
+			? routingLine(pool, routing, pool.routingVariable)
+			: {
+					tone: "bg-muted-foreground",
+					text: `Publishing ${pool.routingVariable}…`,
+				};
 	return (
 		<div className="grid gap-2 text-xs text-muted-foreground">
 			<span className="flex items-start gap-2 text-sm text-foreground">

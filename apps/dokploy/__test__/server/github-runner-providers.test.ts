@@ -326,7 +326,8 @@ describe("Blacksmith usage", () => {
 
 	const cli = Buffer.from("#!/bin/sh\necho blacksmith\n");
 	const download = (bytes: Buffer) =>
-		(async () => new Response(bytes)) as unknown as typeof fetch;
+		(async () =>
+			new Response(new Uint8Array(bytes))) as unknown as typeof fetch;
 
 	it("runs the checked CLI with the token on stdin, then logs out and removes it", async () => {
 		const calls: { args: string[]; input?: string; home?: string }[] = [];

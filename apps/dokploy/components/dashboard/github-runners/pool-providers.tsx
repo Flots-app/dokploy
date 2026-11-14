@@ -27,7 +27,8 @@ const DEFAULT_LABELS = {
 	github: { labels: "ubuntu-24.04-arm", x64Labels: "ubuntu-24.04" },
 } as const;
 
-const newId = () => Math.random().toString(36).slice(2, 10);
+/** An id that tells providers apart in the chain (and their usage). */
+const newId = () => crypto.randomUUID().slice(0, 8);
 
 /** The providers the jobs go to, in order, while no machine of the pool takes them. */
 export const ProvidersFields = ({
