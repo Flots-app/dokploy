@@ -1,4 +1,5 @@
 import { fallbackRunsOn } from "@dokploy/server/utils/github-runners/routing";
+import { x64Label } from "@dokploy/server/utils/github-runners/x64";
 import { format } from "date-fns";
 import { type UseFormReturn, useWatch } from "react-hook-form";
 import { Badge } from "@/components/ui/badge";
@@ -83,6 +84,24 @@ export const RoutingFields = ({
 							</FormItem>
 						)}
 					/>
+					<FormField
+						control={form.control}
+						name="x64FallbackLabels"
+						render={({ field }) => (
+							<FormItem className="sm:col-span-2">
+								<FormLabel>Fallback runner of the x86_64 jobs</FormLabel>
+								<FormControl>
+									<Input placeholder="ubuntu-24.04" {...field} />
+								</FormControl>
+								<FormDescription>
+									Jobs that need x86_64 read the variable suffixed with _X64:
+									the x86_64 runners of the pool&apos;s Macs (Rosetta), or this
+									GitHub-hosted image.
+								</FormDescription>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
 				</div>
 			)}
 		</div>
@@ -162,7 +181,37 @@ export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
 				<span className={`mt-1.5 size-2 shrink-0 rounded-full ${line.tone}`} />
 				{line.text}
 			</span>
+			<X64RoutingLine pool={pool} />
 			<Reroutes pool={pool} />
 		</div>
+	);
+};
+
+/** Where the jobs that need x86_64 go: shown once a machine runs x86_64 runners. */
+const X64RoutingLine = ({ pool }: { pool: RunnerPool }) => {
+	const routing = pool.x64Routing;
+	if (!pool.routingVariable || !routing) return null;
+	if (!pool.nodes.some((node) => node.x64Runners > 0)) return null;
+	const variable = `${pool.routingVariable}_X64`;
+	const target = `[self-hosted, ${pool.labels.map(x64Label).join(", ")}]`;
+	const line = routing.error
+		? {
+				tone: "bg-red-500",
+				text: `Cannot update ${variable}: ${routing.error}`,
+			}
+		: routing.target === "pool"
+			? {
+					tone: "bg-emerald-500",
+					text: `x86_64 jobs go to the x86_64 runners of these machines (${target})`,
+				}
+			: {
+					tone: "bg-orange-500",
+					text: `No x86_64 runner ON: x86_64 jobs go to ${fallbackRunsOn(pool.x64FallbackLabels)} (GitHub-hosted)`,
+				};
+	return (
+		<span className="flex items-start gap-2 text-sm text-foreground">
+			<span className={`mt-1.5 size-2 shrink-0 rounded-full ${line.tone}`} />
+			{line.text}
+		</span>
 	);
 };

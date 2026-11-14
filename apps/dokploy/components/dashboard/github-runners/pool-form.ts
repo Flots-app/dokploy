@@ -48,6 +48,7 @@ export const poolFormSchema = z
 			)
 			.refine((name) => !/^github_/i.test(name), "Cannot start with GITHUB_"),
 		fallbackLabels: z.string(),
+		x64FallbackLabels: z.string(),
 		placement: z.enum(["fastest", "spread"]),
 		updatePolicy: updatePolicySchema,
 		rolloutPolicy: z.object({
@@ -98,6 +99,7 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 	routingEnabled: pool ? Boolean(pool.routingVariable) : true,
 	routingVariable: pool?.routingVariable ?? "DOKPLOY_RUNS_ON",
 	fallbackLabels: (pool?.fallbackLabels ?? ["ubuntu-24.04"]).join(", "),
+	x64FallbackLabels: (pool?.x64FallbackLabels ?? ["ubuntu-24.04"]).join(", "),
 	placement: pool?.placement ?? "fastest",
 	updatePolicy: pool?.updatePolicy ?? { auto: true, window: null },
 	rolloutPolicy: pool?.rolloutPolicy ?? { maxUnavailable: 1, canary: true },
@@ -148,5 +150,8 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 	autonomyReserve: values.autonomyReserve,
 	fallbackLabels: parseLabels(values.fallbackLabels).length
 		? parseLabels(values.fallbackLabels)
+		: ["ubuntu-24.04"],
+	x64FallbackLabels: parseLabels(values.x64FallbackLabels).length
+		? parseLabels(values.x64FallbackLabels)
 		: ["ubuntu-24.04"],
 });

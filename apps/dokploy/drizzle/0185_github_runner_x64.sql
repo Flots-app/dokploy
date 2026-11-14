@@ -1,0 +1,5 @@
+ALTER TABLE "github_runner_node" DROP CONSTRAINT "github_runner_node_budget";--> statement-breakpoint
+ALTER TABLE "github_runner_node" ADD COLUMN "x64Runners" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "github_runner_pool" ADD COLUMN "x64FallbackLabels" jsonb DEFAULT '["ubuntu-24.04"]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "github_runner_pool" ADD COLUMN "x64Routing" jsonb;--> statement-breakpoint
+ALTER TABLE "github_runner_node" ADD CONSTRAINT "github_runner_node_budget" CHECK ("github_runner_node"."cpuPercent" BETWEEN 10 AND 100 AND "github_runner_node"."memoryPercent" BETWEEN 10 AND 100 AND "github_runner_node"."maxRunners" BETWEEN 0 AND 32 AND "github_runner_node"."x64Runners" BETWEEN 0 AND 4 AND "github_runner_node"."diskReserveGb" >= 0 AND "github_runner_node"."diskCleanupPercent" BETWEEN 50 AND 99);

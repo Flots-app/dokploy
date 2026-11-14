@@ -1,5 +1,6 @@
 import type { GithubRunnerUpdatePolicy } from "@dokploy/server/db/schema";
 import { vmSize } from "@dokploy/server/utils/github-runners/budget";
+import { X64_MAX_RUNNERS } from "@dokploy/server/utils/github-runners/x64";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -37,7 +38,11 @@ const fromMachine = (machine: RunnerMachine): BudgetValues => ({
 });
 
 /** The VM size the budget needs, when it differs from the running VM. */
-const vmRestartFor = (machine: RunnerMachine, budget: BudgetValues) => {
+const vmRestartFor = (
+	machine: RunnerMachine,
+	budget: BudgetValues,
+	x64Runners: number,
+) => {
 	const host = machine.observed?.host;
 	const applied = machine.applied;
 	if (
@@ -52,7 +57,10 @@ const vmRestartFor = (machine: RunnerMachine, budget: BudgetValues) => {
 	const changed =
 		size.cpus !== applied.cpus ||
 		size.memoryBytes !== applied.memoryBytes ||
-		budget.vmDiskGb > (applied.vmDiskGb ?? 0);
+		budget.vmDiskGb > (applied.vmDiskGb ?? 0) ||
+		// x86_64 runners need Rosetta in the VM: only a restart turns it on,
+		// once the Mac has it.
+		(x64Runners > 0 && !applied.rosetta && host.rosetta === true);
 	return changed ? size : null;
 };
 
@@ -73,7 +81,7 @@ const VmRestartChoice = ({
 	return (
 		<div className="grid gap-3 rounded-lg border p-4">
 			<p className="text-sm">
-				The new size needs a VM restart ({size.cpus} CPUs,{" "}
+				The new settings need a VM restart ({size.cpus} CPUs,{" "}
 				{Number(size.memoryGiB)} GiB).
 			</p>
 			{busy && <RunningJobs machine={machine} />}
@@ -96,6 +104,44 @@ const VmRestartChoice = ({
 	);
 };
 
+/** x86_64 runners of a Mac: in its VM, through Rosetta (see x64.ts). */
+const X64RunnersField = ({
+	value,
+	onChange,
+}: {
+	value: number;
+	onChange: (value: number) => void;
+}) => (
+	<div className="grid gap-2">
+		<Label htmlFor="machine-x64-runners">x86_64 runners</Label>
+		<Input
+			id="machine-x64-runners"
+			type="number"
+			min={0}
+			max={X64_MAX_RUNNERS}
+			className="w-32"
+			value={value}
+			onChange={(event) =>
+				onChange(
+					Math.max(
+						0,
+						Math.min(
+							X64_MAX_RUNNERS,
+							Math.trunc(Number(event.target.value) || 0),
+						),
+					),
+				)
+			}
+		/>
+		<p className="text-xs text-muted-foreground">
+			Jobs that need x86_64 (amd64 Docker images, x86_64-only tools) run in the
+			VM through Rosetta, next to the native runners and within the same budget.
+			They carry the pool labels suffixed with -x64, so other jobs never land on
+			them; Node.js and .NET run about two to three times slower there.
+		</p>
+	</div>
+);
+
 /** Mounted only while the dialog is open, so it starts from the saved values. */
 const EditMachineForm = ({
 	machine,
@@ -110,6 +156,7 @@ const EditMachineForm = ({
 		fromMachine(machine),
 	);
 	const [description, setDescription] = useState(machine.description ?? "");
+	const [x64Runners, setX64Runners] = useState(() => machine.x64Runners);
 	const [mode, setMode] = useState<Mode>("wait");
 	// null follows the pool.
 	const [updatePolicy, setUpdatePolicy] =
@@ -117,7 +164,7 @@ const EditMachineForm = ({
 			machine.updates.inherited ? null : machineUpdatePolicy(machine),
 		);
 	const host = machine.observed?.host ?? null;
-	const restart = vmRestartFor(machine, budget);
+	const restart = vmRestartFor(machine, budget, x64Runners);
 
 	const onSave = async () => {
 		try {
@@ -131,6 +178,9 @@ const EditMachineForm = ({
 				diskCleanupPercent: budget.diskCleanupPercent,
 				vmDiskGb: Math.max(budget.vmDiskGb, machine.applied?.vmDiskGb ?? 0),
 				extraLabels: parseLabels(budget.extraLabels),
+				...(machine.platform === "macos" && host?.arch !== "x86_64"
+					? { x64Runners }
+					: {}),
 				updatePolicy,
 				mode,
 			});
@@ -170,6 +220,9 @@ const EditMachineForm = ({
 					The machine has not reported its capacity yet; the percentages apply
 					once it does.
 				</AlertBlock>
+			)}
+			{machine.platform === "macos" && host?.arch !== "x86_64" && (
+				<X64RunnersField value={x64Runners} onChange={setX64Runners} />
 			)}
 			<div className="grid gap-3">
 				<div className="flex items-start justify-between gap-4">

@@ -28,6 +28,8 @@ const machines: Record<
 	string,
 	{ probe: () => Promise<string>; commands: string[] }
 > = {};
+/** Labels of the runners registered on GitHub, in order. */
+const registered: string[][] = [];
 
 vi.mock("@dokploy/server/utils/github-runners/ssh", async (importOriginal) => {
 	const original =
@@ -68,6 +70,19 @@ vi.mock(
 				authorization: async () => "token test",
 				listRunners: async () => [],
 				deleteRunner: async () => undefined,
+				generateJitConfig: async (options: { labels: string[] }) => {
+					registered.push(options.labels);
+					const file = (text: string) => Buffer.from(text).toString("base64");
+					return {
+						runnerId: registered.length,
+						encodedJitConfig: file(
+							JSON.stringify({
+								".runner": file("{}"),
+								".credentials": file("{}"),
+							}),
+						),
+					};
+				},
 			}),
 			resolveRunnerRelease: async () => ({
 				version: "2.330.0",
@@ -107,6 +122,8 @@ const state = (
 			autonomyApplied: Map<string, string>;
 			reconnects: Map<string, unknown>;
 			tasks: Map<string, Promise<void>>;
+			macJobAt: Map<string, number>;
+			pendingEvents: Map<string, { message: string }[]>;
 		};
 	}
 ).__dokployGithubRunners;
@@ -271,6 +288,9 @@ afterEach(async () => {
 	state.leaseRenewals.clear();
 	state.reconnects.clear();
 	state.autonomyApplied.clear();
+	state.macJobAt.clear();
+	state.pendingEvents.clear();
+	registered.length = 0;
 	for (const name of Object.keys(machines)) delete machines[name];
 	vi.mocked(db.query.githubRunnerNodes.findMany).mockReset();
 	vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([]);
@@ -439,6 +459,306 @@ describe("job guard", () => {
 		// The same pool on the new runtime: the hash now covers the guard.
 		expect(environmentHash(ci as never, JOB_GUARD_RUNTIME)).not.toBe(
 			environmentHash(ci as never, JOB_GUARD_RUNTIME - 1),
+		);
+	});
+});
+
+describe("a Mac short of disk or memory", () => {
+	const GiB_KIB = 1024 * 1024;
+	/** What the Mac mini of the incident reports: 32 GiB, 228 GiB disk. */
+	const macProbe =
+		(options: {
+			freeGiB: number;
+			memoryFree?: number;
+			vm?: string;
+			guest?: string;
+		}) =>
+		async () => {
+			const vm = options.vm ?? "Running";
+			return [
+				"mac cpus=12 memory_bytes=34359738368 arch=arm64 version=27.0.1 load=1.00",
+				`macmem free_percent=${options.memoryFree ?? 60}`,
+				`macdisk total_kib=${228 * GiB_KIB} free_kib=${Math.round(options.freeGiB * GiB_KIB)}`,
+				"lima version=2.2.1 managed=yes",
+				`vm status=${vm} cpus=9 memory_bytes=17179869184 disk_bytes=26843545600 type=vz`,
+				...(vm === "Running"
+					? (options.guest ?? status("autonomyset state=off"))
+							.split("\n")
+							.map((line) => `guest: ${line}`)
+					: []),
+			].join("\n");
+		};
+	const mac = (id: string) =>
+		node(id, pool("pool-1"), {
+			platform: "macos",
+			username: "dokploy-manager",
+			diskReserveGb: 15,
+			maxRunners: 1,
+		});
+	const load = (row: ReturnType<typeof mac>) => {
+		vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([
+			row,
+		] as never);
+		vi.mocked(db.query.githubRunnerNodes.findFirst).mockResolvedValue(
+			row as never,
+		);
+	};
+	const count = (commands: string[], what: RegExp) =>
+		commands.filter((command) => what.test(command)).length;
+	const observed = (updates: Update[]) =>
+		updates.find((update) => update.values.observed)?.values.observed as {
+			admission: { ok: boolean; reason?: string };
+			events: { message: string }[];
+		};
+	const settle = () => Promise.allSettled([...state.tasks.values()]);
+
+	it("stops the VM once no job runs, below the disk reserve", async () => {
+		const row = mac("mac-a");
+		load(row);
+		const a = machine("mac-a", macProbe({ freeGiB: 12 }));
+		const updates = recordUpdates();
+		await tick();
+		await settle();
+		expect(count(a.commands, /limactl stop/)).toBe(1);
+		expect(count(a.commands, /limactl start/)).toBe(0);
+		const seen = observed(updates);
+		expect(seen.admission).toEqual({
+			ok: false,
+			reason: "12 GiB free, below the 15 GiB reserve",
+		});
+		expect(seen.events.map((event) => event.message)).toContain(
+			"Stopping VM dokploy-runners: the Mac has 12 GiB free, below its 15 GiB reserve",
+		);
+		expect(state.pendingEvents.get("mac-a")?.[0]?.message).toBe(
+			"VM dokploy-runners stopped to give the Mac its memory back: the Mac has 12 GiB free, below its 15 GiB reserve. It starts again once the Mac has 20 GiB free",
+		);
+	});
+
+	it("waits for a running slot before it stops the VM", async () => {
+		const row = mac("mac-b");
+		load(row);
+		const since = Math.floor(Date.now() / 1000);
+		const b = machine(
+			"mac-b",
+			macProbe({
+				freeGiB: 12,
+				guest: `${status("autonomyset state=off")}\nslot id=1 active=active since=${since} name=dkp-mac-b-1-abc000`,
+			}),
+		);
+		recordUpdates();
+		await tick();
+		await settle();
+		expect(count(b.commands, /limactl stop/)).toBe(0);
+	});
+
+	it("starts the stopped VM again only once the Mac has room", async () => {
+		const row = mac("mac-c");
+		load(row);
+		let freeGiB = 18.8;
+		const c = machine("mac-c", () => macProbe({ freeGiB, vm: "Stopped" })());
+		const updates = recordUpdates();
+		await tick();
+		await settle();
+		expect(count(c.commands, /limactl start/)).toBe(0);
+		expect(observed(updates).admission).toEqual({
+			ok: false,
+			reason: "the Mac has 18.8 GiB free; its VM starts again above 20 GiB",
+		});
+		freeGiB = 25;
+		await tick();
+		await vi.waitFor(
+			() => {
+				if (!count(c.commands, /limactl start/)) throw new Error("not started");
+			},
+			{ timeout: 5_000, interval: 20 },
+		);
+		await settle();
+	});
+
+	it("restarts a VM that ran jobs once it idled on a Mac short of memory", async () => {
+		const row = mac("mac-d");
+		load(row);
+		state.macJobAt.set("mac-d", Date.now() - 11 * 60_000);
+		const d = machine("mac-d", macProbe({ freeGiB: 30, memoryFree: 38 }));
+		const updates = recordUpdates();
+		await tick();
+		await settle();
+		expect(observed(updates).admission).toEqual({
+			ok: false,
+			reason:
+				"the VM restarts to give the Mac its memory back (the Mac has 38% of its memory free)",
+		});
+		const order = d.commands.flatMap((command) =>
+			/limactl stop/.test(command)
+				? ["stop"]
+				: /limactl start/.test(command)
+					? ["start"]
+					: [],
+		);
+		expect(order).toEqual(["stop", "start"]);
+		expect(state.macJobAt.has("mac-d")).toBe(false);
+	});
+
+	it("leaves the VM of a Mac with memory and disk to spare", async () => {
+		const row = mac("mac-e");
+		load(row);
+		state.macJobAt.set("mac-e", Date.now() - 11 * 60_000);
+		const e = machine("mac-e", macProbe({ freeGiB: 30, memoryFree: 70 }));
+		recordUpdates();
+		await tick();
+		await settle();
+		expect(count(e.commands, /limactl (stop|start)/)).toBe(0);
+	});
+});
+
+describe("x86_64 runners on a Mac", () => {
+	const GiB_KIB = 1024 * 1024;
+	const macProbe = (rosettaLine: string) => async () =>
+		[
+			"mac cpus=10 memory_bytes=17179869184 arch=arm64 version=27.2 load=1.00",
+			"macmem free_percent=70",
+			`macdisk total_kib=${460 * GiB_KIB} free_kib=${200 * GiB_KIB}`,
+			"macsetup admin=no sleep=0 filevault=off daemon=yes rosetta=yes",
+			"lima version=2.2.1 managed=yes",
+			"vm status=Running cpus=7 memory_bytes=10200547328 disk_bytes=64424509440 type=vz",
+			...`${status("autonomyset state=off").replace("arch=x86_64", "arch=aarch64")}\n${rosettaLine}`
+				.split("\n")
+				.map((line) => `guest: ${line}`),
+		].join("\n");
+	const m4 = (id: string, rosetta: boolean) =>
+		node(id, pool("pool-1"), {
+			platform: "macos",
+			username: "dokploy-manager",
+			maxRunners: 1,
+			x64Runners: 1,
+			applied: {
+				runtimeVersion: RUNTIME_VERSION,
+				runnerVersion: "2.330.0",
+				cpuPercent: 80,
+				memoryPercent: 80,
+				vmDiskGb: 60,
+				cpus: 7,
+				memoryBytes: 10200547328,
+				envHash: "",
+				bootScript: 3,
+				rosetta,
+			},
+		});
+	const load = (row: ReturnType<typeof m4>) => {
+		vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([
+			row,
+		] as never);
+		vi.mocked(db.query.githubRunnerNodes.findFirst).mockResolvedValue(
+			row as never,
+		);
+	};
+	const observedOf = (updates: Update[]) =>
+		updates.find((update) => update.values.observed)?.values.observed as {
+			x64?: { runners: number; release: string | null; blocked: string | null };
+			events: { message: string }[];
+		};
+
+	it("arms the x86_64 slot with its labels and Docker platform", async () => {
+		const row = m4("mac-x1", true);
+		load(row);
+		const mac = machine(
+			"mac-x1",
+			macProbe("rosetta enabled=yes release=2.330.0"),
+		);
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		const arms = mac.commands.filter((command) =>
+			/runnerctl arm \d+ \d+/.test(command),
+		);
+		expect(
+			arms.map((command) => command.match(/runnerctl arm .*$/m)?.[0]),
+		).toEqual([
+			expect.stringMatching(/^runnerctl arm 1 \d+$/),
+			expect.stringMatching(/^runnerctl arm 32 \d+ x64$/),
+		]);
+		expect(registered.slice(0, 2)).toEqual([
+			["self-hosted", "Linux", "ARM64", "ci", "dokploy-mac-x1"],
+			["self-hosted", "Linux", "X64", "ci-x64", "dokploy-mac-x1-x64"],
+		]);
+		// The reserve the machine arms itself with holds native runners only.
+		expect(registered.filter((labels) => labels.includes("X64"))).toHaveLength(
+			1,
+		);
+		expect(observedOf(updates).x64).toEqual({
+			runners: 1,
+			release: "2.330.0",
+			blocked: null,
+		});
+	});
+
+	it("installs the x86_64 runner of the native release, then arms it", async () => {
+		const row = m4("mac-x2", true);
+		load(row);
+		const mac = machine("mac-x2", macProbe("rosetta enabled=yes release="));
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		expect(
+			mac.commands.filter((command) => command.includes("install-release")),
+		).toEqual([
+			expect.stringMatching(
+				/runnerctl install-release 2\.330\.0 https:\/\/example\.invalid\/actions-runner\.tar\.gz 0{64} x64$/,
+			),
+		]);
+		// No x86_64 slot before its runner is there.
+		expect(registered.some((labels) => labels.includes("X64"))).toBe(false);
+		expect(observedOf(updates).x64?.blocked).toBe(
+			"installing the x86_64 runner",
+		);
+	});
+
+	it("restarts the VM with Rosetta once the Mac has it, after the setting", async () => {
+		const row = {
+			...m4("mac-x4", false),
+			observed: {
+				at: new Date().toISOString(),
+				reachable: true,
+				admission: { ok: true },
+				slots: [],
+				host: {
+					os: "macOS 27.2",
+					arch: "arm64",
+					cpus: 10,
+					memoryBytes: 17179869184,
+					diskFreeBytes: 200 * 1024 ** 3,
+					diskTotalBytes: 460 * 1024 ** 3,
+					rosetta: true,
+				},
+			},
+		};
+		load(row as never);
+		machine("mac-x4", macProbe("rosetta enabled=no release="));
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		expect(
+			updates.map((update) => update.values.drain).find(Boolean),
+		).toMatchObject({ reason: "apply", mode: "wait" });
+		expect(observedOf(updates).events.map((event) => event.message)).toContain(
+			"Rosetta is on the Mac now: the VM restarts with it once no job runs",
+		);
+	});
+
+	it("waits for the VM to restart with Rosetta", async () => {
+		const row = m4("mac-x3", false);
+		load(row);
+		const mac = machine("mac-x3", macProbe("rosetta enabled=no release="));
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		expect(mac.commands.some((command) => / x64$/.test(command))).toBe(false);
+		const seen = observedOf(updates);
+		expect(seen.x64?.blocked).toBe(
+			"the VM restarts with Rosetta once no job runs",
+		);
+		expect(seen.events.map((event) => event.message)).toContain(
+			"x86_64 runners wait: the VM restarts with Rosetta once no job runs",
 		);
 	});
 });

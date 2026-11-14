@@ -14,6 +14,7 @@ import {
 	BOOT_DAEMON,
 	MACHINE_NAME,
 	MANAGER_ACCOUNT,
+	ROSETTA_LINUX,
 	SETUP_CODE_PREFIX,
 } from "./setup-constants";
 import { fingerprintOf } from "./ssh";
@@ -78,7 +79,8 @@ const header = (
 # Run it once on the machine as an administrator:  sudo bash <this file>
 # It creates the account Dokploy logs in with (${MANAGER_ACCOUNT}), lets it
 # log in over SSH with the key below only, and prints a code to paste in
-# Dokploy. Running it again is safe: it only puts things back as they should be.
+# Dokploy. On a Mac it also installs Rosetta, for x86_64 runners. Running it
+# again is safe: it only puts things back as they should be.
 # Once the machine is removed from Dokploy, undo it all with:
 #   sudo bash <this file> --uninstall
 set -euo pipefail
@@ -212,6 +214,12 @@ chown root:wheel "$daemon"
 chmod 644 "$daemon"
 launchctl bootout system/${BOOT_DAEMON} >/dev/null 2>&1 || true
 launchctl bootstrap system "$daemon"
+if [ "$(uname -m)" = arm64 ] && [ ! -e ${ROSETTA_LINUX} ]; then
+	# Apple's own component; installing it accepts its license.
+	step "Rosetta, so the runner VM can run x86_64 runners"
+	softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1 ||
+		warn "Rosetta could not be installed: the VM runs no x86_64 runner until it is (softwareupdate --install-rosetta)"
+fi
 ${macFirewallInstall}
 keep_awake=false
 if [ "$KEEP_AWAKE" = 1 ]; then

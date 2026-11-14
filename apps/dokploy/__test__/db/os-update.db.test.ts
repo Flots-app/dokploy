@@ -141,7 +141,7 @@ beforeAll(async () => {
 
 afterAll(removeCreatedRows);
 
-describe("migrations 0182 to 0185", () => {
+describe("migrations 0182 to 0186", () => {
 	it("create the OS update tables and their unique indexes", async () => {
 		const tables = await db.execute<{ table_name: string }>(sql`
 			select table_name from information_schema.tables

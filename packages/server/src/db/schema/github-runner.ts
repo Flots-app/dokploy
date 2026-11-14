@@ -132,6 +132,8 @@ export interface GithubRunnerAppliedConfig {
 	vmCreatedByDokploy?: boolean;
 	/** macOS: version of the boot script written (MAC_BOOT_SCRIPT_VERSION); 1 when absent. */
 	bootScript?: number;
+	/** macOS: the VM shares Rosetta, for the x86_64 runners (see x64.ts). */
+	rosetta?: boolean;
 }
 
 export type GithubRunnerSlotState =
@@ -152,6 +154,8 @@ export interface GithubRunnerJob {
 
 export interface GithubRunnerSlotObservation {
 	slot: number;
+	/** "x64" for a slot of the x86_64 runners (see x64.ts). */
+	arch?: "x64";
 	state: GithubRunnerSlotState;
 	runnerName: string | null;
 	runnerId: number | null;
@@ -170,6 +174,8 @@ export interface GithubRunnerNodeObservation {
 		memoryBytes: number;
 		diskFreeBytes: number;
 		diskTotalBytes: number;
+		/** macOS: Rosetta is installed, for x86_64 runners (null when unknown). */
+		rosetta?: boolean | null;
 	};
 	sandbox?: {
 		kind: "vm" | "slice";
@@ -182,6 +188,8 @@ export interface GithubRunnerNodeObservation {
 	};
 	runtime?: { version: number; runnerVersion: string | null };
 	admission: { ok: boolean; reason?: string };
+	/** The x86_64 runners, when the machine has some: why they wait, if they do. */
+	x64?: { runners: number; release: string | null; blocked: string | null };
 	slots: GithubRunnerSlotObservation[];
 	/** Instant usage, computed from the counters of two consecutive probes. */
 	usage?: {
@@ -523,6 +531,15 @@ export const githubRunnerPools = pgTable(
 			.notNull()
 			.default(["ubuntu-24.04"]),
 		routing: jsonb("routing").$type<GithubRunnerRouting | null>(),
+		/**
+		 * Fallback of the jobs that need x86_64, published in the routing
+		 * variable suffixed with _X64 (see x64.ts).
+		 */
+		x64FallbackLabels: jsonb("x64FallbackLabels")
+			.$type<string[]>()
+			.notNull()
+			.default(["ubuntu-24.04"]),
+		x64Routing: jsonb("x64Routing").$type<GithubRunnerRouting | null>(),
 		placement: githubRunnerPlacement("placement").notNull().default("fastest"),
 		/** Runner and runtime updates; each machine may override it. */
 		updatePolicy: jsonb("updatePolicy")
@@ -612,6 +629,8 @@ export const githubRunnerNodes = pgTable(
 		diskCleanupPercent: integer("diskCleanupPercent").notNull().default(90),
 		/** Concurrent jobs; 0 sizes it from the budget (2 CPUs and 3 GiB per job). */
 		maxRunners: integer("maxRunners").notNull().default(0),
+		/** Mac: x86_64 runners, through Rosetta, next to the native ones (see x64.ts). */
+		x64Runners: integer("x64Runners").notNull().default(0),
 		extraLabels: jsonb("extraLabels").$type<string[]>().notNull().default([]),
 		enabled: boolean("enabled").notNull().default(true),
 		phase: githubRunnerNodePhase("phase").notNull().default("new"),
@@ -641,7 +660,7 @@ export const githubRunnerNodes = pgTable(
 		),
 		check(
 			"github_runner_node_budget",
-			sql`${table.cpuPercent} BETWEEN 10 AND 100 AND ${table.memoryPercent} BETWEEN 10 AND 100 AND ${table.maxRunners} BETWEEN 0 AND 32 AND ${table.diskReserveGb} >= 0 AND ${table.diskCleanupPercent} BETWEEN 50 AND 99`,
+			sql`${table.cpuPercent} BETWEEN 10 AND 100 AND ${table.memoryPercent} BETWEEN 10 AND 100 AND ${table.maxRunners} BETWEEN 0 AND 32 AND ${table.x64Runners} BETWEEN 0 AND 4 AND ${table.diskReserveGb} >= 0 AND ${table.diskCleanupPercent} BETWEEN 50 AND 99`,
 		),
 	],
 );
@@ -1012,6 +1031,7 @@ const poolFields = z.object({
 		.nullable()
 		.default(null),
 	fallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
+	x64FallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
 	placement: z.enum(["fastest", "spread"]).default("fastest"),
 	updatePolicy: updatePolicySchema.default({ auto: true, window: null }),
 	rolloutPolicy: z
@@ -1197,6 +1217,8 @@ export const apiUpdateGithubRunnerNode = z.object({
 	githubRunnerNodeId: z.string().min(1),
 	description: z.string().trim().max(500).nullable(),
 	...budgetFields,
+	/** Mac only: x86_64 runners through Rosetta. Left out keeps the current setting. */
+	x64Runners: z.number().int().min(0).max(4).optional(),
 	/** null follows the pool; left out keeps the current setting. */
 	updatePolicy: updatePolicySchema.nullable().optional(),
 	/** How running jobs are handled when the change needs a VM restart. */

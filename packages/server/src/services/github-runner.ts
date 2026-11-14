@@ -754,7 +754,24 @@ export const updateGithubRunnerNode = async (
 	input: z.infer<typeof apiUpdateGithubRunnerNode>,
 	organizationId: string,
 ) => {
-	await findGithubRunnerNode(input.githubRunnerNodeId, organizationId);
+	const current = await findGithubRunnerNode(
+		input.githubRunnerNodeId,
+		organizationId,
+	);
+	if (input.x64Runners && current.platform !== "macos") {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message:
+				"x86_64 runners run on Macs, through Rosetta: a Linux machine runs its own architecture",
+		});
+	}
+	if (input.x64Runners && current.observed?.host?.arch === "x86_64") {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message:
+				"This Mac is an Intel Mac: its native runners are x86_64 already",
+		});
+	}
 	const { githubRunnerNodeId, mode: _mode, ...values } = input;
 	const [node] = await db
 		.update(githubRunnerNodes)

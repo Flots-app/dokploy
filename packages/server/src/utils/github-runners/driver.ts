@@ -31,6 +31,8 @@ export interface NodeProbe {
 		diskTotalBytes: number;
 		load: number | null;
 		memoryFreePercent: number | null;
+		/** macOS: Rosetta is installed, for x86_64 runners (null when unknown). */
+		rosetta?: boolean | null;
 	} | null;
 	/** macOS only: the Lima VM. */
 	vm: MacStatus["vm"] | null;
@@ -92,6 +94,7 @@ export const createNodeDriver = (
 								diskTotalBytes: status.disk?.totalBytes ?? 0,
 								load: status.host.load,
 								memoryFreePercent: status.memoryFreePercent,
+								rosetta: status.setup?.rosetta ?? null,
 							}
 						: null,
 					vm: status.vm,

@@ -529,6 +529,7 @@ describe("OS updates", () => {
 			routingVariable: null,
 			routing: null,
 			fallbackLabels: ["ubuntu-24.04"],
+			x64FallbackLabels: ["ubuntu-24.04"],
 			rollouts: {
 				runner: rollout({ failedAt: iso(0), error: "download failed" }),
 			},
@@ -728,6 +729,7 @@ describe("review fixes, warnings", () => {
 			routingVariable: null,
 			routing: null,
 			fallbackLabels: ["ubuntu-24.04"],
+			x64FallbackLabels: ["ubuntu-24.04"],
 			rollouts: {},
 			...overrides,
 		}) as unknown as GithubRunnerPool;

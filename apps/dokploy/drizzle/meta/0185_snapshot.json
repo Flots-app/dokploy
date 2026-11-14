@@ -1,5 +1,5 @@
 {
-  "id": "d9408841-c383-44ca-aaf4-286ab7d1e1f1",
+  "id": "190523bd-5ffe-415a-8473-815745c52e08",
   "prevId": "93181a93-1fff-4ba6-8c74-b873748deb85",
   "version": "7",
   "dialect": "postgresql",
@@ -4752,6 +4752,13 @@
           "notNull": true,
           "default": 0
         },
+        "x64Runners": {
+          "name": "x64Runners",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "extraLabels": {
           "name": "extraLabels",
           "type": "jsonb",
@@ -4912,7 +4919,7 @@
       "checkConstraints": {
         "github_runner_node_budget": {
           "name": "github_runner_node_budget",
-          "value": "\"github_runner_node\".\"cpuPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"memoryPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"maxRunners\" BETWEEN 0 AND 32 AND \"github_runner_node\".\"diskReserveGb\" >= 0 AND \"github_runner_node\".\"diskCleanupPercent\" BETWEEN 50 AND 99"
+          "value": "\"github_runner_node\".\"cpuPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"memoryPercent\" BETWEEN 10 AND 100 AND \"github_runner_node\".\"maxRunners\" BETWEEN 0 AND 32 AND \"github_runner_node\".\"x64Runners\" BETWEEN 0 AND 4 AND \"github_runner_node\".\"diskReserveGb\" >= 0 AND \"github_runner_node\".\"diskCleanupPercent\" BETWEEN 50 AND 99"
         }
       },
       "isRLSEnabled": false
@@ -5231,6 +5238,19 @@
         },
         "routing": {
           "name": "routing",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "x64FallbackLabels": {
+          "name": "x64FallbackLabels",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[\"ubuntu-24.04\"]'::jsonb"
+        },
+        "x64Routing": {
+          "name": "x64Routing",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -7881,13 +7901,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'install'"
-        },
         "status": {
           "name": "status",
           "type": "osUpdateRunStatus",
@@ -8180,23 +8193,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"os_update_run\".\"trigger\" = 'manual' AND \"os_update_run\".\"kind\" = 'install' AND \"os_update_run\".\"status\" IN ('pending', 'running')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "os_update_run_handoff_active_unique": {
-          "name": "os_update_run_handoff_active_unique",
-          "columns": [
-            {
-              "expression": "githubRunnerNodeId",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"os_update_run\".\"kind\" = 'handoff' AND \"os_update_run\".\"status\" IN ('pending', 'running')",
+          "where": "\"os_update_run\".\"trigger\" = 'manual' AND \"os_update_run\".\"status\" IN ('pending', 'running')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -8263,10 +8260,6 @@
         "os_update_run_one_machine": {
           "name": "os_update_run_one_machine",
           "value": "num_nonnulls(\"os_update_run\".\"serverId\", \"os_update_run\".\"githubRunnerNodeId\") = 1"
-        },
-        "os_update_run_kind": {
-          "name": "os_update_run_kind",
-          "value": "\"os_update_run\".\"kind\" IN ('install', 'handoff')"
         }
       },
       "isRLSEnabled": false

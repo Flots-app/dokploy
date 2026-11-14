@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -2550,6 +2551,7 @@ describe("routing with a GitHub-hosted fallback", () => {
 	const base = {
 		labels: ["flots-app"],
 		fallbackLabels: ["ubuntu-24.04"],
+		x64FallbackLabels: ["ubuntu-24.04"],
 		anyEnabled: true,
 	};
 
@@ -4139,6 +4141,91 @@ done`);
 		},
 	);
 
+	it.skipIf(!linuxShell)(
+		"gives the tool cache back to the runner without following links",
+		() => {
+			const dir = realpathSync(mkdtempSync(join(tmpdir(), "dokploy-tools-")));
+			try {
+				const root = join(dir, "root");
+				const cache = join(root, "tool-cache");
+				const victim = join(dir, "victim");
+				for (const path of [join(cache, "node/24.19.0/arm64/bin"), victim]) {
+					mkdirSync(path, { recursive: true });
+				}
+				writeFileSync(join(cache, "node/24.19.0/arm64/bin/node"), "");
+				writeFileSync(join(cache, "node/24.19.0/arm64.complete"), "");
+				writeFileSync(join(victim, "secret"), "");
+				// A link to a directory, a link to a file, and a second name of a
+				// file outside the cache: none of them may change owner.
+				symlinkSync(victim, join(cache, "node/link"));
+				symlinkSync(join(victim, "secret"), join(cache, "node/file-link"));
+				linkSync(join(victim, "secret"), join(cache, "node/hardlink"));
+				// chown needs root: this one records what it was asked to change.
+				mkdirSync(join(dir, "bin"));
+				writeFileSync(
+					join(dir, "bin/chown"),
+					`#!/bin/bash\n[ "$1" = -h ] && [ "$3" = -- ] || exit 9\nowner=$2\nshift 3\nfor name in "$@"; do printf '%s %s/%s\\n' "$owner" "$PWD" "\${name#./}"; done >>${shellQuote(join(dir, "chowned"))}\n`,
+				);
+				chmodSync(join(dir, "bin/chown"), 0o755);
+				const repair = (user: string) =>
+					bash(`set -euo pipefail
+export PATH=${shellQuote(join(dir, "bin"))}:/usr/bin:/bin
+ROOT=${shellQuote(root)}
+RUNNER_USER=${user}
+${shellFunction(runnerctlScript(), "tool_cache_repair")}
+tool_cache_repair
+echo done`);
+				const chowned = () =>
+					existsSync(join(dir, "chowned"))
+						? readFileSync(join(dir, "chowned"), "utf8")
+								.trim()
+								.split("\n")
+								.sort()
+						: [];
+
+				// Everything belongs to the test user: nothing to give back.
+				const me = execFileSync("id", ["-un"]).toString().trim();
+				const group = execFileSync("id", ["-gn"]).toString().trim();
+				if (me === group) {
+					const idle = repair(me);
+					expect(idle.stdout).toBe("done\n");
+					expect(chowned()).toEqual([]);
+				}
+
+				// Written by another account (root, in a container job).
+				const other = me === "root" ? "daemon" : "root";
+				const result = repair(other);
+				expect(result.stderr).toBe("");
+				expect(result.stdout).toBe("done\n");
+				// Each name is given from the directory holding it (-execdir).
+				expect(chowned()).toEqual(
+					[
+						"",
+						"/node",
+						"/node/24.19.0",
+						"/node/24.19.0/arm64",
+						"/node/24.19.0/arm64.complete",
+						"/node/24.19.0/arm64/bin",
+						"/node/24.19.0/arm64/bin/node",
+					]
+						.map((path) => `${other}:${other} ${cache}${path}`)
+						.sort(),
+				);
+				expect(chowned().join("\n")).not.toContain(victim);
+				expect(chowned().join("\n")).not.toContain("link");
+
+				// A tool cache replaced by a link is left alone.
+				rmSync(join(dir, "chowned"));
+				rmSync(cache, { recursive: true });
+				symlinkSync(victim, cache);
+				expect(repair(other).stdout).toBe("done\n");
+				expect(chowned()).toEqual([]);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	);
+
 	it("never reports a runner stopped when systemctl failed", () => {
 		const runnerctl = runnerctlScript();
 		const prelude = [
@@ -4586,6 +4673,7 @@ done`);
 				token: "t",
 				labels: ["ci"],
 				fallbackLabels: ["ubuntu-24.04"],
+				x64FallbackLabels: ["ubuntu-24.04"],
 				routingVariable: null,
 				routing: {
 					variable: "DOKPLOY_RUNS_ON",
@@ -4652,6 +4740,63 @@ done`);
 			expect(renamed.calls[0]?.values.routing).toMatchObject({
 				variable: "DOKPLOY_RUNS_ON",
 				error: expect.stringContaining("DOKPLOY_RUNS_ON could not be deleted"),
+			});
+		});
+
+		it("publishes the x86_64 variable, on its fallback while no Mac runs x86_64 runners", async () => {
+			answer = 204;
+			fetched.length = 0;
+			const published = recordUpdates([]);
+			try {
+				await routePool(
+					pool({ routingVariable: "DOKPLOY_RUNS_ON", x64Routing: null }),
+				);
+			} finally {
+				published.restore();
+			}
+			expect(fetched).toContain(
+				"PATCH https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_X64",
+			);
+			expect(
+				published.calls.find((call) => call.values.x64Routing)?.values
+					.x64Routing,
+			).toMatchObject({
+				variable: "DOKPLOY_RUNS_ON_X64",
+				target: "fallback",
+				value: '"ubuntu-24.04"',
+				error: null,
+			});
+		});
+
+		it("deletes the x86_64 variable with the routing", async () => {
+			answer = 204;
+			fetched.length = 0;
+			const deleted = recordUpdates([]);
+			try {
+				await routePool(
+					pool({
+						routing: null,
+						x64Routing: {
+							variable: "DOKPLOY_RUNS_ON_X64",
+							target: "fallback",
+							value: '"ubuntu-24.04"',
+							since: "2026-11-14T08:00:00.000Z",
+							unavailableSince: "2026-11-14T08:00:00.000Z",
+							syncedValue: '"ubuntu-24.04"',
+							syncedAt: "2026-11-14T08:00:00.000Z",
+							attemptedAt: "2026-11-14T08:00:00.000Z",
+							error: null,
+						},
+					}),
+				);
+			} finally {
+				deleted.restore();
+			}
+			expect(fetched).toContain(
+				"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_X64",
+			);
+			expect(deleted.calls.map((call) => call.values)).toContainEqual({
+				x64Routing: null,
 			});
 		});
 

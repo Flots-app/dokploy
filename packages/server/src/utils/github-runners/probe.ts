@@ -4,6 +4,7 @@ import type {
 	GithubRunnerCleanupKind,
 	GithubRunnerJob,
 } from "@dokploy/server/db/schema";
+import type { X64Status } from "./x64";
 
 /** A probe line: `<kind> key=value key=value`, values never contain spaces. */
 export interface ProbeRecord {
@@ -76,6 +77,8 @@ export interface RuntimeStatus {
 	} | null;
 	disk: { totalBytes: number; freeBytes: number } | null;
 	release: string | null;
+	/** The x86_64 runners (runtime v13 and later); null from an older runtime. */
+	x64: X64Status | null;
 	cpu: { busy: number; total: number } | null;
 	slice: {
 		usageUsec: number | null;
@@ -165,6 +168,12 @@ export const parseRuntimeStatus = (records: ProbeRecord[]): RuntimeStatus => {
 				? { totalBytes: totalKib * 1024, freeBytes: freeKib * 1024 }
 				: null,
 		release: find(records, "release").current || null,
+		x64: (() => {
+			const x64 = records.find((record) => record.kind === "rosetta")?.fields;
+			return x64
+				? { rosetta: x64.enabled === "yes", release: x64.release || null }
+				: null;
+		})(),
 		cpu: busy !== null && total !== null ? { busy, total } : null,
 		slice: {
 			usageUsec: int(slice.usage_usec),
@@ -241,6 +250,8 @@ export interface MacStatus {
 		sleepMinutes: number | null;
 		fileVault: boolean;
 		bootDaemon: boolean;
+		/** Rosetta is installed, so the VM can run x86_64 runners (see x64.ts). */
+		rosetta: boolean | null;
 	} | null;
 	vm: {
 		status: string;
@@ -298,6 +309,8 @@ export const parseMacStatus = (output: string): MacStatus => {
 						sleepMinutes: int(facts.sleep),
 						fileVault: facts.filevault === "on",
 						bootDaemon: facts.daemon === "yes",
+						rosetta:
+							facts.rosetta === undefined ? null : facts.rosetta === "yes",
 					}
 				: null;
 		})(),
