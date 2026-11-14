@@ -9,7 +9,7 @@ import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 import { X64_DOCKER_PLATFORM } from "./x64";
 
-export const RUNTIME_VERSION = 15;
+export const RUNTIME_VERSION = 16;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -27,7 +27,9 @@ export const RUNTIME_VERSION = 15;
  * the VM's Rosetta share and registers it itself, which Lima leaves out of a
  * plain VM: optional, needed by the x86_64 runners. v15 fixes the installation
  * of the amd64 libraries (a line continuation passed "\\" to apt-get):
- * optional, needed by the x86_64 runners.
+ * optional, needed by the x86_64 runners. v16 keeps the build cache out of the
+ * waste (it removed every record no image holds, so the next build started
+ * cold) and removes caches by finer ages, the most recent last: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 /**
@@ -572,14 +574,21 @@ cmd_install_release() {
 # ---------------------------------------------------------------- disk cleanup
 # Like the kubelet image garbage collector: caches grow freely, and when the disk
 # runs low the least recently used ones are removed until the target is free.
-#   1. waste, at no speed cost: stopped containers, dangling images and build
-#      cache, unused anonymous volumes, workspaces of stopped slots;
-#   2. caches unused for 30, 7 and 3 days, then for 25 hours: Docker images,
-#      named volumes and build cache, tool cache versions, caches in the runner
-#      home. A running job has used what it needs within 24 hours (relatime), so
-#      it keeps them;
-#   3. still below the threshold: every cache, only while no job runs. Jobs that
+#   1. waste, at no speed cost: stopped containers, dangling images, unused
+#      anonymous volumes, workspaces of stopped slots. Never build cache: what
+#      "docker builder prune" without --all removes is every record no image
+#      holds, the builder stages and the layers of images a job removed, i.e.
+#      the cache the next build needs;
+#   2. caches unused for 30 days, then for ever shorter ages down to 25 hours,
+#      oldest first: Docker build cache, images and named volumes, tool cache
+#      versions, caches in the runner home. A running job has used what it
+#      needs within 24 hours (relatime), so it keeps them;
+#   3. still below the threshold, only while no job runs: the same for the
+#      caches used within the last 25 hours, the most recent last. Jobs that
 #      start meanwhile wait in their started hook.
+GC_AGES=(720 336 168 120 96 72 48 36 25)
+# 0 stands for every cache, whatever its age.
+GC_IDLE_AGES=(12 6 3 1 0)
 declare -gA GC_FREED=() GC_COUNT=()
 GC_FREE=0
 GC_TARGET=0
@@ -615,9 +624,6 @@ gc_waste() {
 		before=$GC_FREE
 		docker image prune -f >/dev/null 2>&1 || true
 		gc_note images "$before"
-		before=$GC_FREE
-		docker builder prune -f >/dev/null 2>&1 || true
-		gc_note build_cache "$before"
 	fi
 	for dir in "$ROOT"/slots/*/_work; do
 		[ -d "$dir" ] || continue
@@ -753,15 +759,47 @@ gc_remove() {
 	gc_note "$kind" "$before" 1
 }
 
+# Build cache unused for this many hours (0: all of it). --all takes the records
+# images still hold too: without them an image removed afterwards frees nothing,
+# its layers staying in the build cache.
 gc_build_cache() {
 	local before=$GC_FREE
 	gc_docker || return 0
-	if [ "$1" = all ]; then
+	if (($1 == 0)); then
 		docker builder prune -af >/dev/null 2>&1 || true
 	else
 		docker builder prune -af --filter "until=\${1}h" >/dev/null 2>&1 || true
 	fi
 	gc_note build_cache "$before"
+}
+
+# Removes the caches unused for longer than each age in turn, build cache first,
+# then the entries oldest first, until the target is free. Entries are taken from
+# index i of the caller's sorted entries; with "idle", every kind goes, and the
+# entries a former pass up to index "tried" already handled are skipped.
+# Returns 0 once the target is reached.
+gc_by_age() {
+	local pass=$1 tried=$2 hours cutoff
+	shift 2
+	for hours in "$@"; do
+		gc_build_cache "$hours"
+		gc_reached && return 0
+		cutoff=$(($(date +%s) - hours * 3600))
+		while ((i < \${#entries[@]})); do
+			gc_parse "\${entries[i]}"
+			((hours == 0 || last < cutoff)) || break
+			i=$((i + 1))
+			if [ "$kind" = image ] || [ "$atime" = yes ]; then
+				((i > tried)) || continue
+			else
+				# Without access times, file caches and volumes only go when idle.
+				[ "$pass" = idle ] || continue
+			fi
+			gc_remove "$kind" "$entry" "$tags"
+			gc_reached && return 0
+		done
+	done
+	return 1
 }
 
 # A job is running in a slot: its job file has no completion and its unit runs.
@@ -778,7 +816,7 @@ gc_jobs_running() {
 }
 
 cmd_gc() {
-	local mode=\${1:-light} threshold=\${2:-0} target=\${3:-0} start hours cutoff i last kind entry tags line atime=yes idle=not-needed
+	local mode=\${1:-light} threshold=\${2:-0} target=\${3:-0} start i tried last kind entry tags atime=yes idle=not-needed
 	case "$mode" in
 	auto)
 		[[ "$threshold" =~ ^[0-9]+$ && "$target" =~ ^[0-9]+$ ]] || die "invalid thresholds"
@@ -802,36 +840,19 @@ cmd_gc() {
 		local -a entries=()
 		mapfile -d '' -t entries < <(gc_candidates | sort -z -t $'\t' -n -k1,1)
 		i=0
-		for hours in 720 168 72 25; do
-			gc_build_cache "$hours"
-			gc_reached && break
-			cutoff=$(($(date +%s) - hours * 3600))
-			while ((i < \${#entries[@]})); do
-				gc_parse "\${entries[i]}"
-				((last < cutoff)) || break
-				i=$((i + 1))
-				[ "$kind" = image ] || [ "$atime" = yes ] || continue
-				gc_remove "$kind" "$entry" "$tags"
-				gc_reached && break 2
-			done
-		done
-		if ((GC_FREE < threshold)); then
+		if ! gc_by_age busy 0 "\${GC_AGES[@]}" && ((GC_FREE < threshold)); then
 			# The lock comes before the job check: a job starting after the check
 			# finds the lock and waits (see the job started hook).
 			printf '%s %s\n' "$$" "$(date +%s)" >"$GC_LOCK"
 			if gc_jobs_running; then
 				idle=skipped-jobs
-				rm -f "$GC_LOCK"
 			else
 				idle="done"
-				gc_build_cache all
-				for line in "\${entries[@]}"; do
-					gc_reached && break
-					gc_parse "$line"
-					gc_remove "$kind" "$entry" "$tags"
-				done
-				rm -f "$GC_LOCK"
+				tried=$i
+				i=0
+				gc_by_age idle "$tried" "\${GC_IDLE_AGES[@]}" || true
 			fi
+			rm -f "$GC_LOCK"
 		fi
 	fi
 	# Hands the freed blocks back to the hypervisor (sparse VM disks): online

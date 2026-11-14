@@ -76,12 +76,12 @@ Dispatch jobs with
 | Restart the Linux VM | Lima regenerates the guest host key: Dokploy refuses it until it is accepted under "SSH host key", then the machine rejoins |
 | Restart Dokploy while draining | the drain resumes and completes |
 | Remove with uninstall | runners unregistered, runtime, account, units and Docker `cgroup-parent` removed; a VM created by Dokploy is deleted, an adopted one is kept |
-| Free space below "Clean caches below" (fill with `fallocate`) | caches unused for 30, 7, 3 days then 25 hours go first, oldest first, until the target is free; caches used within a day stay as long as free space is above the threshold |
-| Caches written fast (several GiB in a few minutes) | "Disk filling up": the projection over 10 minutes triggers a cleanup of the unused caches before the threshold is reached |
-| Below the threshold while a job runs | only unused caches go ("waiting for jobs"); once the job ends, the next cleanup removes the warm caches too |
+| Free space below "Clean caches below" (fill with `fallocate`) | caches unused for 30 days, then for ever shorter ages down to 25 hours (build cache, images, volumes, tool and home caches), go first, oldest first, until the target is free; caches used within a day stay as long as free space is above the threshold |
+| Caches written fast (several GiB in a few minutes) | "Disk filling up": the projection over 10 minutes triggers a cleanup of the unused caches before the threshold is reached; it frees only what keeps the expected writes above the threshold, and never touches caches used within 25 hours |
+| Below the threshold while a job runs | only unused caches go ("waiting for jobs"); once the job ends, the next cleanup removes the warm caches too, the most recent last |
 | `gc.lock` present when a job starts | the job log shows "Dokploy: waiting for the disk cleanup of this machine to finish" and the job continues once the lock goes |
 | Mac volume below its threshold | the VM caches shrink and the Mac gets the space back (the guest discards freed blocks of its sparse disk) |
-| Monitoring → Disk & caches → Remove waste / Clear all caches | waste only, or every cache no container uses; both listed in the cleanup history |
+| Monitoring → Disk & caches → Remove waste / Clear all caches | waste only (never build cache), or every cache no container uses; both listed in the cleanup history |
 
 ## Troubleshooting
 

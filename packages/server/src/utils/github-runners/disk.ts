@@ -131,8 +131,12 @@ export interface DiskPressure {
 
 /**
  * Whether a disk needs a cleanup: free space below the threshold, or expected
- * below it within the horizon at the current fill rate. The target keeps room
- * for what the jobs are expected to write meanwhile.
+ * below it within the horizon at the current fill rate. Both keep room for what
+ * the jobs are expected to write meanwhile. Below the threshold, the cleanup
+ * goes up to the target; ahead of it, only up to the threshold: a projection
+ * (often a burst of pulls and builds, or the Mac's own writes) is no reason to
+ * remove more caches than it needs, and the disk going low still gets the full
+ * cleanup.
  */
 export const diskPressure = (
 	freeBytes: number,
@@ -142,23 +146,20 @@ export const diskPressure = (
 ): DiskPressure | null => {
 	const expectedBytes =
 		rate !== null && rate > 0 ? Math.round(rate * FILL_HORIZON_MS) : 0;
-	const targetBytes = Math.min(
-		totalBytes,
-		thresholds.targetBytes + expectedBytes,
-	);
-	const base = {
-		targetBytes,
+	const pressure = (trigger: CleanupTrigger, goalBytes: number) => ({
+		trigger,
+		targetBytes: Math.min(totalBytes, goalBytes + expectedBytes),
 		thresholdBytes: thresholds.cleanupBytes,
 		expectedBytes,
-	};
+	});
 	if (freeBytes < thresholds.cleanupBytes) {
-		return { trigger: "low-disk", ...base };
+		return pressure("low-disk", thresholds.targetBytes);
 	}
 	if (
 		expectedBytes > 0 &&
 		freeBytes - expectedBytes < thresholds.cleanupBytes
 	) {
-		return { trigger: "filling", ...base };
+		return pressure("filling", thresholds.cleanupBytes);
 	}
 	return null;
 };
@@ -166,36 +167,42 @@ export const diskPressure = (
 /**
  * Folds the pressure of the Mac volume into the VM disk: whatever the VM frees
  * goes back to the Mac (the guest discards deleted blocks of its sparse disk),
- * so the VM aims for its own goal plus what the Mac is missing.
+ * so the VM aims for its own goal plus what the Mac is missing. The threshold
+ * maps the same way, and lies below the VM's free space while no disk is below
+ * its own: the step that removes the caches in use must not run because the
+ * VM wrote a few bytes since it was measured.
  */
 export const vmCleanupGoal = (
 	vm: { freeBytes: number; totalBytes: number; pressure: DiskPressure | null },
 	mac: { freeBytes: number; pressure: DiskPressure | null },
 ): DiskPressure | null => {
-	if (!vm.pressure && !mac.pressure) return null;
-	const missing = (pressure: DiskPressure | null, free: number) => ({
-		target: pressure ? Math.max(0, pressure.targetBytes - free) : 0,
-		threshold: pressure ? Math.max(0, pressure.thresholdBytes - free) : 0,
-	});
-	const own = missing(vm.pressure, vm.freeBytes);
-	const host = missing(mac.pressure, mac.freeBytes);
-	const trigger =
-		vm.pressure?.trigger === "low-disk" || mac.pressure?.trigger === "low-disk"
-			? "low-disk"
-			: "filling";
+	const disks = [
+		{ pressure: vm.pressure, freeBytes: vm.freeBytes },
+		{ pressure: mac.pressure, freeBytes: mac.freeBytes },
+	].flatMap(({ pressure, freeBytes }) =>
+		pressure ? [{ pressure, freeBytes }] : [],
+	);
+	if (disks.length === 0) return null;
+	/** What the disk furthest from a goal misses (negative when all are past it). */
+	const missing = (goal: (pressure: DiskPressure) => number) =>
+		Math.max(
+			...disks.map(({ pressure, freeBytes }) => goal(pressure) - freeBytes),
+		);
+	const inVm = (bytes: number) =>
+		Math.min(vm.totalBytes, Math.max(0, vm.freeBytes + bytes));
 	return {
-		trigger,
-		targetBytes: Math.min(
-			vm.totalBytes,
-			vm.freeBytes + Math.max(own.target, host.target),
+		trigger: disks.some(({ pressure }) => pressure.trigger === "low-disk")
+			? "low-disk"
+			: "filling",
+		targetBytes: inVm(
+			Math.max(
+				0,
+				missing((pressure) => pressure.targetBytes),
+			),
 		),
-		thresholdBytes: Math.min(
-			vm.totalBytes,
-			vm.freeBytes + Math.max(own.threshold, host.threshold),
-		),
+		thresholdBytes: inVm(missing((pressure) => pressure.thresholdBytes)),
 		expectedBytes: Math.max(
-			vm.pressure?.expectedBytes ?? 0,
-			mac.pressure?.expectedBytes ?? 0,
+			...disks.map(({ pressure }) => pressure.expectedBytes),
 		),
 	};
 };

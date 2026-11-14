@@ -57,6 +57,7 @@ import {
 	type DiskSample,
 	diskPressure,
 	diskThresholds,
+	FILL_HORIZON_MS,
 	fillRate,
 	freeAtUsage,
 	vmCleanupGoal,
@@ -1815,9 +1816,17 @@ describe("disk cleanup", () => {
 			expectedBytes: 0,
 		});
 		// 2 GiB a minute: 20 GiB within the horizon would cross the threshold.
+		// Ahead of it, only what the jobs are expected to write is freed (5 GiB
+		// here), not the headroom of a disk already low.
 		const rate = (2 * GiB) / minutes(1);
 		expect(diskPressure(45 * GiB, 200 * GiB, thresholds, rate)).toEqual({
 			trigger: "filling",
+			targetBytes: 50 * GiB,
+			thresholdBytes: 30 * GiB,
+			expectedBytes: 20 * GiB,
+		});
+		expect(diskPressure(25 * GiB, 200 * GiB, thresholds, rate)).toEqual({
+			trigger: "low-disk",
 			targetBytes: 60 * GiB,
 			thresholdBytes: 30 * GiB,
 			expectedBytes: 20 * GiB,
@@ -1874,6 +1883,61 @@ describe("disk cleanup", () => {
 				{ freeBytes: 200 * GiB, pressure: null },
 			),
 		).toBeNull();
+	});
+
+	it("never removes the caches in use ahead of the threshold", () => {
+		// m4 on 2026-11-14: 32.9 GB free on the Mac, cleaned below 24.5 GB, 8.7 GB
+		// expected within the horizon. The VM had 28.9 GB free.
+		const GB = 1e9;
+		const macThresholds = diskThresholds(245.1 * GB, {
+			diskReserveGb: 15,
+			diskCleanupPercent: 90,
+		});
+		const rate = (8.7 * GB) / FILL_HORIZON_MS;
+		const mac = diskPressure(32.9 * GB, 245.1 * GB, macThresholds, rate);
+		expect(mac?.trigger).toBe("filling");
+		const goal = vmCleanupGoal(
+			{ freeBytes: 28.9 * GB, totalBytes: 61.3 * GB, pressure: null },
+			{ freeBytes: 32.9 * GB, pressure: mac },
+		);
+		// The VM frees what keeps the expected writes above the Mac threshold
+		// (0.3 GB), not 12.6 GB as before.
+		expect(goal?.trigger).toBe("filling");
+		expect((goal?.targetBytes ?? 0) / GB).toBeCloseTo(29.2, 1);
+		// The step removing the caches in use starts once the Mac really goes
+		// below its threshold, 8.4 GB of writes away; it used to start at the
+		// VM's free space, i.e. at the first byte written during the cleanup.
+		expect((goal?.thresholdBytes ?? 0) / GB).toBeCloseTo(20.5, 1);
+
+		// Only the VM filling: its own threshold, in the VM.
+		const vmThresholds = vmDiskThresholds(60 * GiB, 85);
+		const vm = diskPressure(
+			12 * GiB,
+			60 * GiB,
+			vmThresholds,
+			(5 * GiB) / FILL_HORIZON_MS,
+		);
+		expect(
+			vmCleanupGoal(
+				{ freeBytes: 12 * GiB, totalBytes: 60 * GiB, pressure: vm },
+				{ freeBytes: 200 * GiB, pressure: null },
+			),
+		).toEqual({
+			trigger: "filling",
+			targetBytes: 14 * GiB,
+			thresholdBytes: 9 * GiB,
+			expectedBytes: 5 * GiB,
+		});
+		// The Mac low and the VM filling: the Mac's missing space wins.
+		expect(
+			vmCleanupGoal(
+				{ freeBytes: 12 * GiB, totalBytes: 60 * GiB, pressure: vm },
+				{
+					freeBytes: 20 * GiB,
+					pressure: mac && { ...mac, trigger: "low-disk" },
+				},
+			)?.thresholdBytes,
+		).toBe(12 * GiB + ((mac?.thresholdBytes ?? 0) - 20 * GiB));
 	});
 
 	it("retries soon after a cleanup, and at once when jobs it waited for end", () => {
@@ -4138,6 +4202,122 @@ done`);
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}
+		},
+	);
+
+	it.skipIf(!linuxShell)(
+		"removes build cache by age like the other caches, the most recent last",
+		() => {
+			// Everything lives in a directory of the script: the outcome is all
+			// in its output. Docker is a stub: build cache records "<hours unused>
+			// <KiB>", images "<id> <KiB> <seconds unused>"; each removal adds its
+			// size to the free space.
+			const runnerctl = runnerctlScript()
+				.replace("ROOT=/opt/dokploy-runners", 'ROOT="$T/root"')
+				.replace("STATE=/var/lib/dokploy-runners", 'STATE="$T/state"');
+			const functions = runnerctl.slice(
+				0,
+				runnerctl.indexOf('\ncase "${1:-}" in'),
+			);
+			const result = bash(`T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/root/tool-cache" "$T/state/home/.cache"
+${functions}
+LOG="$T/docker.log" FREE="$T/free" CACHE="$T/cache" IMAGES="$T/images"
+JOBS=no ATIME=relatime
+kib_free() { cat "$FREE"; }
+gc_docker() { return 0; }
+gc_jobs_running() { [ "$JOBS" = yes ]; }
+findmnt() { echo "rw,$ATIME"; }
+sync() { :; }
+timeout() { :; }
+docker() {
+	local age=-1 freed=0 a s id
+	echo "$*" >>"$LOG"
+	case "$1 $2" in
+	"builder prune")
+		if [[ "$*" =~ until=([0-9]+)h ]]; then age=\${BASH_REMATCH[1]}; fi
+		while read -r a s; do
+			if ((age < 0 || a > age)); then freed=$((freed + s)); else echo "$a $s"; fi
+		done <"$CACHE" >"$CACHE.new"
+		mv "$CACHE.new" "$CACHE"
+		;;
+	"image rm")
+		while read -r id s a; do
+			if [ "$id" = "$3" ]; then freed=$s; else echo "$id $s $a"; fi
+		done <"$IMAGES" >"$IMAGES.new"
+		mv "$IMAGES.new" "$IMAGES"
+		((freed > 0)) || return 1
+		;;
+	esac
+	echo $(($(cat "$FREE") + freed)) >"$FREE"
+}
+gc_candidates() {
+	local now id s age
+	now=$(date +%s)
+	while read -r id s age; do printf '%s\\timage\\t\\t%s\\0' $((now - age)) "$id"; done <"$IMAGES"
+	printf '%s\\thome\\t\\t%s\\0' $((now - 100 * 3600)) "$GC_HOME/.cache/pip"
+}
+run() { # <name> <jobs running> <mount option> <cmd_gc arguments>
+	local name=$1
+	JOBS=$2 ATIME=$3
+	shift 3
+	echo 10000 >"$FREE"
+	: >"$LOG"
+	printf '%s\\n' "800 100" "200 100" "100 100" "40 100" "20 100" "8 100" "2 100" "0 100" >"$CACHE"
+	printf 'sha256:%064d 1000 %d\\n' 1 $((800 * 3600)) 2 $((100 * 3600)) 3 $((30 * 3600)) 4 $((10 * 3600)) 5 1800 >"$IMAGES"
+	mkdir -p "$GC_HOME/.cache/pip"
+	(cmd_gc "$@") >"$T/out"
+	echo "$name: $(grep -o 'reached=.*' "$T/out")"
+	echo "  build cache pruned: $(sed -n 's/^builder prune -af//p' "$LOG" | sed 's/^ --filter until=//; s/^$/all/' | tr '\\n' ' ')"
+	echo "  build cache left: $(cut -d' ' -f1 "$CACHE" | tr '\\n' ' ')"
+	echo "  images removed: $(sed -n 's/^image rm sha256:0*//p' "$LOG" | tr '\\n' ' ')"
+	echo "  home cache: $([ -d "$GC_HOME/.cache/pip" ] && echo kept || echo removed), lock: $([ -e "$GC_LOCK" ] && echo left || echo gone), waste: $(grep -v '^builder\\|^image rm' "$LOG" | cut -d' ' -f1-2 | tr '\\n' ',')"
+}
+run light no relatime light
+run filling yes noatime auto 5000 12400
+run busy yes relatime auto 20000 22000
+run idle no noatime auto 20000 22000
+run idle-enough no noatime auto 13500 13650`);
+			expect(result.stderr).toBe("");
+			const waste =
+				"waste: container prune,network prune,volume prune,image prune,";
+			expect(result.stdout.split("\n")).toEqual([
+				// Waste only: no build cache, whatever its age.
+				"light: reached=yes idle=not-needed",
+				"  build cache pruned: ",
+				"  build cache left: 800 200 100 40 20 8 2 0 ",
+				"  images removed: ",
+				`  home cache: kept, lock: gone, ${waste}`,
+				// Ahead of the threshold: oldest first until the target, and the
+				// caches used within 25 hours stay. Without access times, file
+				// caches wait for the idle step.
+				"filling: reached=yes idle=not-needed",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h ",
+				"  build cache left: 20 8 2 0 ",
+				"  images removed: 1 2 ",
+				`  home cache: kept, lock: gone, ${waste}`,
+				// Below the threshold while a job runs: still nothing under 25 hours.
+				"busy: reached=no idle=skipped-jobs",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h 25h ",
+				"  build cache left: 20 8 2 0 ",
+				"  images removed: 1 2 3 ",
+				`  home cache: removed, lock: gone, ${waste}`,
+				// Idle and still below: the recent caches too, the most recent last,
+				// every image tried once.
+				"idle: reached=no idle=done",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h 25h 12h 6h 3h 1h all ",
+				"  build cache left: ",
+				"  images removed: 1 2 3 4 5 ",
+				`  home cache: removed, lock: gone, ${waste}`,
+				// The newest caches stay when the older ones were enough.
+				"idle-enough: reached=yes idle=done",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h 25h 12h 6h ",
+				"  build cache left: 2 0 ",
+				"  images removed: 1 2 3 4 ",
+				`  home cache: removed, lock: gone, ${waste}`,
+				"",
+			]);
 		},
 	);
 
