@@ -1562,6 +1562,32 @@ apt_update && echo updated`,
 		);
 	});
 
+	it("keeps the apt sources of a VM with x86_64 runners to arm64 across reboots", () => {
+		const { install, runnerctl } = files();
+		// m4, 2026-11-14: Lima gives the VM a new cloud-init instance at every boot,
+		// cloud-init writes ubuntu.sources again, and with amd64 known to dpkg every
+		// apt-get update failed with 404 on ports.ubuntu.com.
+		const restore =
+			"if dpkg --print-foreign-architectures | grep -qx amd64; then keep_sources_native; fi\n\tapt_update";
+		expect(install).toContain(restore);
+		expect(install.indexOf(restore)).toBeLessThan(
+			install.indexOf("\tapt_update\n\tapt-get"),
+		);
+		expect(install).toMatch(/^keep_sources_native\(\) \{$/m);
+		expect(install).toContain("preserve_sources_list: true");
+		expect(install).toContain(
+			">/etc/cloud/cloud.cfg.d/90-dokploy-runners-apt.cfg",
+		);
+		expect(runnerctl).toMatch(/^keep_sources_native\(\) \{$/m);
+		const prepare = runnerctl.slice(runnerctl.indexOf("x64_prepare() {"));
+		expect(prepare.indexOf("\tkeep_sources_native\n")).toBeLessThan(
+			prepare.indexOf("dpkg --add-architecture amd64"),
+		);
+		expect(runnerctl).toContain(
+			'rm -f "$X64_SOURCES" /etc/cloud/cloud.cfg.d/90-dokploy-runners-apt.cfg',
+		);
+	});
+
 	it("gives runners time to stop, starts each one clean, and keeps the budget", () => {
 		const { install, runnerctl } = files();
 		// As GitHub's own unit: 5 minutes to cancel and report the job.

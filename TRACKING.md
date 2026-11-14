@@ -185,7 +185,10 @@
 - [x] Keep a runner VM short of memory from interrupting every job it runs, and
   re-run a job that failed while the kernel killed processes for memory
   (runtime v17), in [Flots-app/dokploy#73](https://github.com/Flots-app/dokploy/pull/73).
-- [ ] Publish `v0.29.14-flots.24` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.24` from `canary` and deploy it to production.
+- [x] Keep the apt sources of a Mac VM with x86_64 runners to arm64 across
+  reboots, so the runtime v17 installs on m4.
+- [ ] Publish `v0.29.14-flots.25` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
