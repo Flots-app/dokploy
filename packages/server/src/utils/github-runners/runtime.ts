@@ -7,8 +7,9 @@
 import type { GithubRunnerJobGuard } from "../../db/schema/github-runner";
 import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
+import { X64_DOCKER_PLATFORM } from "./x64";
 
-export const RUNTIME_VERSION = 12;
+export const RUNTIME_VERSION = 13;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -21,9 +22,12 @@ export const RUNTIME_VERSION = 12;
  * driver: optional. v11 refuses the jobs the pool's job guard does not accept
  * (forks, Dependabot, other repositories or events): optional. v12 gives the
  * tool cache back to the runner account before each job, after container jobs
- * wrote it as root: optional.
+ * wrote it as root: optional. v13 runs x86_64 runners through Rosetta on a Mac
+ * (see x64.ts): optional, needed by the machines that have some.
  */
 export const MIN_RUNTIME_VERSION = 6;
+/** The first runtime with x86_64 runners (`runnerctl arm <slot> <kib> x64`). */
+export const X64_RUNTIME = 13;
 /** The first runtime with `runnerctl guard` and the check in job-started.sh. */
 export const JOB_GUARD_RUNTIME = 11;
 const JOB_GUARD_FILE = "/etc/dokploy-runners/job-guard";
@@ -77,6 +81,66 @@ unit_of() { echo "dokploy-runner@$1.service"; }
 
 kib_free() { df -Pk "$ROOT" | awk 'NR==2 {print $4}'; }
 
+# x86_64 runners (see x64.ts): Rosetta, shared by the Mac, runs their programs.
+X64_SOURCES=/etc/apt/sources.list.d/dokploy-amd64.sources
+rosetta_ready() { [ "$(head -n 1 /proc/sys/fs/binfmt_misc/rosetta 2>/dev/null)" = enabled ]; }
+
+releases_of() {
+	case "\${1:-}" in
+	native) echo "$ROOT/releases" ;;
+	x64) echo "$ROOT/releases-x64" ;;
+	*) die "invalid architecture: \${1:-}" ;;
+	esac
+}
+
+# The amd64 C library and what .NET loads (ICU, OpenSSL, GSSAPI, zlib), next to
+# the arm64 system. The arm64 mirror (ports.ubuntu.com) has no amd64 packages:
+# its sources keep to arm64, and amd64 comes from the main archive.
+x64_prepare() {
+	local native codename file icu ssl attempt
+	rosetta_ready || die "Rosetta is not available in this VM: x86_64 runners need it"
+	native=$(dpkg --print-architecture)
+	[ "$native" = arm64 ] || die "x86_64 runners run in an arm64 VM, not $native"
+	codename=$(. /etc/os-release && echo "\${VERSION_CODENAME:-}")
+	[[ "$codename" =~ ^[a-z]+$ ]] || die "unknown Ubuntu release"
+	for file in /etc/apt/sources.list.d/*.sources; do
+		[ -f "$file" ] && [ "$file" != "$X64_SOURCES" ] || continue
+		grep -q '^Architectures:' "$file" || sed -i "/^Types:/a Architectures: $native" "$file"
+	done
+	if [ -f /etc/apt/sources.list ]; then
+		sed -i -E "s|^(deb(-src)?) (https?://)|\\1 [arch=$native] \\3|" /etc/apt/sources.list
+	fi
+	cat >"$X64_SOURCES.new" <<SOURCES
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu
+Suites: $codename $codename-updates
+Components: main universe
+Architectures: amd64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu
+Suites: $codename-security
+Components: main universe
+Architectures: amd64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+SOURCES
+	mv -f "$X64_SOURCES.new" "$X64_SOURCES"
+	dpkg --print-foreign-architectures | grep -qx amd64 || dpkg --add-architecture amd64
+	for attempt in $(seq 1 30); do
+		apt-get -o DPkg::Lock::Timeout=300 update -qq >/dev/null && break
+		[ "$attempt" != 30 ] || die "apt-get update kept failing"
+		sleep 10
+	done
+	icu=$(apt-cache search --names-only '^libicu[0-9]+$' | awk '{print $1}' | sort -V | tail -n 1)
+	[ -n "$icu" ] || die "no ICU package for amd64"
+	ssl=libssl3t64
+	apt-cache show "$ssl:amd64" >/dev/null 2>&1 || ssl=libssl3
+	DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends \\
+		libc6:amd64 libstdc++6:amd64 zlib1g:amd64 libgssapi-krb5-2:amd64 "$ssl:amd64" "$icu:amd64" >/dev/null ||
+		die "the amd64 libraries of the x86_64 runners could not be installed"
+}
+
 cmd_status() {
 	# The controller probes every few seconds: the machine knows it is watched.
 	touch "$STATE/controller-seen" 2>/dev/null || true
@@ -86,6 +150,11 @@ cmd_status() {
 	local release=""
 	if [ -L "$ROOT/releases/current" ]; then release=$(basename "$(readlink -f "$ROOT/releases/current")"); fi
 	echo "release current=$release"
+	local x64_release="" rosetta=no
+	if [ -L "$ROOT/releases-x64/current" ]; then x64_release=$(basename "$(readlink -f "$ROOT/releases-x64/current")"); fi
+	if rosetta_ready; then rosetta=yes; fi
+	# Record kinds are letters only (parseRecords): the x86_64 runners report as "rosetta".
+	echo "rosetta enabled=$rosetta release=$x64_release"
 	awk '/^cpu / {busy=$2+$3+$4+$7+$8+$9; print "cpu busy=" busy " total=" busy+$5+$6}' /proc/stat
 	# A dash in a unit name nests it: the slice lives in dokploy.slice.
 	local cg="" group
@@ -295,10 +364,13 @@ tool_cache_repair() {
 }
 
 cmd_arm() {
-	local slot min_free_kib unit state free release dir
+	local slot min_free_kib arch releases unit state free release dir
 	slot=$(slot_arg "\${1:-}")
 	min_free_kib=\${2:-0}
 	[[ "$min_free_kib" =~ ^[0-9]+$ ]] || die "invalid disk reserve"
+	arch=\${3:-native}
+	releases=$(releases_of "$arch")
+	if [ "$arch" = x64 ]; then rosetta_ready || die "Rosetta is not available in this VM"; fi
 	unit=$(unit_of "$slot")
 	state=$(systemctl show -p ActiveState --value "$unit" 2>/dev/null || echo inactive)
 	case "$state" in
@@ -309,8 +381,8 @@ cmd_arm() {
 		echo "admission refused free_kib=$free"
 		exit 3
 	fi
-	[ -L "$ROOT/releases/current" ] || die "no runner release installed"
-	release=$(readlink -f "$ROOT/releases/current")
+	[ -L "$releases/current" ] || die "no $arch runner release installed"
+	release=$(readlink -f "$releases/current")
 	[ -x "$release/run.sh" ] || die "runner release $release is incomplete"
 	dir="$ROOT/slots/$slot"
 	# Each slot runs its own copy, refreshed only when the release changes.
@@ -332,6 +404,12 @@ cmd_arm() {
 	read_jit "$dir"
 	[ -s "$dir/.runner" ] && [ -s "$dir/.credentials" ] || die "incomplete JIT configuration"
 	tool_cache_repair
+	# The slot's own environment: an x86_64 slot builds and runs linux/amd64.
+	if [ "$arch" = x64 ]; then
+		printf 'DOCKER_DEFAULT_PLATFORM=${X64_DOCKER_PLATFORM}\n' >"$ETC/slot-$slot.env" || die "slot $slot: could not write its environment"
+	else
+		rm -f "$ETC/slot-$slot.env"
+	fi
 	systemctl reset-failed "$unit" >/dev/null 2>&1 || true
 	systemctl start --no-block "$unit" || die "slot $slot did not start"
 	echo "armed slot=$slot"
@@ -398,19 +476,23 @@ cmd_guard() {
 }
 
 cmd_install_release() {
-	local version=\${1:-} url=\${2:-} sha=\${3:-} target tmp
+	local version=\${1:-} url=\${2:-} sha=\${3:-} arch=\${4:-native} releases target tmp
 	[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid version"
 	[[ "$url" =~ ^https://[A-Za-z0-9./_-]+$ ]] || die "invalid URL"
 	[[ "$sha" =~ ^[a-f0-9]{64}$ ]] || die "invalid SHA-256"
-	target="$ROOT/releases/$version"
+	releases=$(releases_of "$arch")
+	if [ "$arch" = x64 ]; then x64_prepare; fi
+	install -d -m 0755 "$releases"
+	target="$releases/$version"
 	if [ ! -x "$target/run.sh" ]; then
-		tmp=$(mktemp -d "$ROOT/releases/.download.XXXXXX")
+		tmp=$(mktemp -d "$releases/.download.XXXXXX")
 		trap 'rm -rf "$tmp"' EXIT
 		curl -fsSL --retry 3 --connect-timeout 20 -o "$tmp/runner.tar.gz" "$url"
 		echo "$sha  $tmp/runner.tar.gz" | sha256sum -c --quiet - || die "checksum mismatch for actions/runner $version"
 		mkdir "$tmp/runner"
 		tar -xzf "$tmp/runner.tar.gz" -C "$tmp/runner"
-		if [ -x "$tmp/runner/bin/installdependencies.sh" ]; then
+		# Its installer only knows the native packages: x64_prepare did the amd64 ones.
+		if [ "$arch" = native ] && [ -x "$tmp/runner/bin/installdependencies.sh" ]; then
 			# apt may be busy (apt-daily after a boot): try again before giving up.
 			for attempt in 1 2 3; do
 				"$tmp/runner/bin/installdependencies.sh" >"$tmp/dependencies.log" 2>&1 && break
@@ -430,16 +512,16 @@ cmd_install_release() {
 		rm -rf "$tmp"
 		trap - EXIT
 	fi
-	ln -sfn "$target" "$ROOT/releases/current.new"
-	mv -T "$ROOT/releases/current.new" "$ROOT/releases/current"
+	ln -sfn "$target" "$releases/current.new"
+	mv -T "$releases/current.new" "$releases/current"
 	# Keep the current release and the previous one.
-	find "$ROOT/releases" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -printf '%T@ %p\n' |
+	find "$releases" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -printf '%T@ %p\n' |
 		sort -rn | tail -n +3 | cut -d' ' -f2- | while read -r old; do
 			# Not "!= && rm": a false test would end the loop, and the
 			# pipeline, with status 1 under pipefail.
 			[ "$old" = "$target" ] || rm -rf "$old"
 		done
-	echo "release installed=$version"
+	echo "release installed=$version arch=$arch"
 }
 
 # ---------------------------------------------------------------- disk cleanup
@@ -735,6 +817,12 @@ cmd_uninstall() {
 		systemctl restart docker || true
 	fi
 	systemctl daemon-reload
+	if [ -f "$X64_SOURCES" ]; then
+		# The amd64 libraries of the x86_64 runners go with the runtime.
+		dpkg-query -W -f='\${binary:Package}\n' | grep ':amd64$' | xargs -r apt-get -o DPkg::Lock::Timeout=300 purge -y -qq >/dev/null 2>&1 || true
+		dpkg --remove-architecture amd64 >/dev/null 2>&1 || true
+		rm -f "$X64_SOURCES"
+	fi
 	userdel "$RUNNER_USER" >/dev/null 2>&1 || true
 	rm -rf "$ROOT" "$STATE" "$ETC"
 	echo "uninstalled"
@@ -744,13 +832,13 @@ case "\${1:-}" in
 status) cmd_status ;;
 caches) cmd_caches ;;
 bench) cmd_bench ;;
-arm) cmd_arm "\${2:-}" "\${3:-0}" ;;
+arm) cmd_arm "\${2:-}" "\${3:-0}" "\${4:-native}" ;;
 stop) cmd_stop "\${2:-}" ;;
 stop-all) cmd_stop_all ;;
 limits) cmd_limits "\${2:-}" "\${3:-}" "\${4:-}" ;;
 env) cmd_env ;;
 guard) cmd_guard ;;
-install-release) cmd_install_release "\${2:-}" "\${3:-}" "\${4:-}" ;;
+install-release) cmd_install_release "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-native}" ;;
 gc) cmd_gc "\${2:-}" "\${3:-}" "\${4:-}" ;;
 spare-add) cmd_spare_add "\${2:-}" ;;
 spare-drop) cmd_spare_drop "\${2:-}" "\${3:-}" ;;
@@ -921,6 +1009,8 @@ Group=dokploy-runner
 Slice=dokploy-runners.slice
 WorkingDirectory=/opt/dokploy-runners/slots/%i
 EnvironmentFile=-/etc/dokploy-runners/runner.env
+# The slot's own, after the pool's: DOCKER_DEFAULT_PLATFORM in an x86_64 slot.
+EnvironmentFile=-/etc/dokploy-runners/slot-%i.env
 Environment=HOME=/var/lib/dokploy-runners/home
 Environment=DOKPLOY_RUNNER_SLOT=%i
 # run.sh forwards SIGTERM to the listener as SIGINT: the job is cancelled and

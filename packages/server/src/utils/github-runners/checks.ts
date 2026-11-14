@@ -293,6 +293,23 @@ const macSetupChecks = (setup: MacStatus["setup"]): NodeCheck[] => {
 					"After a reboot the VM only starts once Dokploy reaches the Mac: the setup script installs a boot daemon that does it right away",
 				),
 	);
+	if (setup.rosetta !== null) {
+		checks.push(
+			setup.rosetta
+				? check(
+						"rosetta",
+						"x86_64 runners",
+						"pass",
+						"Rosetta is installed: the VM can run x86_64 runners",
+					)
+				: check(
+						"rosetta",
+						"x86_64 runners",
+						"warn",
+						"Rosetta is not installed: the VM runs native runners only until the setup script runs again (it installs Rosetta)",
+					),
+		);
+	}
 	return checks;
 };
 

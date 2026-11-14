@@ -28,6 +28,8 @@ const machines: Record<
 	string,
 	{ probe: () => Promise<string>; commands: string[] }
 > = {};
+/** Labels of the runners registered on GitHub, in order. */
+const registered: string[][] = [];
 
 vi.mock("@dokploy/server/utils/github-runners/ssh", async (importOriginal) => {
 	const original =
@@ -68,6 +70,19 @@ vi.mock(
 				authorization: async () => "token test",
 				listRunners: async () => [],
 				deleteRunner: async () => undefined,
+				generateJitConfig: async (options: { labels: string[] }) => {
+					registered.push(options.labels);
+					const file = (text: string) => Buffer.from(text).toString("base64");
+					return {
+						runnerId: registered.length,
+						encodedJitConfig: file(
+							JSON.stringify({
+								".runner": file("{}"),
+								".credentials": file("{}"),
+							}),
+						),
+					};
+				},
 			}),
 			resolveRunnerRelease: async () => ({
 				version: "2.330.0",
@@ -275,6 +290,7 @@ afterEach(async () => {
 	state.autonomyApplied.clear();
 	state.macJobAt.clear();
 	state.pendingEvents.clear();
+	registered.length = 0;
 	for (const name of Object.keys(machines)) delete machines[name];
 	vi.mocked(db.query.githubRunnerNodes.findMany).mockReset();
 	vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([]);
@@ -592,5 +608,125 @@ describe("a Mac short of disk or memory", () => {
 		await tick();
 		await settle();
 		expect(count(e.commands, /limactl (stop|start)/)).toBe(0);
+	});
+});
+
+describe("x86_64 runners on a Mac", () => {
+	const GiB_KIB = 1024 * 1024;
+	const macProbe = (rosettaLine: string) => async () =>
+		[
+			"mac cpus=10 memory_bytes=17179869184 arch=arm64 version=27.2 load=1.00",
+			"macmem free_percent=70",
+			`macdisk total_kib=${460 * GiB_KIB} free_kib=${200 * GiB_KIB}`,
+			"macsetup admin=no sleep=0 filevault=off daemon=yes rosetta=yes",
+			"lima version=2.2.1 managed=yes",
+			"vm status=Running cpus=7 memory_bytes=10200547328 disk_bytes=64424509440 type=vz",
+			...`${status("autonomyset state=off").replace("arch=x86_64", "arch=aarch64")}\n${rosettaLine}`
+				.split("\n")
+				.map((line) => `guest: ${line}`),
+		].join("\n");
+	const m4 = (id: string, rosetta: boolean) =>
+		node(id, pool("pool-1"), {
+			platform: "macos",
+			username: "dokploy-manager",
+			maxRunners: 1,
+			x64Runners: 1,
+			applied: {
+				runtimeVersion: RUNTIME_VERSION,
+				runnerVersion: "2.330.0",
+				cpuPercent: 80,
+				memoryPercent: 80,
+				vmDiskGb: 60,
+				cpus: 7,
+				memoryBytes: 10200547328,
+				envHash: "",
+				bootScript: 3,
+				rosetta,
+			},
+		});
+	const load = (row: ReturnType<typeof m4>) => {
+		vi.mocked(db.query.githubRunnerNodes.findMany).mockResolvedValue([
+			row,
+		] as never);
+		vi.mocked(db.query.githubRunnerNodes.findFirst).mockResolvedValue(
+			row as never,
+		);
+	};
+	const observedOf = (updates: Update[]) =>
+		updates.find((update) => update.values.observed)?.values.observed as {
+			x64?: { runners: number; release: string | null; blocked: string | null };
+			events: { message: string }[];
+		};
+
+	it("arms the x86_64 slot with its labels and Docker platform", async () => {
+		const row = m4("mac-x1", true);
+		load(row);
+		const mac = machine(
+			"mac-x1",
+			macProbe("rosetta enabled=yes release=2.330.0"),
+		);
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		const arms = mac.commands.filter((command) =>
+			/runnerctl arm \d+ \d+/.test(command),
+		);
+		expect(
+			arms.map((command) => command.match(/runnerctl arm .*$/m)?.[0]),
+		).toEqual([
+			expect.stringMatching(/^runnerctl arm 1 \d+$/),
+			expect.stringMatching(/^runnerctl arm 32 \d+ x64$/),
+		]);
+		expect(registered.slice(0, 2)).toEqual([
+			["self-hosted", "Linux", "ARM64", "ci", "dokploy-mac-x1"],
+			["self-hosted", "Linux", "X64", "ci-x64", "dokploy-mac-x1-x64"],
+		]);
+		// The reserve the machine arms itself with holds native runners only.
+		expect(registered.filter((labels) => labels.includes("X64"))).toHaveLength(
+			1,
+		);
+		expect(observedOf(updates).x64).toEqual({
+			runners: 1,
+			release: "2.330.0",
+			blocked: null,
+		});
+	});
+
+	it("installs the x86_64 runner of the native release, then arms it", async () => {
+		const row = m4("mac-x2", true);
+		load(row);
+		const mac = machine("mac-x2", macProbe("rosetta enabled=yes release="));
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		expect(
+			mac.commands.filter((command) => command.includes("install-release")),
+		).toEqual([
+			expect.stringMatching(
+				/runnerctl install-release 2\.330\.0 https:\/\/example\.invalid\/actions-runner\.tar\.gz 0{64} x64$/,
+			),
+		]);
+		// No x86_64 slot before its runner is there.
+		expect(registered.some((labels) => labels.includes("X64"))).toBe(false);
+		expect(observedOf(updates).x64?.blocked).toBe(
+			"installing the x86_64 runner",
+		);
+	});
+
+	it("waits for the VM to restart with Rosetta", async () => {
+		const row = m4("mac-x3", false);
+		load(row);
+		const mac = machine("mac-x3", macProbe("rosetta enabled=no release="));
+		const updates = recordUpdates();
+		await tick();
+		await Promise.allSettled([...state.tasks.values()]);
+		expect(mac.commands.some((command) => / x64$/.test(command))).toBe(false);
+		const seen = observedOf(updates);
+		expect(seen.x64?.blocked).toBe(
+			"the VM restarts with Rosetta once no job runs",
+		);
+		expect(seen.events.map((event) => event.message)).toContain(
+			"x86_64 runners wait: the VM restarts with Rosetta once no job runs",
+		);
 	});
 });

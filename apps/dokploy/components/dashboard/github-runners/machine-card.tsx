@@ -1,3 +1,7 @@
+import {
+	nativeMaxRunners,
+	x64Slots,
+} from "@dokploy/server/utils/github-runners/x64";
 import { formatDistanceToNow } from "date-fns";
 import {
 	Activity,
@@ -86,10 +90,13 @@ const SlotTile = ({
 	number,
 	slot,
 	now,
+	x64 = false,
 }: {
 	number: number;
 	slot?: RunnerSlot;
 	now: number;
+	/** A slot of the x86_64 runners (Rosetta). */
+	x64?: boolean;
 }) => {
 	const state = slot?.state ?? "free";
 	const content = (
@@ -97,7 +104,14 @@ const SlotTile = ({
 			className={`flex h-14 min-w-0 flex-col justify-center rounded-md border px-2 text-xs ${SLOT_STYLE[state]}`}
 		>
 			<span className="flex items-center justify-between gap-1">
-				<span className="font-medium">#{number}</span>
+				<span className="font-medium">
+					#{number}
+					{x64 && (
+						<span className="ml-1 font-normal text-muted-foreground">
+							x86_64
+						</span>
+					)}
+				</span>
 				<span className="text-muted-foreground">
 					{state === "free" ? "empty" : state}
 				</span>
@@ -133,19 +147,27 @@ const SlotGrid = ({ machine }: { machine: RunnerMachine }) => {
 	const now = useNow();
 	const slots = machine.observed?.slots ?? [];
 	const bySlot = new Map(slots.map((slot) => [slot.slot, slot]));
+	// The x86_64 slots are the last ones (32, 31...): shown after the native ones.
+	const x64 = x64Slots(machine.x64Runners).sort((a, b) => a - b);
+	const isX64 = new Set(x64);
 	const count = Math.max(
-		machine.resolvedMaxRunners,
-		...slots.map((slot) => slot.slot),
+		nativeMaxRunners(machine.resolvedMaxRunners, machine.x64Runners),
+		...slots.filter((slot) => !isX64.has(slot.slot)).map((slot) => slot.slot),
 	);
+	const numbers = [
+		...Array.from({ length: count }, (_, index) => index + 1),
+		...x64,
+	];
 	return (
 		<TooltipProvider delayDuration={200}>
 			<div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-				{Array.from({ length: count }, (_, index) => (
+				{numbers.map((number) => (
 					<SlotTile
-						key={index + 1}
-						number={index + 1}
-						slot={bySlot.get(index + 1)}
+						key={number}
+						number={number}
+						slot={bySlot.get(number)}
 						now={now}
+						x64={isX64.has(number)}
 					/>
 				))}
 			</div>
@@ -441,6 +463,11 @@ const MachineAlerts = ({
 			{admission && !admission.ok && (
 				<AlertBlock type="warning">
 					New jobs paused: {admission.reason}
+				</AlertBlock>
+			)}
+			{machine.observed?.x64?.blocked && (
+				<AlertBlock type="info">
+					x86_64 runners wait: {machine.observed.x64.blocked}
 				</AlertBlock>
 			)}
 		</>

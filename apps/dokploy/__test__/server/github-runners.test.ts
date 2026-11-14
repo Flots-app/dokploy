@@ -2551,6 +2551,7 @@ describe("routing with a GitHub-hosted fallback", () => {
 	const base = {
 		labels: ["flots-app"],
 		fallbackLabels: ["ubuntu-24.04"],
+		x64FallbackLabels: ["ubuntu-24.04"],
 		anyEnabled: true,
 	};
 
@@ -4672,6 +4673,7 @@ echo done`);
 				token: "t",
 				labels: ["ci"],
 				fallbackLabels: ["ubuntu-24.04"],
+				x64FallbackLabels: ["ubuntu-24.04"],
 				routingVariable: null,
 				routing: {
 					variable: "DOKPLOY_RUNS_ON",
@@ -4738,6 +4740,63 @@ echo done`);
 			expect(renamed.calls[0]?.values.routing).toMatchObject({
 				variable: "DOKPLOY_RUNS_ON",
 				error: expect.stringContaining("DOKPLOY_RUNS_ON could not be deleted"),
+			});
+		});
+
+		it("publishes the x86_64 variable, on its fallback while no Mac runs x86_64 runners", async () => {
+			answer = 204;
+			fetched.length = 0;
+			const published = recordUpdates([]);
+			try {
+				await routePool(
+					pool({ routingVariable: "DOKPLOY_RUNS_ON", x64Routing: null }),
+				);
+			} finally {
+				published.restore();
+			}
+			expect(fetched).toContain(
+				"PATCH https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_X64",
+			);
+			expect(
+				published.calls.find((call) => call.values.x64Routing)?.values
+					.x64Routing,
+			).toMatchObject({
+				variable: "DOKPLOY_RUNS_ON_X64",
+				target: "fallback",
+				value: '"ubuntu-24.04"',
+				error: null,
+			});
+		});
+
+		it("deletes the x86_64 variable with the routing", async () => {
+			answer = 204;
+			fetched.length = 0;
+			const deleted = recordUpdates([]);
+			try {
+				await routePool(
+					pool({
+						routing: null,
+						x64Routing: {
+							variable: "DOKPLOY_RUNS_ON_X64",
+							target: "fallback",
+							value: '"ubuntu-24.04"',
+							since: "2026-11-14T08:00:00.000Z",
+							unavailableSince: "2026-11-14T08:00:00.000Z",
+							syncedValue: '"ubuntu-24.04"',
+							syncedAt: "2026-11-14T08:00:00.000Z",
+							attemptedAt: "2026-11-14T08:00:00.000Z",
+							error: null,
+						},
+					}),
+				);
+			} finally {
+				deleted.restore();
+			}
+			expect(fetched).toContain(
+				"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_X64",
+			);
+			expect(deleted.calls.map((call) => call.values)).toContainEqual({
+				x64Routing: null,
 			});
 		});
 

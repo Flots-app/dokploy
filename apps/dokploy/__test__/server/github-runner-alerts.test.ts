@@ -27,6 +27,7 @@ const pool = (overrides: Partial<GithubRunnerPool> = {}) =>
 		routingVariable: null,
 		routing: null,
 		fallbackLabels: ["ubuntu-24.04"],
+		x64FallbackLabels: ["ubuntu-24.04"],
 		...overrides,
 	}) as GithubRunnerPool;
 
