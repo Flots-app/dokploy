@@ -268,10 +268,10 @@ const RerunField = ({ form }: { form: PoolForm }) => (
 				<div className="space-y-1">
 					<FormLabel>Re-run interrupted jobs</FormLabel>
 					<FormDescription>
-						When a machine crashes or is stopped with its jobs interrupted,
-						their failed jobs are re-run once the run completes and land on the
-						other machines (3 attempts at most). Uses the "Actions" permission
-						the GitHub links above include.
+						When a machine crashes or is stopped with its jobs interrupted, or
+						runs out of memory while a job fails, their failed jobs are re-run
+						once the run completes and land on the other machines (3 attempts at
+						most). Uses the "Actions" permission the GitHub links above include.
 					</FormDescription>
 				</div>
 				<FormControl>
