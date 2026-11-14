@@ -394,6 +394,43 @@ export interface GithubRunnerFailover {
 
 export { DEFAULT_FAILOVER };
 
+/**
+ * A provider the jobs of a pool go to while its machines cannot take them, in
+ * the order of the pool's chain, within its budget (see providers.ts).
+ */
+export interface GithubRunnerFallbackProvider {
+	id: string;
+	kind: "blacksmith" | "github";
+	/** runs-on of the general jobs, and of the jobs that need x86_64. */
+	labels: string[];
+	x64Labels: string[];
+	/** null: no budget, the provider always takes the jobs. */
+	budget: GithubRunnerProviderBudget | null;
+}
+
+/** What a provider may cost in a month: its free minutes, then a capped spend. */
+export interface GithubRunnerProviderBudget {
+	/** Minutes of the month the plan includes. */
+	freeMinutes: number;
+	/** Price of a minute past the free ones, in the currency of the bill. */
+	pricePerMinute: number;
+	/** Spend allowed past the free minutes; 0 stops at the free minutes. */
+	overspend: number;
+	/** An alert opens once this share of the limit is used. */
+	warningPercent: number;
+}
+
+/** Usage of a provider this month, as the provider reports it. */
+export interface GithubRunnerProviderUsage {
+	/** Month of the figures, "2026-11" (UTC). */
+	month: string;
+	minutes: number | null;
+	/** What the provider charges past the free minutes, when it says (GitHub). */
+	spend: number | null;
+	measuredAt: string | null;
+	error: string | null;
+}
+
 /** A machine set aside after losing jobs (see health.ts). */
 export interface GithubRunnerNodeHealth {
 	degradedSince: string;
@@ -477,6 +514,8 @@ export interface GithubRunnerRouting {
 	since: string;
 	/** Since when no runner of the pool is ON; the pool stays the target for a short grace. */
 	unavailableSince: string | null;
+	/** The provider of the fallback chain the jobs go to, when the target is the fallback. */
+	provider?: GithubRunnerFallbackProvider["kind"] | null;
 	/** Value GitHub holds since the last successful write. */
 	syncedValue: string | null;
 	syncedAt: string | null;
@@ -574,6 +613,21 @@ export const githubRunnerPools = pgTable(
 			.$type<GithubRunnerFailover>()
 			.notNull()
 			.default(DEFAULT_FAILOVER),
+		/** Providers the jobs go to while the machines cannot take them, in order; empty: fallbackLabels. */
+		fallbackChain: jsonb("fallbackChain")
+			.$type<GithubRunnerFallbackProvider[]>()
+			.notNull()
+			.default([]),
+		/** Usage of each provider of the chain this month, by provider id. */
+		fallbackUsage: jsonb("fallbackUsage")
+			.$type<Record<string, GithubRunnerProviderUsage>>()
+			.notNull()
+			.default({}),
+		blacksmithOrganization: text("blacksmithOrganization"),
+		/** Reads the Blacksmith usage of the organization (blacksmith usage). */
+		blacksmithToken: encryptedText("blacksmithToken"),
+		/** Reads the GitHub billing usage; null: the pool's own credentials. */
+		billingToken: encryptedText("billingToken"),
 		placement: githubRunnerPlacement("placement").notNull().default("fastest"),
 		/** Runner and runtime updates; each machine may override it. */
 		updatePolicy: jsonb("updatePolicy")
@@ -1120,6 +1174,38 @@ const poolFields = z.object({
 			mode: z.enum(["auto", "pool", "fallback"]),
 		})
 		.default(DEFAULT_FAILOVER),
+	fallbackChain: z
+		.array(
+			z.object({
+				id: z.string().trim().min(1).max(32),
+				kind: z.enum(["blacksmith", "github"]),
+				labels: z.array(label).min(1).max(10),
+				x64Labels: z.array(label).min(1).max(10),
+				budget: z
+					.object({
+						freeMinutes: z.number().min(0).max(10_000_000),
+						pricePerMinute: z.number().min(0).max(100),
+						overspend: z.number().min(0).max(1_000_000),
+						warningPercent: z.number().int().min(1).max(100),
+					})
+					.nullable(),
+			}),
+		)
+		.max(4)
+		.refine(
+			(chain) =>
+				new Set(chain.map((provider) => provider.id)).size === chain.length,
+			"Each provider needs its own id",
+		)
+		.default([]),
+	blacksmithOrganization: z
+		.string()
+		.trim()
+		.regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/, "An organization slug")
+		.nullable()
+		.default(null),
+	blacksmithToken: z.string().trim().min(1).max(1_000).nullable().default(null),
+	billingToken: z.string().trim().min(1).max(1_000).nullable().default(null),
 	placement: z.enum(["fastest", "spread"]).default("fastest"),
 	updatePolicy: updatePolicySchema.default({ auto: true, window: null }),
 	rolloutPolicy: z

@@ -50,6 +50,22 @@ export const poolFormSchema = z
 			.refine((name) => !/^github_/i.test(name), "Cannot start with GITHUB_"),
 		fallbackLabels: z.string(),
 		x64FallbackLabels: z.string(),
+		fallbackChain: z.array(
+			z.object({
+				id: z.string().min(1),
+				kind: z.enum(["blacksmith", "github"]),
+				labels: z.string().trim().min(1, "A runs-on label is required"),
+				x64Labels: z.string(),
+				limited: z.boolean(),
+				freeMinutes: z.number().min(0),
+				pricePerMinute: z.number().min(0),
+				overspend: z.number().min(0),
+				warningPercent: z.number().int().min(1).max(100),
+			}),
+		),
+		blacksmithOrganization: z.string().trim(),
+		blacksmithToken: optional,
+		billingToken: optional,
 		failover: z.object({
 			interruptions: z.number().int().min(0).max(20),
 			windowMinutes: z.number().int().min(1).max(120),
@@ -112,11 +128,30 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 	fallbackLabels: (pool?.fallbackLabels ?? ["ubuntu-24.04"]).join(", "),
 	x64FallbackLabels: (pool?.x64FallbackLabels ?? ["ubuntu-24.04"]).join(", "),
 	failover: pool?.failover ?? DEFAULT_FAILOVER,
+	fallbackChain: (pool?.fallbackChain ?? []).map((provider) => ({
+		id: provider.id,
+		kind: provider.kind,
+		labels: provider.labels.join(", "),
+		x64Labels: provider.x64Labels.join(", "),
+		limited: Boolean(provider.budget),
+		...(provider.budget ?? NEW_PROVIDER_BUDGET),
+	})),
+	blacksmithOrganization: pool?.blacksmithOrganization ?? "",
+	blacksmithToken: "",
+	billingToken: "",
 	placement: pool?.placement ?? "fastest",
 	updatePolicy: pool?.updatePolicy ?? { auto: true, window: null },
 	rolloutPolicy: pool?.rolloutPolicy ?? { maxUnavailable: 1, canary: true },
 	autonomyReserve: pool?.autonomyReserve ?? 2,
 });
+
+/** A provider added in the form: its free minutes only, until set otherwise. */
+export const NEW_PROVIDER_BUDGET = {
+	freeMinutes: 3000,
+	pricePerMinute: 0.008,
+	overspend: 0,
+	warningPercent: 80,
+};
 
 /** Undefined (an unmounted field) keeps the stored value; empty clears it. */
 const keepOr = <T>(value: string | undefined, stored: T | null | undefined) =>
@@ -157,6 +192,26 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 	rerunInterruptedJobs: values.rerunInterruptedJobs ?? true,
 	routingVariable: values.routingEnabled ? values.routingVariable : null,
 	failover: values.failover,
+	fallbackChain: values.fallbackChain.map((provider) => ({
+		id: provider.id,
+		kind: provider.kind,
+		labels: parseLabels(provider.labels),
+		x64Labels: parseLabels(provider.x64Labels).length
+			? parseLabels(provider.x64Labels)
+			: parseLabels(provider.labels),
+		budget: provider.limited
+			? {
+					freeMinutes: provider.freeMinutes,
+					pricePerMinute: provider.pricePerMinute,
+					overspend: provider.overspend,
+					warningPercent: provider.warningPercent,
+				}
+			: null,
+	})),
+	blacksmithOrganization: values.blacksmithOrganization || null,
+	// Secrets are never sent back: an empty field keeps the stored one.
+	blacksmithToken: values.blacksmithToken || null,
+	billingToken: values.billingToken || null,
 	placement: values.placement,
 	updatePolicy: values.updatePolicy,
 	rolloutPolicy: values.rolloutPolicy,

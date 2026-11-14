@@ -232,7 +232,7 @@ const TargetingFields = ({
 					)}
 				/>
 			</div>
-			<RoutingFields form={form} />
+			<RoutingFields form={form} pool={pool} />
 			<div className="grid gap-1 rounded-md bg-muted p-3 text-xs">
 				<span className="text-muted-foreground">
 					Workflows send their jobs to these machines with:

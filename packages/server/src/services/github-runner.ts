@@ -99,11 +99,20 @@ const publicNode = <
 
 /** Pools as sent to the browser: secrets are replaced by whether they are set. */
 const publicPool = (pool: GithubRunnerPool) => {
-	const { token, appPrivateKey, runnerEnv, ...rest } = pool;
+	const {
+		token,
+		appPrivateKey,
+		runnerEnv,
+		blacksmithToken,
+		billingToken,
+		...rest
+	} = pool;
 	return {
 		...rest,
 		hasToken: Boolean(token),
 		hasAppPrivateKey: Boolean(appPrivateKey),
+		hasBlacksmithToken: Boolean(blacksmithToken),
+		hasBillingToken: Boolean(billingToken),
 		runnerEnvKeys: envKeys(runnerEnv),
 	};
 };
@@ -393,6 +402,8 @@ export const updateGithubRunnerPool = async (
 			// Empty secrets keep the stored ones.
 			token: values.token ?? stored.token,
 			appPrivateKey: values.appPrivateKey ?? stored.appPrivateKey,
+			blacksmithToken: values.blacksmithToken ?? stored.blacksmithToken,
+			billingToken: values.billingToken ?? stored.billingToken,
 			runnerEnv: values.runnerEnv ?? stored.runnerEnv,
 		})
 		.where(eq(githubRunnerPools.githubRunnerPoolId, githubRunnerPoolId))
