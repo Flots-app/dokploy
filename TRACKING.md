@@ -179,7 +179,13 @@
 - [x] Show the average and p90 duration of jobs and of whole pipelines per pool,
   from the run attempts recorded by the controller, in
   [Flots-app/dokploy#70](https://github.com/Flots-app/dokploy/pull/70).
-- [ ] Publish `v0.29.14-flots.23` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.23` from `canary` and deploy it to production.
+- [x] Keep the recent Docker build cache in the runner disk cleanups (runtime v16)
+  in [Flots-app/dokploy#72](https://github.com/Flots-app/dokploy/pull/72).
+- [x] Keep a runner VM short of memory from interrupting every job it runs, and
+  re-run a job that failed while the kernel killed processes for memory
+  (runtime v17), in [Flots-app/dokploy#73](https://github.com/Flots-app/dokploy/pull/73).
+- [ ] Publish `v0.29.14-flots.24` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
