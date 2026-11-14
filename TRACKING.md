@@ -175,7 +175,11 @@
 - [x] Publish `v0.29.14-flots.21` from `canary` and deploy it to production.
 - [x] Install the amd64 libraries of the x86_64 runners (runtime v15) in
   [Flots-app/dokploy#68](https://github.com/Flots-app/dokploy/pull/68).
-- [ ] Publish `v0.29.14-flots.22` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.22` from `canary` and deploy it to production.
+- [x] Show the average and p90 duration of jobs and of whole pipelines per pool,
+  from the run attempts recorded by the controller, in
+  [Flots-app/dokploy#70](https://github.com/Flots-app/dokploy/pull/70).
+- [ ] Publish `v0.29.14-flots.23` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
