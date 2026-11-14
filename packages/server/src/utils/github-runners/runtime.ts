@@ -9,7 +9,7 @@ import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 import { X64_DOCKER_PLATFORM } from "./x64";
 
-export const RUNTIME_VERSION = 14;
+export const RUNTIME_VERSION = 15;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -25,14 +25,17 @@ export const RUNTIME_VERSION = 14;
  * wrote it as root: optional. v13 runs x86_64 runners through Rosetta on a Mac
  * (see x64.ts): optional, needed by the machines that have some. v14 mounts
  * the VM's Rosetta share and registers it itself, which Lima leaves out of a
- * plain VM: optional, needed by the x86_64 runners.
+ * plain VM: optional, needed by the x86_64 runners. v15 fixes the installation
+ * of the amd64 libraries (a line continuation passed "\\" to apt-get):
+ * optional, needed by the x86_64 runners.
  */
 export const MIN_RUNTIME_VERSION = 6;
 /**
  * The first runtime whose x86_64 runners work (`runnerctl arm <slot> <kib> x64`):
- * v13 had them, but relied on Lima for Rosetta, which Lima skips in a plain VM.
+ * v13 relied on Lima for Rosetta, which Lima skips in a plain VM, and v14 could
+ * not install the amd64 libraries.
  */
-export const X64_RUNTIME = 14;
+export const X64_RUNTIME = 15;
 /** The first runtime with `runnerctl guard` and the check in job-started.sh. */
 export const JOB_GUARD_RUNTIME = 11;
 const JOB_GUARD_FILE = "/etc/dokploy-runners/job-guard";
@@ -175,7 +178,7 @@ SOURCES
 	[ -n "$icu" ] || die "no ICU package for amd64"
 	ssl=libssl3t64
 	apt-cache show "$ssl:amd64" >/dev/null 2>&1 || ssl=libssl3
-	DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends \\
+	DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends \
 		libc6:amd64 libstdc++6:amd64 zlib1g:amd64 libgssapi-krb5-2:amd64 "$ssl:amd64" "$icu:amd64" >/dev/null ||
 		die "the amd64 libraries of the x86_64 runners could not be installed"
 }

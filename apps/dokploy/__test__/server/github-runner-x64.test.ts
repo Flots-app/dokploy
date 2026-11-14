@@ -467,6 +467,13 @@ describe("runtime v13", () => {
 		expect(install).toContain('x64) echo "$ROOT/releases-x64" ;;');
 	});
 
+	it("never continues a line with an escaped backslash", () => {
+		// `sh` keeps backslashes verbatim: "\\" at the end of a line reaches
+		// bash as a literal "\" argument, and the next line runs on its own
+		// (runtime v14 passed it to apt-get as a package name).
+		expect(install).not.toMatch(/\\\\\n/);
+	});
+
 	it("installs the amd64 libraries from the main archive, never from ports", () => {
 		expect(install).toContain("URIs: http://archive.ubuntu.com/ubuntu");
 		expect(install).toContain("Architectures: amd64");
