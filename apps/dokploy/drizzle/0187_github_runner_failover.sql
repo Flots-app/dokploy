@@ -1,0 +1,2 @@
+ALTER TABLE "github_runner_node" ADD COLUMN "health" jsonb;--> statement-breakpoint
+ALTER TABLE "github_runner_pool" ADD COLUMN "failover" jsonb DEFAULT '{"interruptions":2,"windowMinutes":10,"cooldownMinutes":30,"mode":"auto"}'::jsonb NOT NULL;

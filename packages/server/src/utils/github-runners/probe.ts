@@ -47,7 +47,14 @@ const float = (value: string | undefined) => {
 	return Number.isFinite(parsed) ? parsed : null;
 };
 
-export type LocalJob = GithubRunnerJob & { completedAt: string | null };
+export type LocalJob = GithubRunnerJob & {
+	completedAt: string | null;
+	/**
+	 * Processes the kernel killed for memory on the machine while the job ran;
+	 * null until it completed, or from a runtime older than v17.
+	 */
+	oomKills?: number | null;
+};
 
 export interface LocalSlot {
 	slot: number;
@@ -72,6 +79,8 @@ export interface RuntimeStatus {
 		cpus: number;
 		memoryBytes: number;
 		availableBytes: number | null;
+		/** Swap the machine has (SwapTotal); null from a runtime older than v18. */
+		swapBytes: number | null;
 		arch: string;
 		load: number | null;
 	} | null;
@@ -121,6 +130,8 @@ export const parseJob = (encoded: string | undefined): LocalJob | null => {
 		}
 	}
 	if (!values.repository && !values.run_id) return null;
+	const oomAtStart = float(values.oom_kills);
+	const oomAtEnd = float(values.oom_kills_end);
 	return {
 		repository: values.repository ?? "",
 		runId: values.run_id ?? "",
@@ -129,6 +140,10 @@ export const parseJob = (encoded: string | undefined): LocalJob | null => {
 		job: values.job ?? "",
 		startedAt: epochToIso(values.started),
 		completedAt: epochToIso(values.completed),
+		oomKills:
+			oomAtStart !== null && oomAtEnd !== null
+				? Math.max(0, oomAtEnd - oomAtStart)
+				: null,
 	};
 };
 
@@ -143,6 +158,7 @@ export const parseRuntimeStatus = (records: ProbeRecord[]): RuntimeStatus => {
 	const busy = int(cpu.busy);
 	const total = int(cpu.total);
 	const availableKib = int(host.available_kib);
+	const swapKib = int(host.swap_kib);
 	const jobFiles = records
 		.filter((record) => record.kind === "jobfile")
 		.flatMap((record): JobFile[] => {
@@ -159,6 +175,7 @@ export const parseRuntimeStatus = (records: ProbeRecord[]): RuntimeStatus => {
 						cpus: int(host.cpus) ?? 0,
 						memoryBytes: memoryKib * 1024,
 						availableBytes: availableKib === null ? null : availableKib * 1024,
+						swapBytes: swapKib === null ? null : swapKib * 1024,
 						arch: host.arch ?? "",
 						load: float(host.load),
 					}

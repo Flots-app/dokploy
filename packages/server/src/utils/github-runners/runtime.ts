@@ -9,7 +9,7 @@ import { NFT_TABLE } from "../firewall/backends";
 import { parseEnvLines } from "./env";
 import { X64_DOCKER_PLATFORM } from "./x64";
 
-export const RUNTIME_VERSION = 15;
+export const RUNTIME_VERSION = 18;
 /**
  * The oldest runtime this controller can drive. An older one is updated at
  * once, whatever the update policy; a newer optional runtime waits for it.
@@ -27,7 +27,17 @@ export const RUNTIME_VERSION = 15;
  * the VM's Rosetta share and registers it itself, which Lima leaves out of a
  * plain VM: optional, needed by the x86_64 runners. v15 fixes the installation
  * of the amd64 libraries (a line continuation passed "\\" to apt-get):
- * optional, needed by the x86_64 runners.
+ * optional, needed by the x86_64 runners. v16 keeps the build cache out of the
+ * waste (it removed every record no image holds, so the next build started
+ * cold) and removes caches by finer ages, the most recent last: optional. v17
+ * keeps a machine short of memory from interrupting every job it runs (the
+ * runner units, see runnerUnit) and records the processes the kernel killed
+ * for memory during each job: optional. Its installer also keeps the apt
+ * sources of a VM with x86_64 runners to arm64 across reboots
+ * (keepSourcesNative); no machine had installed v17 before that fix. v18
+ * gives a Mac VM 4 GiB of compressed swap (zswap in front of a swap file, see
+ * runnerctl swap), so a job that overshoots the VM's memory slows down instead
+ * of losing a process: optional.
  */
 export const MIN_RUNTIME_VERSION = 6;
 /**
@@ -61,6 +71,33 @@ export const sh = (strings: TemplateStringsArray, ...values: unknown[]) =>
 		...values,
 	);
 
+const X64_SOURCES_FILE = "/etc/apt/sources.list.d/dokploy-amd64.sources";
+const CLOUD_APT_CONFIG = "/etc/cloud/cloud.cfg.d/90-dokploy-runners-apt.cfg";
+
+/**
+ * x86_64 runners add amd64 to dpkg, and the arm64 mirror (ports.ubuntu.com) has
+ * no amd64 index: every source but Dokploy's own amd64 one keeps to the native
+ * architecture, or each apt-get update fails with 404. Lima gives a VM a new
+ * cloud-init instance at every boot, and cloud-init then writes ubuntu.sources
+ * again without that restriction (m4, 2026-11-14: the runtime update after a VM
+ * resize failed). So cloud-init is told to keep the sources as they are, and the
+ * restriction is put back before any apt-get update.
+ */
+const keepSourcesNative = sh`keep_sources_native() {
+	local native file
+	native=$(dpkg --print-architecture)
+	for file in /etc/apt/sources.list.d/*.sources; do
+		[ -f "$file" ] && [ "$file" != ${X64_SOURCES_FILE} ] || continue
+		grep -q '^Architectures:' "$file" || sed -i "/^Types:/a Architectures: $native" "$file"
+	done
+	if [ -f /etc/apt/sources.list ]; then
+		sed -i -E "s|^(deb(-src)?) (https?://)|\\1 [arch=$native] \\3|" /etc/apt/sources.list
+	fi
+	if [ -d /etc/cloud/cloud.cfg.d ]; then
+		printf '# Managed by Dokploy (GitHub runners): the apt sources keep to %s.\napt:\n  preserve_sources_list: true\n' "$native" >${CLOUD_APT_CONFIG}
+	fi
+}`;
+
 const runnerctl = sh`#!/bin/bash
 # Managed by Dokploy (GitHub runners): reinstalled with the runtime, do not edit.
 set -euo pipefail
@@ -90,7 +127,8 @@ unit_of() { echo "dokploy-runner@$1.service"; }
 kib_free() { df -Pk "$ROOT" | awk 'NR==2 {print $4}'; }
 
 # x86_64 runners (see x64.ts): Rosetta, shared by the Mac, runs their programs.
-X64_SOURCES=/etc/apt/sources.list.d/dokploy-amd64.sources
+X64_SOURCES=${X64_SOURCES_FILE}
+${keepSourcesNative}
 rosetta_ready() { [ "$(head -n 1 /proc/sys/fs/binfmt_misc/rosetta 2>/dev/null)" = enabled ]; }
 
 # Lima mounts the Rosetta share and registers it only in a VM that is not
@@ -126,6 +164,42 @@ cmd_rosetta() {
 	echo "rosetta ready"
 }
 
+# Compressed swap for a Mac VM (dokploy-swap.service, ConditionVirtualization=
+# apple). The VM is the machine's whole memory budget: a job that overshot it
+# lost a process to the OOM killer. zswap keeps the pages the kernel evicts in
+# RAM, compressed (zstd), and only what does not fit reaches the swap file.
+SWAP_FILE=/var/swap/dokploy-runners.swap
+SWAP_KIB=$((4 * 1024 * 1024))
+# The swap file takes the disk only if this much stays free after it.
+SWAP_MIN_FREE_KIB=$((10 * 1024 * 1024))
+ZSWAP_PARAMS=/sys/module/zswap/parameters
+
+cmd_swap() {
+	local free
+	if [ -d "$ZSWAP_PARAMS" ]; then
+		echo zstd >"$ZSWAP_PARAMS/compressor" 2>/dev/null || true
+		echo 25 >"$ZSWAP_PARAMS/max_pool_percent" 2>/dev/null || true
+		echo 1 >"$ZSWAP_PARAMS/enabled" 2>/dev/null || true
+	fi
+	if ! swapon --show=NAME --noheadings | grep -qxF "$SWAP_FILE"; then
+		if [ ! -s "$SWAP_FILE" ]; then
+			install -d -m 0700 "$(dirname "$SWAP_FILE")"
+			free=$(df -Pk "$(dirname "$SWAP_FILE")" | awk 'NR==2 {print $4}')
+			if ((free < SWAP_KIB + SWAP_MIN_FREE_KIB)); then
+				echo "swap skipped: $((free / 1024)) MiB free"
+				return 0
+			fi
+			rm -f "$SWAP_FILE.new"
+			fallocate -l "\${SWAP_KIB}K" "$SWAP_FILE.new" || die "the swap file could not be allocated"
+			chmod 0600 "$SWAP_FILE.new"
+			mkswap -q "$SWAP_FILE.new" >/dev/null || die "the swap file could not be formatted"
+			mv -f "$SWAP_FILE.new" "$SWAP_FILE"
+		fi
+		swapon -p 10 "$SWAP_FILE" || die "the swap file did not turn on"
+	fi
+	echo "swap on kib=$(($(stat -c %s "$SWAP_FILE") / 1024)) zswap=$(cat "$ZSWAP_PARAMS/enabled" 2>/dev/null || echo absent)"
+}
+
 releases_of() {
 	case "\${1:-}" in
 	native) echo "$ROOT/releases" ;;
@@ -136,22 +210,17 @@ releases_of() {
 
 # The amd64 C library and what .NET loads (ICU, OpenSSL, GSSAPI, zlib), next to
 # the arm64 system. The arm64 mirror (ports.ubuntu.com) has no amd64 packages:
-# its sources keep to arm64, and amd64 comes from the main archive.
+# its sources keep to arm64 (keep_sources_native), and amd64 comes from the main
+# archive.
 x64_prepare() {
-	local native codename file icu ssl attempt
+	local native codename icu ssl attempt
 	cmd_rosetta >/dev/null
 	rosetta_ready || die "Rosetta is not available in this VM: x86_64 runners need it"
 	native=$(dpkg --print-architecture)
 	[ "$native" = arm64 ] || die "x86_64 runners run in an arm64 VM, not $native"
 	codename=$(. /etc/os-release && echo "\${VERSION_CODENAME:-}")
 	[[ "$codename" =~ ^[a-z]+$ ]] || die "unknown Ubuntu release"
-	for file in /etc/apt/sources.list.d/*.sources; do
-		[ -f "$file" ] && [ "$file" != "$X64_SOURCES" ] || continue
-		grep -q '^Architectures:' "$file" || sed -i "/^Types:/a Architectures: $native" "$file"
-	done
-	if [ -f /etc/apt/sources.list ]; then
-		sed -i -E "s|^(deb(-src)?) (https?://)|\\1 [arch=$native] \\3|" /etc/apt/sources.list
-	fi
+	keep_sources_native
 	cat >"$X64_SOURCES.new" <<SOURCES
 Types: deb
 URIs: http://archive.ubuntu.com/ubuntu
@@ -187,7 +256,7 @@ cmd_status() {
 	# The controller probes every few seconds: the machine knows it is watched.
 	touch "$STATE/controller-seen" 2>/dev/null || true
 	echo "runtime version=$(cat "$ETC/runtime-version" 2>/dev/null || echo 0)"
-	echo "host cpus=$(nproc --all) memory_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo) available_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) arch=$(uname -m) load=$(cut -d' ' -f1 /proc/loadavg)"
+	echo "host cpus=$(nproc --all) memory_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo) available_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) swap_kib=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo) arch=$(uname -m) load=$(cut -d' ' -f1 /proc/loadavg)"
 	df -Pk "$ROOT" | awk 'NR==2 {print "disk total_kib=" $2 " free_kib=" $4}'
 	local release=""
 	if [ -L "$ROOT/releases/current" ]; then release=$(basename "$(readlink -f "$ROOT/releases/current")"); fi
@@ -572,14 +641,21 @@ cmd_install_release() {
 # ---------------------------------------------------------------- disk cleanup
 # Like the kubelet image garbage collector: caches grow freely, and when the disk
 # runs low the least recently used ones are removed until the target is free.
-#   1. waste, at no speed cost: stopped containers, dangling images and build
-#      cache, unused anonymous volumes, workspaces of stopped slots;
-#   2. caches unused for 30, 7 and 3 days, then for 25 hours: Docker images,
-#      named volumes and build cache, tool cache versions, caches in the runner
-#      home. A running job has used what it needs within 24 hours (relatime), so
-#      it keeps them;
-#   3. still below the threshold: every cache, only while no job runs. Jobs that
+#   1. waste, at no speed cost: stopped containers, dangling images, unused
+#      anonymous volumes, workspaces of stopped slots. Never build cache: what
+#      "docker builder prune" without --all removes is every record no image
+#      holds, the builder stages and the layers of images a job removed, i.e.
+#      the cache the next build needs;
+#   2. caches unused for 30 days, then for ever shorter ages down to 25 hours,
+#      oldest first: Docker build cache, images and named volumes, tool cache
+#      versions, caches in the runner home. A running job has used what it
+#      needs within 24 hours (relatime), so it keeps them;
+#   3. still below the threshold, only while no job runs: the same for the
+#      caches used within the last 25 hours, the most recent last. Jobs that
 #      start meanwhile wait in their started hook.
+GC_AGES=(720 336 168 120 96 72 48 36 25)
+# 0 stands for every cache, whatever its age.
+GC_IDLE_AGES=(12 6 3 1 0)
 declare -gA GC_FREED=() GC_COUNT=()
 GC_FREE=0
 GC_TARGET=0
@@ -615,9 +691,6 @@ gc_waste() {
 		before=$GC_FREE
 		docker image prune -f >/dev/null 2>&1 || true
 		gc_note images "$before"
-		before=$GC_FREE
-		docker builder prune -f >/dev/null 2>&1 || true
-		gc_note build_cache "$before"
 	fi
 	for dir in "$ROOT"/slots/*/_work; do
 		[ -d "$dir" ] || continue
@@ -753,15 +826,47 @@ gc_remove() {
 	gc_note "$kind" "$before" 1
 }
 
+# Build cache unused for this many hours (0: all of it). --all takes the records
+# images still hold too: without them an image removed afterwards frees nothing,
+# its layers staying in the build cache.
 gc_build_cache() {
 	local before=$GC_FREE
 	gc_docker || return 0
-	if [ "$1" = all ]; then
+	if (($1 == 0)); then
 		docker builder prune -af >/dev/null 2>&1 || true
 	else
 		docker builder prune -af --filter "until=\${1}h" >/dev/null 2>&1 || true
 	fi
 	gc_note build_cache "$before"
+}
+
+# Removes the caches unused for longer than each age in turn, build cache first,
+# then the entries oldest first, until the target is free. Entries are taken from
+# index i of the caller's sorted entries; with "idle", every kind goes, and the
+# entries a former pass up to index "tried" already handled are skipped.
+# Returns 0 once the target is reached.
+gc_by_age() {
+	local pass=$1 tried=$2 hours cutoff
+	shift 2
+	for hours in "$@"; do
+		gc_build_cache "$hours"
+		gc_reached && return 0
+		cutoff=$(($(date +%s) - hours * 3600))
+		while ((i < \${#entries[@]})); do
+			gc_parse "\${entries[i]}"
+			((hours == 0 || last < cutoff)) || break
+			i=$((i + 1))
+			if [ "$kind" = image ] || [ "$atime" = yes ]; then
+				((i > tried)) || continue
+			else
+				# Without access times, file caches and volumes only go when idle.
+				[ "$pass" = idle ] || continue
+			fi
+			gc_remove "$kind" "$entry" "$tags"
+			gc_reached && return 0
+		done
+	done
+	return 1
 }
 
 # A job is running in a slot: its job file has no completion and its unit runs.
@@ -778,7 +883,7 @@ gc_jobs_running() {
 }
 
 cmd_gc() {
-	local mode=\${1:-light} threshold=\${2:-0} target=\${3:-0} start hours cutoff i last kind entry tags line atime=yes idle=not-needed
+	local mode=\${1:-light} threshold=\${2:-0} target=\${3:-0} start i tried last kind entry tags atime=yes idle=not-needed
 	case "$mode" in
 	auto)
 		[[ "$threshold" =~ ^[0-9]+$ && "$target" =~ ^[0-9]+$ ]] || die "invalid thresholds"
@@ -802,36 +907,19 @@ cmd_gc() {
 		local -a entries=()
 		mapfile -d '' -t entries < <(gc_candidates | sort -z -t $'\t' -n -k1,1)
 		i=0
-		for hours in 720 168 72 25; do
-			gc_build_cache "$hours"
-			gc_reached && break
-			cutoff=$(($(date +%s) - hours * 3600))
-			while ((i < \${#entries[@]})); do
-				gc_parse "\${entries[i]}"
-				((last < cutoff)) || break
-				i=$((i + 1))
-				[ "$kind" = image ] || [ "$atime" = yes ] || continue
-				gc_remove "$kind" "$entry" "$tags"
-				gc_reached && break 2
-			done
-		done
-		if ((GC_FREE < threshold)); then
+		if ! gc_by_age busy 0 "\${GC_AGES[@]}" && ((GC_FREE < threshold)); then
 			# The lock comes before the job check: a job starting after the check
 			# finds the lock and waits (see the job started hook).
 			printf '%s %s\n' "$$" "$(date +%s)" >"$GC_LOCK"
 			if gc_jobs_running; then
 				idle=skipped-jobs
-				rm -f "$GC_LOCK"
 			else
 				idle="done"
-				gc_build_cache all
-				for line in "\${entries[@]}"; do
-					gc_reached && break
-					gc_parse "$line"
-					gc_remove "$kind" "$entry" "$tags"
-				done
-				rm -f "$GC_LOCK"
+				tried=$i
+				i=0
+				gc_by_age idle "$tried" "\${GC_IDLE_AGES[@]}" || true
 			fi
+			rm -f "$GC_LOCK"
 		fi
 	fi
 	# Hands the freed blocks back to the hypervisor (sparse VM disks): online
@@ -849,6 +937,9 @@ cmd_uninstall() {
 	systemctl disable --now dokploy-runner-autoarm.timer >/dev/null 2>&1 || true
 	systemctl disable --now dokploy-rosetta.service >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/dokploy-rosetta.service
+	systemctl disable --now dokploy-swap.service >/dev/null 2>&1 || true
+	swapoff "$SWAP_FILE" >/dev/null 2>&1 || true
+	rm -f /etc/systemd/system/dokploy-swap.service "$SWAP_FILE" "$SWAP_FILE.new"
 	[ ! -f /proc/sys/fs/binfmt_misc/rosetta ] || echo -1 >/proc/sys/fs/binfmt_misc/rosetta || true
 	umount "$ROSETTA_MOUNT" >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/dokploy-runner-autoarm.timer /etc/systemd/system/dokploy-runner-autoarm.service
@@ -870,7 +961,7 @@ cmd_uninstall() {
 		# The amd64 libraries of the x86_64 runners go with the runtime.
 		dpkg-query -W -f='\${binary:Package}\n' | grep ':amd64$' | xargs -r apt-get -o DPkg::Lock::Timeout=300 purge -y -qq >/dev/null 2>&1 || true
 		dpkg --remove-architecture amd64 >/dev/null 2>&1 || true
-		rm -f "$X64_SOURCES"
+		rm -f "$X64_SOURCES" ${CLOUD_APT_CONFIG}
 	fi
 	userdel "$RUNNER_USER" >/dev/null 2>&1 || true
 	rm -rf "$ROOT" "$STATE" "$ETC"
@@ -894,8 +985,9 @@ spare-drop) cmd_spare_drop "\${2:-}" "\${3:-}" ;;
 autonomy) cmd_autonomy "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" ;;
 autoarm) cmd_autoarm ;;
 rosetta) cmd_rosetta ;;
+swap) cmd_swap ;;
 uninstall) cmd_uninstall ;;
-*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|guard|install-release|spare-add|spare-drop|autonomy|autoarm|rosetta|uninstall" ;;
+*) die "usage: runnerctl status|caches|bench|gc|arm|stop|stop-all|limits|env|guard|install-release|spare-add|spare-drop|autonomy|autoarm|rosetta|swap|uninstall" ;;
 esac
 `;
 
@@ -906,7 +998,15 @@ const recordJob = sh`	{
 		printf 'workflow=%s\n' "\${GITHUB_WORKFLOW:-}"
 		printf 'job=%s\n' "\${GITHUB_JOB:-}"
 		printf 'started=%s\n' "$(date +%s)"
+		printf 'oom_kills=%s\n' "$(oom_kills)"
 	} >"$state.tmp" 2>/dev/null && mv -f "$state.tmp" "$state" 2>/dev/null || true`;
+
+/**
+ * Processes the kernel killed for memory since the machine started
+ * (/proc/vmstat). The job file keeps the count at the start and at the end of
+ * the job: a job that failed while it rose is re-run like an interrupted one.
+ */
+const oomKills = sh`oom_kills() { awk '$1 == "oom_kill" { print $2 }' /proc/vmstat 2>/dev/null || true; }`;
 
 /**
  * Runs after the job file is written: a cleanup that needs every cache idle
@@ -918,7 +1018,7 @@ const waitForCleanup = sh`	if [ -e /var/lib/dokploy-runners/gc.lock ]; then
 		while [ -n "$(find /var/lib/dokploy-runners/gc.lock -mmin -20 2>/dev/null)" ]; do sleep 3; done
 	fi`;
 
-const recordCompletion = sh`	printf 'completed=%s\n' "$(date +%s)" >>"$state" 2>/dev/null || true`;
+const recordCompletion = sh`	printf 'completed=%s\noom_kills_end=%s\n' "$(date +%s)" "$(oom_kills)" >>"$state" 2>/dev/null || true`;
 
 /**
  * The job guard of the pool, before anything of the job runs. Its settings come
@@ -1022,7 +1122,8 @@ export const jobGuardFile = (guard: GithubRunnerJobGuard) => {
 
 const jobHook = (phase: "started" | "completed") => sh`#!/bin/bash
 # Managed by Dokploy: ${phase === "started" ? "applies the job guard, " : ""}records the job of this runner slot, then runs the pool hook.
-${phase === "started" ? `${jobGuardCheck}\n` : ""}slot="\${DOKPLOY_RUNNER_SLOT:-}"
+${phase === "started" ? `${jobGuardCheck}\n` : ""}${oomKills}
+slot="\${DOKPLOY_RUNNER_SLOT:-}"
 if [[ "$slot" =~ ^[0-9]+$ ]]; then
 	state="/var/lib/dokploy-runners/jobs/$slot"
 ${phase === "started" ? `${recordJob}\n${waitForCleanup}` : recordCompletion}
@@ -1066,6 +1167,16 @@ Environment=DOKPLOY_RUNNER_SLOT=%i
 # run.sh forwards SIGTERM to the listener as SIGINT: the job is cancelled and
 # reported to GitHub instead of being cut off.
 Environment=RUNNER_MANUALLY_TRAP_SIG=1
+# One job short of memory must not take down the others. The runner gives the
+# processes it starts an oom_score_adj of 500 (actions/runner ProcessInvoker),
+# its \`docker exec\` clients included: the kernel killed those first, a few MiB
+# each, one per job, before the process that used the memory, and systemd then
+# stopped every runner that lost one. Its processes now start level with the
+# jobs' own (the kernel takes the largest), the runner itself is kept out of
+# it, and a runner whose job loses a process stays up to report the job.
+Environment=PIPELINE_JOB_OOMSCOREADJ=0
+OOMScoreAdjust=-800
+OOMPolicy=continue
 ExecStart=/opt/dokploy-runners/slots/%i/run.sh
 KillMode=mixed
 # run.sh exits with 143 after forwarding SIGTERM: a clean stop.
@@ -1113,6 +1224,24 @@ Description=Dokploy GitHub Actions runners: arm free slots while no controller a
 [Service]
 Type=oneshot
 ExecStart=${RUNNERCTL} autoarm
+`;
+
+/**
+ * Compressed swap at every boot of a Mac VM (see runnerctl swap). Elsewhere the
+ * condition leaves the unit skipped: a Linux machine keeps its own swap.
+ */
+const swapService = `[Unit]
+Description=Dokploy GitHub Actions runners: compressed swap for a Mac VM
+ConditionVirtualization=apple
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${RUNNERCTL} swap
+
+[Install]
+WantedBy=multi-user.target
 `;
 
 /** Mounts and registers Rosetta at boot, before Docker starts (see runnerctl rosetta). */
@@ -1199,6 +1328,11 @@ const files: { path: string; mode: string; content: string }[] = [
 		content: rosettaService,
 	},
 	{
+		path: "/etc/systemd/system/dokploy-swap.service",
+		mode: "0644",
+		content: swapService,
+	},
+	{
 		path: "/etc/needrestart/conf.d/50-dokploy-runners.conf",
 		mode: "0644",
 		content: needrestartConf,
@@ -1241,9 +1375,12 @@ apt_update() {
 	done
 	fail "apt-get update kept failing"
 }
+${keepSourcesNative}
 
 if command -v apt-get >/dev/null 2>&1; then
 	log "Installing packages"
+	# A machine with x86_64 runners: a reboot may have rewritten the sources.
+	if dpkg --print-foreign-architectures | grep -qx amd64; then keep_sources_native; fi
 	apt_update
 	apt-get -o DPkg::Lock::Timeout=300 install -y -qq ca-certificates curl tar jq git >/dev/null
 	if ! command -v docker >/dev/null 2>&1; then
@@ -1325,6 +1462,9 @@ systemctl enable --now dokploy-runner-autoarm.timer >/dev/null
 # Rosetta for the x86_64 runners, when the VM shares it: now, and at every boot.
 systemctl enable dokploy-rosetta.service >/dev/null
 systemctl restart dokploy-rosetta.service || echo "warning: Rosetta could not be registered: the x86_64 runners wait"
+# Compressed swap on a Mac VM, now and at every boot; skipped elsewhere.
+systemctl enable dokploy-swap.service >/dev/null
+systemctl restart dokploy-swap.service || echo "warning: the compressed swap of the VM could not be turned on"
 echo ${RUNTIME_VERSION} >/etc/dokploy-runners/runtime-version
 log "Runtime ${RUNTIME_VERSION} installed"
 `;

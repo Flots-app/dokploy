@@ -17,6 +17,7 @@ import {
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { parseEnvLines } from "../../utils/github-runners/env";
+import { DEFAULT_FAILOVER } from "../../utils/github-runners/health";
 import { MACHINE_NAME } from "../../utils/github-runners/setup-constants";
 import { updatePolicySchema } from "../../utils/github-runners/updates";
 import { organization } from "./account";
@@ -186,7 +187,12 @@ export interface GithubRunnerNodeObservation {
 		diskTotalBytes?: number | null;
 		memoryCurrentBytes: number | null;
 	};
-	runtime?: { version: number; runnerVersion: string | null };
+	runtime?: {
+		version: number;
+		runnerVersion: string | null;
+		/** Swap of the machine (a Mac VM: runtime v18's compressed swap). */
+		swapBytes?: number | null;
+	};
 	admission: { ok: boolean; reason?: string };
 	/** The x86_64 runners, when the machine has some: why they wait, if they do. */
 	x64?: { runners: number; release: string | null; blocked: string | null };
@@ -371,6 +377,30 @@ export const DEFAULT_JOB_GUARD: GithubRunnerJobGuard = {
 	refuseDependabot: true,
 };
 
+/**
+ * When the jobs of a pool leave its machines (see health.ts): a machine that
+ * loses jobs is set aside, and the routing goes to the fallback once no machine
+ * is left to take jobs.
+ */
+export interface GithubRunnerFailover {
+	/** Jobs a machine loses within the window that set it aside; 0 turns it off. */
+	interruptions: number;
+	windowMinutes: number;
+	/** How long a machine stays aside after its last loss. */
+	cooldownMinutes: number;
+	/** auto: health decides; pool and fallback force the routing. */
+	mode: "auto" | "pool" | "fallback";
+}
+
+export { DEFAULT_FAILOVER };
+
+/** A machine set aside after losing jobs (see health.ts). */
+export interface GithubRunnerNodeHealth {
+	degradedSince: string;
+	degradedUntil: string;
+	reason: string;
+}
+
 /** Operating system of a machine (or of a Mac's VM), as it reports it. */
 export interface GithubRunnerOsInfo {
 	/** os-release ID (ubuntu, debian…) or macos. */
@@ -540,6 +570,10 @@ export const githubRunnerPools = pgTable(
 			.notNull()
 			.default(["ubuntu-24.04"]),
 		x64Routing: jsonb("x64Routing").$type<GithubRunnerRouting | null>(),
+		failover: jsonb("failover")
+			.$type<GithubRunnerFailover>()
+			.notNull()
+			.default(DEFAULT_FAILOVER),
 		placement: githubRunnerPlacement("placement").notNull().default("fastest"),
 		/** Runner and runtime updates; each machine may override it. */
 		updatePolicy: jsonb("updatePolicy")
@@ -637,6 +671,8 @@ export const githubRunnerNodes = pgTable(
 		drain: jsonb("drain").$type<GithubRunnerDrain | null>(),
 		applied: jsonb("applied").$type<GithubRunnerAppliedConfig | null>(),
 		observed: jsonb("observed").$type<GithubRunnerNodeObservation | null>(),
+		/** Set aside after losing jobs, until the cooldown ends (see health.ts). */
+		health: jsonb("health").$type<GithubRunnerNodeHealth | null>(),
 		lastSeenAt: text("lastSeenAt"),
 		lastError: text("lastError"),
 		lastPrunedAt: text("lastPrunedAt"),
@@ -1072,6 +1108,18 @@ const poolFields = z.object({
 		.default(null),
 	fallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
 	x64FallbackLabels: z.array(label).min(1).max(10).default(["ubuntu-24.04"]),
+	failover: z
+		.object({
+			interruptions: z.number().int().min(0).max(20),
+			windowMinutes: z.number().int().min(1).max(120),
+			cooldownMinutes: z
+				.number()
+				.int()
+				.min(1)
+				.max(24 * 60),
+			mode: z.enum(["auto", "pool", "fallback"]),
+		})
+		.default(DEFAULT_FAILOVER),
 	placement: z.enum(["fastest", "spread"]).default("fastest"),
 	updatePolicy: updatePolicySchema.default({ auto: true, window: null }),
 	rolloutPolicy: z

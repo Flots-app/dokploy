@@ -57,6 +57,7 @@ import {
 	type DiskSample,
 	diskPressure,
 	diskThresholds,
+	FILL_HORIZON_MS,
 	fillRate,
 	freeAtUsage,
 	vmCleanupGoal,
@@ -117,6 +118,7 @@ import {
 	parseCaches,
 	parseCleanup,
 	parseDockerSize,
+	parseJob,
 	parseLinuxFacts,
 	parseMacStatus,
 	parseRecords,
@@ -137,6 +139,8 @@ import {
 	FORCE_CANCEL_AFTER_MS,
 	initialRerunStatus,
 	MAX_RUN_ATTEMPTS,
+	oomRerun,
+	pickRerunDecision,
 } from "@dokploy/server/utils/github-runners/rerun";
 import {
 	decideRouting,
@@ -573,6 +577,15 @@ describe("probe parsing", () => {
 		const parsed = parseRuntimeStatus(parseRecords(status));
 		expect(parsed.runtimeVersion).toBe(1);
 		expect(parsed.host).toMatchObject({ cpus: 8, arch: "aarch64", load: 1.25 });
+		// A runtime older than v18 does not report its swap.
+		expect(parsed.host?.swapBytes).toBeNull();
+		expect(
+			parseRuntimeStatus(
+				parseRecords(
+					"runtime version=18\nhost cpus=10 memory_kib=12000000 available_kib=9000000 swap_kib=4194304 arch=aarch64 load=0.5",
+				),
+			).host?.swapBytes,
+		).toBe(4 * 1024 ** 3);
 		expect(parsed.disk?.freeBytes).toBe(52428800 * 1024);
 		expect(parsed.release).toBe("2.329.0");
 		expect(parsed.slice).toEqual({
@@ -1180,6 +1193,71 @@ describe("runtime scripts", () => {
 		return file;
 	};
 
+	it("keeps every runner up when one job runs the machine out of memory", () => {
+		const unit = extractRuntimeFile(
+			files().install,
+			"/etc/systemd/system/dokploy-runner@.service",
+		);
+		// Production, 14 November 2026: the runner's default oom_score_adj of 500
+		// made the kernel kill the `docker exec` client of every running job, and
+		// systemd's default OOMPolicy=stop then stopped each of their runners.
+		expect(unit).toMatch(/^Environment=PIPELINE_JOB_OOMSCOREADJ=0$/m);
+		expect(unit).toMatch(/^OOMPolicy=continue$/m);
+		// Below the jobs' processes, so the kernel takes one of theirs first; the
+		// runner (unprivileged) may still raise its children back to 0.
+		expect(unit).toMatch(/^OOMScoreAdjust=-800$/m);
+	});
+
+	it("records the processes the kernel killed for memory during the job", () => {
+		const { started, completed } = files();
+		const vmstat = join(dir, "vmstat");
+		const run = (hook: string, kills: number) => {
+			writeFileSync(vmstat, `pgfault 12\noom_kill ${kills}\npgmajfault 3\n`);
+			const file = join(dir, `oom-${hook.length}.sh`);
+			writeFileSync(
+				file,
+				hook
+					.replace("/var/lib/dokploy-runners/jobs", dir)
+					.replace("/proc/vmstat", vmstat),
+			);
+			execFileSync(
+				"bash",
+				["--noprofile", "--norc", "-e", "-o", "pipefail", file],
+				{
+					env: {
+						...process.env,
+						DOKPLOY_RUNNER_SLOT: "5",
+						GITHUB_REPOSITORY: "Flots-app/monorepo",
+						GITHUB_RUN_ID: "43603068295",
+						GITHUB_RUN_ATTEMPT: "2",
+						GITHUB_JOB: "static",
+						GITHUB_EVENT_NAME: "push",
+						GITHUB_EVENT_PATH: pushEvent(),
+					},
+				},
+			);
+		};
+		run(started, 7);
+		expect(readFileSync(join(dir, "5"), "utf8")).toMatch(/^oom_kills=7$/m);
+		run(completed, 9);
+		const job = parseJob(readFileSync(join(dir, "5")).toString("base64"));
+		expect(job).toMatchObject({ runAttempt: "2", oomKills: 2 });
+		expect(job?.completedAt).not.toBeNull();
+		// A machine without the counter (or an older runtime) records nothing.
+		expect(
+			parseJob(
+				Buffer.from("run_id=1\ncompleted=1700000000\n").toString("base64"),
+			)?.oomKills,
+		).toBeNull();
+		expect(
+			parseJob(
+				Buffer.from(
+					"run_id=1\noom_kills=\ncompleted=1\noom_kills_end=\n",
+				).toString("base64"),
+			)?.oomKills,
+		).toBeNull();
+	});
+
 	it("records the job and chains the pool hook", () => {
 		const { started } = files();
 		const hook = join(dir, "job-started.sh");
@@ -1491,6 +1569,55 @@ apt_update && echo updated`,
 		expect(files().osPatch).toMatch(
 			/for attempt in \$\(seq 1 30\); do\n\t\$apt update -qq && break/,
 		);
+	});
+
+	it("keeps the apt sources of a VM with x86_64 runners to arm64 across reboots", () => {
+		const { install, runnerctl } = files();
+		// m4, 2026-11-14: Lima gives the VM a new cloud-init instance at every boot,
+		// cloud-init writes ubuntu.sources again, and with amd64 known to dpkg every
+		// apt-get update failed with 404 on ports.ubuntu.com.
+		const restore =
+			"if dpkg --print-foreign-architectures | grep -qx amd64; then keep_sources_native; fi\n\tapt_update";
+		expect(install).toContain(restore);
+		expect(install.indexOf(restore)).toBeLessThan(
+			install.indexOf("\tapt_update\n\tapt-get"),
+		);
+		expect(install).toMatch(/^keep_sources_native\(\) \{$/m);
+		expect(install).toContain("preserve_sources_list: true");
+		expect(install).toContain(
+			">/etc/cloud/cloud.cfg.d/90-dokploy-runners-apt.cfg",
+		);
+		expect(runnerctl).toMatch(/^keep_sources_native\(\) \{$/m);
+		const prepare = runnerctl.slice(runnerctl.indexOf("x64_prepare() {"));
+		expect(prepare.indexOf("\tkeep_sources_native\n")).toBeLessThan(
+			prepare.indexOf("dpkg --add-architecture amd64"),
+		);
+		expect(runnerctl).toContain(
+			'rm -f "$X64_SOURCES" /etc/cloud/cloud.cfg.d/90-dokploy-runners-apt.cfg',
+		);
+	});
+
+	it("gives a Mac VM 4 GiB of compressed swap, at every boot", () => {
+		const { install, runnerctl } = files();
+		const unit = extractRuntimeFile(
+			install,
+			"/etc/systemd/system/dokploy-swap.service",
+		);
+		// Only in a VM of Virtualization.framework: a Linux machine keeps its swap.
+		expect(unit).toMatch(/^ConditionVirtualization=apple$/m);
+		expect(unit).toMatch(
+			/^ExecStart=\/opt\/dokploy-runners\/bin\/runnerctl swap$/m,
+		);
+		expect(unit).toMatch(/^RemainAfterExit=yes$/m);
+		expect(unit).toMatch(/^WantedBy=multi-user\.target$/m);
+		expect(install).toContain("systemctl enable dokploy-swap.service");
+		expect(install).toContain("systemctl restart dokploy-swap.service ||");
+		expect(runnerctl).toContain("SWAP_KIB=$((4 * 1024 * 1024))");
+		expect(runnerctl).toContain("SWAP_MIN_FREE_KIB=$((10 * 1024 * 1024))");
+		expect(runnerctl).toContain("swap) cmd_swap ;;");
+		// Uninstalling turns it off and gives the disk back.
+		expect(runnerctl).toContain("systemctl disable --now dokploy-swap.service");
+		expect(runnerctl).toContain('swapoff "$SWAP_FILE"');
 	});
 
 	it("gives runners time to stop, starts each one clean, and keeps the budget", () => {
@@ -1815,9 +1942,17 @@ describe("disk cleanup", () => {
 			expectedBytes: 0,
 		});
 		// 2 GiB a minute: 20 GiB within the horizon would cross the threshold.
+		// Ahead of it, only what the jobs are expected to write is freed (5 GiB
+		// here), not the headroom of a disk already low.
 		const rate = (2 * GiB) / minutes(1);
 		expect(diskPressure(45 * GiB, 200 * GiB, thresholds, rate)).toEqual({
 			trigger: "filling",
+			targetBytes: 50 * GiB,
+			thresholdBytes: 30 * GiB,
+			expectedBytes: 20 * GiB,
+		});
+		expect(diskPressure(25 * GiB, 200 * GiB, thresholds, rate)).toEqual({
+			trigger: "low-disk",
 			targetBytes: 60 * GiB,
 			thresholdBytes: 30 * GiB,
 			expectedBytes: 20 * GiB,
@@ -1874,6 +2009,61 @@ describe("disk cleanup", () => {
 				{ freeBytes: 200 * GiB, pressure: null },
 			),
 		).toBeNull();
+	});
+
+	it("never removes the caches in use ahead of the threshold", () => {
+		// m4 on 2026-11-14: 32.9 GB free on the Mac, cleaned below 24.5 GB, 8.7 GB
+		// expected within the horizon. The VM had 28.9 GB free.
+		const GB = 1e9;
+		const macThresholds = diskThresholds(245.1 * GB, {
+			diskReserveGb: 15,
+			diskCleanupPercent: 90,
+		});
+		const rate = (8.7 * GB) / FILL_HORIZON_MS;
+		const mac = diskPressure(32.9 * GB, 245.1 * GB, macThresholds, rate);
+		expect(mac?.trigger).toBe("filling");
+		const goal = vmCleanupGoal(
+			{ freeBytes: 28.9 * GB, totalBytes: 61.3 * GB, pressure: null },
+			{ freeBytes: 32.9 * GB, pressure: mac },
+		);
+		// The VM frees what keeps the expected writes above the Mac threshold
+		// (0.3 GB), not 12.6 GB as before.
+		expect(goal?.trigger).toBe("filling");
+		expect((goal?.targetBytes ?? 0) / GB).toBeCloseTo(29.2, 1);
+		// The step removing the caches in use starts once the Mac really goes
+		// below its threshold, 8.4 GB of writes away; it used to start at the
+		// VM's free space, i.e. at the first byte written during the cleanup.
+		expect((goal?.thresholdBytes ?? 0) / GB).toBeCloseTo(20.5, 1);
+
+		// Only the VM filling: its own threshold, in the VM.
+		const vmThresholds = vmDiskThresholds(60 * GiB, 85);
+		const vm = diskPressure(
+			12 * GiB,
+			60 * GiB,
+			vmThresholds,
+			(5 * GiB) / FILL_HORIZON_MS,
+		);
+		expect(
+			vmCleanupGoal(
+				{ freeBytes: 12 * GiB, totalBytes: 60 * GiB, pressure: vm },
+				{ freeBytes: 200 * GiB, pressure: null },
+			),
+		).toEqual({
+			trigger: "filling",
+			targetBytes: 14 * GiB,
+			thresholdBytes: 9 * GiB,
+			expectedBytes: 5 * GiB,
+		});
+		// The Mac low and the VM filling: the Mac's missing space wins.
+		expect(
+			vmCleanupGoal(
+				{ freeBytes: 12 * GiB, totalBytes: 60 * GiB, pressure: vm },
+				{
+					freeBytes: 20 * GiB,
+					pressure: mac && { ...mac, trigger: "low-disk" },
+				},
+			)?.thresholdBytes,
+		).toBe(12 * GiB + ((mac?.thresholdBytes ?? 0) - 20 * GiB));
 	});
 
 	it("retries soon after a cleanup, and at once when jobs it waited for end", () => {
@@ -2267,6 +2457,67 @@ describe("recovery of interrupted jobs", () => {
 				runJob(job.runnerName, "in_progress"),
 			]),
 		).toEqual({ action: "wait" });
+	});
+
+	it("queues a job that ended while the machine ran out of memory", () => {
+		expect(oomRerun({ oomKills: 3, runAttempt: "1" }, true)).toEqual({
+			rerunStatus: "pending",
+			rerunNote:
+				"the machine ran out of memory during the job (3 processes killed)",
+		});
+		expect(
+			oomRerun({ oomKills: 1, runAttempt: String(MAX_RUN_ATTEMPTS) }, true),
+		).toMatchObject({ rerunStatus: "skipped" });
+		expect(oomRerun({ oomKills: 0, runAttempt: "1" }, true)).toEqual({});
+		expect(oomRerun({ oomKills: null, runAttempt: "1" }, true)).toEqual({});
+		expect(oomRerun({ oomKills: 2, runAttempt: "1" }, false)).toEqual({});
+	});
+
+	it("re-runs such a job only if it failed, and never cancels its run", () => {
+		const ended = { ...job, outcome: "completed" };
+		// Its runner reported it: the run is never cancelled for it.
+		expect(
+			decideRerun(ended, run(), [runJob(job.runnerName, "in_progress")]),
+		).toEqual({ action: "wait" });
+		expect(
+			decideRerun(ended, run(), [
+				runJob(job.runnerName, "completed", "failure"),
+			]),
+		).toEqual({ action: "wait" });
+		expect(
+			decideRerun(ended, run({ status: "completed", conclusion: "failure" }), [
+				runJob(job.runnerName, "completed", "failure"),
+			]),
+		).toMatchObject({ action: "rerun" });
+		// It lost nothing, or the run was cancelled on purpose.
+		expect(
+			decideRerun(ended, run(), [
+				runJob(job.runnerName, "completed", "success"),
+			]),
+		).toMatchObject({ action: "skip" });
+		expect(
+			decideRerun(
+				ended,
+				run({ status: "completed", conclusion: "cancelled" }),
+				[runJob(job.runnerName, "completed", "cancelled")],
+			),
+		).toMatchObject({ action: "skip" });
+		// An interrupted job keeps its own path.
+		expect(
+			decideRerun({ ...job, outcome: "interrupted" }, run(), [
+				runJob(job.runnerName, "in_progress"),
+			]),
+		).toMatchObject({ action: "cancel" });
+	});
+
+	it("decides for every queued job of a run together", () => {
+		const skip = { action: "skip", note: "the job did not fail" } as const;
+		const cancel = { action: "cancel", note: "last one" } as const;
+		const rerun = { action: "rerun", note: "attempt 2" } as const;
+		expect(pickRerunDecision([skip, { action: "wait" }, cancel])).toBe(cancel);
+		expect(pickRerunDecision([skip, rerun])).toBe(rerun);
+		expect(pickRerunDecision([skip])).toBe(skip);
+		expect(pickRerunDecision([])).toEqual({ action: "wait" });
 	});
 
 	it("forces a cancel the run did not follow, never at once", () => {
@@ -4135,6 +4386,210 @@ done`);
 				expect(existsSync(join(root, "tool-cache/node/18"))).toBe(false);
 				expect(existsSync(join(root, "tool-cache/node", forged))).toBe(false);
 				expect(existsSync(join(state, "home/.cache/pip"))).toBe(false);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it.skipIf(!linuxShell)(
+		"removes build cache by age like the other caches, the most recent last",
+		() => {
+			// Everything lives in a directory of the script: the outcome is all
+			// in its output. Docker is a stub: build cache records "<hours unused>
+			// <KiB>", images "<id> <KiB> <seconds unused>"; each removal adds its
+			// size to the free space.
+			const runnerctl = runnerctlScript()
+				.replace("ROOT=/opt/dokploy-runners", 'ROOT="$T/root"')
+				.replace("STATE=/var/lib/dokploy-runners", 'STATE="$T/state"');
+			const functions = runnerctl.slice(
+				0,
+				runnerctl.indexOf('\ncase "${1:-}" in'),
+			);
+			const result = bash(`T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/root/tool-cache" "$T/state/home/.cache"
+${functions}
+LOG="$T/docker.log" FREE="$T/free" CACHE="$T/cache" IMAGES="$T/images"
+JOBS=no ATIME=relatime
+kib_free() { cat "$FREE"; }
+gc_docker() { return 0; }
+gc_jobs_running() { [ "$JOBS" = yes ]; }
+findmnt() { echo "rw,$ATIME"; }
+sync() { :; }
+timeout() { :; }
+docker() {
+	local age=-1 freed=0 a s id
+	echo "$*" >>"$LOG"
+	case "$1 $2" in
+	"builder prune")
+		if [[ "$*" =~ until=([0-9]+)h ]]; then age=\${BASH_REMATCH[1]}; fi
+		while read -r a s; do
+			if ((age < 0 || a > age)); then freed=$((freed + s)); else echo "$a $s"; fi
+		done <"$CACHE" >"$CACHE.new"
+		mv "$CACHE.new" "$CACHE"
+		;;
+	"image rm")
+		while read -r id s a; do
+			if [ "$id" = "$3" ]; then freed=$s; else echo "$id $s $a"; fi
+		done <"$IMAGES" >"$IMAGES.new"
+		mv "$IMAGES.new" "$IMAGES"
+		((freed > 0)) || return 1
+		;;
+	esac
+	echo $(($(cat "$FREE") + freed)) >"$FREE"
+}
+gc_candidates() {
+	local now id s age
+	now=$(date +%s)
+	while read -r id s age; do printf '%s\\timage\\t\\t%s\\0' $((now - age)) "$id"; done <"$IMAGES"
+	printf '%s\\thome\\t\\t%s\\0' $((now - 100 * 3600)) "$GC_HOME/.cache/pip"
+}
+run() { # <name> <jobs running> <mount option> <cmd_gc arguments>
+	local name=$1
+	JOBS=$2 ATIME=$3
+	shift 3
+	echo 10000 >"$FREE"
+	: >"$LOG"
+	printf '%s\\n' "800 100" "200 100" "100 100" "40 100" "20 100" "8 100" "2 100" "0 100" >"$CACHE"
+	printf 'sha256:%064d 1000 %d\\n' 1 $((800 * 3600)) 2 $((100 * 3600)) 3 $((30 * 3600)) 4 $((10 * 3600)) 5 1800 >"$IMAGES"
+	mkdir -p "$GC_HOME/.cache/pip"
+	(cmd_gc "$@") >"$T/out"
+	echo "$name: $(grep -o 'reached=.*' "$T/out")"
+	echo "  build cache pruned: $(sed -n 's/^builder prune -af//p' "$LOG" | sed 's/^ --filter until=//; s/^$/all/' | tr '\\n' ' ')"
+	echo "  build cache left: $(cut -d' ' -f1 "$CACHE" | tr '\\n' ' ')"
+	echo "  images removed: $(sed -n 's/^image rm sha256:0*//p' "$LOG" | tr '\\n' ' ')"
+	echo "  home cache: $([ -d "$GC_HOME/.cache/pip" ] && echo kept || echo removed), lock: $([ -e "$GC_LOCK" ] && echo left || echo gone), waste: $(grep -v '^builder\\|^image rm' "$LOG" | cut -d' ' -f1-2 | tr '\\n' ',')"
+}
+run light no relatime light
+run filling yes noatime auto 5000 12400
+run busy yes relatime auto 20000 22000
+run idle no noatime auto 20000 22000
+run idle-enough no noatime auto 13500 13650`);
+			expect(result.stderr).toBe("");
+			const waste =
+				"waste: container prune,network prune,volume prune,image prune,";
+			expect(result.stdout.split("\n")).toEqual([
+				// Waste only: no build cache, whatever its age.
+				"light: reached=yes idle=not-needed",
+				"  build cache pruned: ",
+				"  build cache left: 800 200 100 40 20 8 2 0 ",
+				"  images removed: ",
+				`  home cache: kept, lock: gone, ${waste}`,
+				// Ahead of the threshold: oldest first until the target, and the
+				// caches used within 25 hours stay. Without access times, file
+				// caches wait for the idle step.
+				"filling: reached=yes idle=not-needed",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h ",
+				"  build cache left: 20 8 2 0 ",
+				"  images removed: 1 2 ",
+				`  home cache: kept, lock: gone, ${waste}`,
+				// Below the threshold while a job runs: still nothing under 25 hours.
+				"busy: reached=no idle=skipped-jobs",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h 25h ",
+				"  build cache left: 20 8 2 0 ",
+				"  images removed: 1 2 3 ",
+				`  home cache: removed, lock: gone, ${waste}`,
+				// Idle and still below: the recent caches too, the most recent last,
+				// every image tried once.
+				"idle: reached=no idle=done",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h 25h 12h 6h 3h 1h all ",
+				"  build cache left: ",
+				"  images removed: 1 2 3 4 5 ",
+				`  home cache: removed, lock: gone, ${waste}`,
+				// The newest caches stay when the older ones were enough.
+				"idle-enough: reached=yes idle=done",
+				"  build cache pruned: 720h 336h 168h 120h 96h 72h 48h 36h 25h 12h 6h ",
+				"  build cache left: 2 0 ",
+				"  images removed: 1 2 3 4 ",
+				`  home cache: removed, lock: gone, ${waste}`,
+				"",
+			]);
+		},
+	);
+
+	it.skipIf(!linuxShell)(
+		"turns on the compressed swap once, and only with the disk to spare",
+		() => {
+			const dir = realpathSync(mkdtempSync(join(tmpdir(), "dokploy-swap-")));
+			try {
+				const bin = join(dir, "bin");
+				const calls = join(dir, "calls");
+				const active = join(dir, "active");
+				mkdirSync(bin);
+				mkdirSync(join(dir, "zswap"));
+				const stub = (name: string, body: string) => {
+					writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`);
+					chmodSync(join(bin, name), 0o755);
+				};
+				stub(
+					"df",
+					`printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\n/dev/vda1 1 1 %s 1%% /\\n' "$FREE_KIB"`,
+				);
+				stub(
+					"swapon",
+					`if [ "$1" = --show=NAME ]; then cat ${shellQuote(active)} 2>/dev/null; exit 0; fi
+echo "swapon $*" >>${shellQuote(calls)}
+echo "$3" >>${shellQuote(active)}`,
+				);
+				stub(
+					"fallocate",
+					`echo "fallocate $*" >>${shellQuote(calls)}\ntruncate -s "$2" "$3"`,
+				);
+				stub("mkswap", `echo "mkswap $*" >>${shellQuote(calls)}`);
+				const file = join(dir, "swap/dokploy-runners.swap");
+				const swap = (freeKib: number) =>
+					bash(`set -euo pipefail
+export PATH=${shellQuote(bin)}:/usr/bin:/bin FREE_KIB=${freeKib}
+die() { echo "runnerctl: $*" >&2; exit 1; }
+SWAP_FILE=${shellQuote(file)}
+SWAP_KIB=4096
+SWAP_MIN_FREE_KIB=1024
+ZSWAP_PARAMS=${shellQuote(join(dir, "zswap"))}
+${shellFunction(runnerctlScript(), "cmd_swap")}
+cmd_swap`);
+				const called = () =>
+					existsSync(calls)
+						? readFileSync(calls, "utf8").trim().split("\n")
+						: [];
+
+				// Not enough disk for the file and the margin: no swap file at all.
+				expect(swap(5000)).toMatchObject({
+					status: 0,
+					stdout: "swap skipped: 4 MiB free\n",
+				});
+				expect(existsSync(file)).toBe(false);
+				expect(called()).toEqual([]);
+				// zswap is set up either way.
+				expect(readFileSync(join(dir, "zswap/enabled"), "utf8")).toBe("1\n");
+				expect(readFileSync(join(dir, "zswap/compressor"), "utf8")).toBe(
+					"zstd\n",
+				);
+				expect(readFileSync(join(dir, "zswap/max_pool_percent"), "utf8")).toBe(
+					"25\n",
+				);
+
+				// Enough disk: the file is made aside, then turned on.
+				expect(swap(6000)).toMatchObject({
+					status: 0,
+					stdout: "swap on kib=4096 zswap=1\n",
+				});
+				expect(called()).toEqual([
+					`fallocate -l 4096K ${file}.new`,
+					`mkswap -q ${file}.new`,
+					`swapon -p 10 ${file}`,
+				]);
+				expect(existsSync(`${file}.new`)).toBe(false);
+				expect(execFileSync("stat", ["-c", "%a", file]).toString().trim()).toBe(
+					"600",
+				);
+
+				// Already on: nothing to do. After a reboot: turned on again, not remade.
+				swap(6000);
+				expect(called()).toHaveLength(3);
+				rmSync(active);
+				expect(swap(5000).stdout).toBe("swap on kib=4096 zswap=1\n");
+				expect(called().slice(3)).toEqual([`swapon -p 10 ${file}`]);
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}

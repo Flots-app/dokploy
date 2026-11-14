@@ -1,3 +1,4 @@
+import { DEFAULT_FAILOVER } from "@dokploy/server/utils/github-runners/health";
 import { updatePolicySchema } from "@dokploy/server/utils/github-runners/updates";
 import { z } from "zod";
 import { parseLabels } from "./budget-values";
@@ -49,6 +50,16 @@ export const poolFormSchema = z
 			.refine((name) => !/^github_/i.test(name), "Cannot start with GITHUB_"),
 		fallbackLabels: z.string(),
 		x64FallbackLabels: z.string(),
+		failover: z.object({
+			interruptions: z.number().int().min(0).max(20),
+			windowMinutes: z.number().int().min(1).max(120),
+			cooldownMinutes: z
+				.number()
+				.int()
+				.min(1)
+				.max(24 * 60),
+			mode: z.enum(["auto", "pool", "fallback"]),
+		}),
 		placement: z.enum(["fastest", "spread"]),
 		updatePolicy: updatePolicySchema,
 		rolloutPolicy: z.object({
@@ -100,6 +111,7 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 	routingVariable: pool?.routingVariable ?? "DOKPLOY_RUNS_ON",
 	fallbackLabels: (pool?.fallbackLabels ?? ["ubuntu-24.04"]).join(", "),
 	x64FallbackLabels: (pool?.x64FallbackLabels ?? ["ubuntu-24.04"]).join(", "),
+	failover: pool?.failover ?? DEFAULT_FAILOVER,
 	placement: pool?.placement ?? "fastest",
 	updatePolicy: pool?.updatePolicy ?? { auto: true, window: null },
 	rolloutPolicy: pool?.rolloutPolicy ?? { maxUnavailable: 1, canary: true },
@@ -144,6 +156,7 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 	},
 	rerunInterruptedJobs: values.rerunInterruptedJobs ?? true,
 	routingVariable: values.routingEnabled ? values.routingVariable : null,
+	failover: values.failover,
 	placement: values.placement,
 	updatePolicy: values.updatePolicy,
 	rolloutPolicy: values.rolloutPolicy,

@@ -34,6 +34,29 @@ export const initialRerunStatus = (enabled: boolean, runAttempt: string) => {
 };
 
 /**
+ * A job that ended while the kernel killed processes of its machine for memory
+ * may have lost one of its own (a build or test process, with exit code 137):
+ * it is queued like an interrupted job, and decideRerun re-runs it only if it
+ * failed.
+ */
+export const oomRerun = (
+	job: { oomKills?: number | null; runAttempt: string },
+	enabled: boolean,
+): { rerunStatus?: "pending" | "skipped"; rerunNote?: string } => {
+	if (!job.oomKills) return {};
+	const rerunStatus = initialRerunStatus(enabled, job.runAttempt);
+	if (!rerunStatus) return {};
+	const killed = `${job.oomKills} process${job.oomKills === 1 ? "" : "es"}`;
+	return {
+		rerunStatus,
+		rerunNote:
+			rerunStatus === "skipped"
+				? `not re-run: already attempt ${job.runAttempt}`
+				: `the machine ran out of memory during the job (${killed} killed)`,
+	};
+};
+
+/**
  * Next step to recover a job a machine interrupted (crash, forced stop). GitHub
  * never moves a started job to another runner: the run has to complete, then
  * its failed jobs are re-run and land on any healthy machine of the pool.
@@ -49,6 +72,8 @@ export const decideRerun = (
 		rerunStatus: string | null;
 		/** When the run was cancelled, for a cancel the run does not follow. */
 		rerunAt?: string | null;
+		/** "completed" for a job that ended on its own (see oomRerun). */
+		outcome?: string | null;
 	},
 	run: WorkflowRun,
 	jobs: WorkflowRunJob[],
@@ -64,6 +89,22 @@ export const decideRerun = (
 	const ours = jobs.find((item) => item.runnerName === job.runnerName);
 	if (!ours) {
 		return { action: "skip", note: "this runner ran no job of that run" };
+	}
+	// The machine lost track of a job that ended well (a controller restart
+	// while the slot was armed again): nothing to recover.
+	if (ours.status === "completed" && ours.conclusion === "success") {
+		return { action: "skip", note: "the job succeeded" };
+	}
+	// Ended on its own while its machine ran out of memory: its runner reported
+	// it, so the run never waits for it, and only a failure is worth a re-run.
+	if (job.outcome === "completed") {
+		if (ours.status === "completed" && ours.conclusion !== "failure") {
+			return {
+				action: "skip",
+				note: `the job did not fail (${ours.conclusion ?? "no conclusion"})`,
+			};
+		}
+		if (run.status !== "completed") return { action: "wait" };
 	}
 	if (run.status === "completed") {
 		if (run.conclusion === "success") {
@@ -93,4 +134,26 @@ export const decideRerun = (
 		action: "cancel",
 		note: "the interrupted job was the last one running: cancelling the run",
 	};
+};
+
+const PRECEDENCE: RerunDecision["action"][] = [
+	"force-cancel",
+	"cancel",
+	"rerun",
+	"wait",
+	"skip",
+];
+
+/**
+ * The step for the jobs of one run the pool queued: an interrupted job may need
+ * the run cancelled while a job that ended on its own waits, and one job worth
+ * a re-run is enough to re-run the failed jobs of the run.
+ */
+export const pickRerunDecision = (
+	decisions: RerunDecision[],
+): RerunDecision => {
+	const [best] = [...decisions].sort(
+		(a, b) => PRECEDENCE.indexOf(a.action) - PRECEDENCE.indexOf(b.action),
+	);
+	return best ?? { action: "wait" };
 };
