@@ -71,6 +71,19 @@ export interface WorkflowRun {
 	runAttempt: number;
 }
 
+/** One attempt of a workflow run, for the duration of a whole pipeline. */
+export interface WorkflowRunAttempt {
+	status: string;
+	conclusion: string | null;
+	/** Workflow name. */
+	name: string;
+	event: string;
+	/** When the attempt started running (run_started_at). */
+	startedAt: string | null;
+	/** Last update: the end of the attempt once it completed (updated_at). */
+	updatedAt: string | null;
+}
+
 export interface WorkflowRunJob {
 	name: string;
 	status: string;
@@ -94,6 +107,11 @@ export interface GithubRunnerClient {
 	authorization: () => Promise<string>;
 	/** `repository` is "owner/name" and must belong to the pool target. */
 	getRun: (repository: string, runId: string) => Promise<WorkflowRun>;
+	getRunAttempt: (
+		repository: string,
+		runId: string,
+		attempt: string,
+	) => Promise<WorkflowRunAttempt>;
 	listRunJobs: (repository: string, runId: string) => Promise<WorkflowRunJob[]>;
 	forceCancelRun: (repository: string, runId: string) => Promise<void>;
 	cancelRun: (repository: string, runId: string) => Promise<void>;
@@ -690,6 +708,32 @@ export const createGithubRunnerClient = (
 		};
 	};
 
+	const getRunAttempt: GithubRunnerClient["getRunAttempt"] = async (
+		repository,
+		runId,
+		attempt,
+	) => {
+		if (!/^\d{1,6}$/.test(attempt)) {
+			throw new GithubRunnerApiError(`Invalid run attempt: ${attempt}`, null);
+		}
+		const run = await json<{
+			status: string;
+			conclusion: string | null;
+			name: string | null;
+			event: string;
+			run_started_at: string | null;
+			updated_at: string | null;
+		}>("GET", `${runPath(repository, runId)}/attempts/${attempt}`);
+		return {
+			status: run.status,
+			conclusion: run.conclusion,
+			name: run.name ?? "",
+			event: run.event,
+			startedAt: run.run_started_at,
+			updatedAt: run.updated_at,
+		};
+	};
+
 	const listRunJobs: GithubRunnerClient["listRunJobs"] = async (
 		repository,
 		runId,
@@ -842,6 +886,7 @@ export const createGithubRunnerClient = (
 		target,
 		authorization,
 		getRun,
+		getRunAttempt,
 		listRunJobs,
 		cancelRun: async (repository, runId) =>
 			post(`${runPath(repository, runId)}/cancel`),

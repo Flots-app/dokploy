@@ -760,6 +760,46 @@ export const githubRunnerJobs = pgTable(
 	],
 );
 
+/**
+ * Workflow runs (pipelines) the pool's runners took part in, once GitHub
+ * reports them completed: how long the whole pipeline took, jobs on other
+ * runners included. One row per run attempt.
+ */
+export const githubRunnerPipelines = pgTable(
+	"github_runner_pipeline",
+	{
+		githubRunnerPipelineId: text("githubRunnerPipelineId")
+			.notNull()
+			.primaryKey()
+			.$defaultFn(() => nanoid()),
+		organizationId: text("organizationId")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		githubRunnerPoolId: text("githubRunnerPoolId").notNull(),
+		repository: text("repository").notNull(),
+		runId: text("runId").notNull(),
+		runAttempt: text("runAttempt").notNull(),
+		workflow: text("workflow").notNull(),
+		event: text("event"),
+		conclusion: text("conclusion"),
+		startedAt: text("startedAt").notNull(),
+		completedAt: text("completedAt").notNull(),
+		durationSeconds: integer("durationSeconds").notNull(),
+	},
+	(table) => [
+		uniqueIndex("github_runner_pipeline_run_unique").on(
+			table.githubRunnerPoolId,
+			table.repository,
+			table.runId,
+			table.runAttempt,
+		),
+		index("github_runner_pipeline_pool_completed_idx").on(
+			table.githubRunnerPoolId,
+			table.completedAt,
+		),
+	],
+);
+
 /** cancelling → requested (re-run asked) → rerouted (seen on the fallback) or failed. */
 export const githubRunnerRerouteStatus = pgEnum("githubRunnerRerouteStatus", [
 	"cancelling",

@@ -23,6 +23,7 @@ import {
 	githubRunnerMetrics,
 	githubRunnerNodes,
 	githubRunnerOperations,
+	githubRunnerPipelines,
 	githubRunnerPools,
 	githubRunnerReroutes,
 	osUpdateRunnerNodes,
@@ -37,6 +38,7 @@ import {
 	isNull,
 	lt,
 	ne,
+	notExists,
 	notInArray,
 	or,
 	sql,
@@ -147,6 +149,7 @@ import {
 	parseOsReport,
 	parsePatchResult,
 } from "./os";
+import { pipelineDuration } from "./pipelines";
 import {
 	countPinnedJobs,
 	type PlacementMachine,
@@ -286,6 +289,10 @@ interface ControllerState {
 	lastQueuedJobScan: Map<string, number>;
 	/** Pools whose queued jobs are being read, in the background. */
 	queuedJobScans: Set<string>;
+	/** Last pipeline scan of each pool (see scanPipelines). */
+	lastPipelineScan: Map<string, number>;
+	/** Pools whose pipelines are being read, in the background. */
+	pipelineScans: Set<string>;
 	/** Machines that did not answer: tried again in the background, not by the tick. */
 	reconnects: Map<
 		string,
@@ -378,6 +385,8 @@ shared.__dokployGithubRunners ??= {
 	queuedJobs: new Map(),
 	lastQueuedJobScan: new Map(),
 	queuedJobScans: new Set(),
+	lastPipelineScan: new Map(),
+	pipelineScans: new Set(),
 	reconnects: new Map(),
 	lastBenchmarkAt: new Map(),
 	diskSamples: new Map(),
@@ -442,6 +451,8 @@ state.rerouteScans ??= new Set();
 state.queuedJobs ??= new Map();
 state.lastQueuedJobScan ??= new Map();
 state.queuedJobScans ??= new Set();
+state.lastPipelineScan ??= new Map();
+state.pipelineScans ??= new Set();
 state.reconnects ??= new Map();
 const OWNER = state.owner;
 
@@ -5587,6 +5598,119 @@ const releaseStaleOsUpdateDrains = async (nodes: NodeWithRelations[]) => {
 	);
 };
 
+/** Pipelines are looked at this often per pool, outside the tick. */
+const PIPELINE_SCAN_EVERY_MS = 2 * 60_000;
+/** Runs whose jobs ran on the pool this recently are still looked at. */
+const PIPELINE_LOOKBACK_MS = 48 * 60 * 60_000;
+/** GitHub calls per scan: a run not completed yet is asked again next time. */
+const PIPELINES_PER_SCAN = 20;
+/** A run is looked at once its last job on the pool ended this long ago. */
+const PIPELINE_SETTLE_MS = 30_000;
+
+/**
+ * Records the pipelines (workflow run attempts) the pool's runners took part
+ * in, once GitHub reports them completed: how long each took as a whole,
+ * jobs on other runners included (see pipelines.ts). The most recent first.
+ */
+export const scanPipelines = async (pool: GithubRunnerPool) => {
+	const poolId = pool.githubRunnerPoolId;
+	const now = Date.now();
+	const lastFinished = sql<string>`max(${githubRunnerJobs.finishedAt})`;
+	const candidates = await db
+		.select({
+			repository: githubRunnerJobs.repository,
+			runId: githubRunnerJobs.runId,
+			runAttempt: githubRunnerJobs.runAttempt,
+		})
+		.from(githubRunnerJobs)
+		.where(
+			and(
+				eq(githubRunnerJobs.githubRunnerPoolId, poolId),
+				gte(
+					githubRunnerJobs.startedAt,
+					new Date(now - PIPELINE_LOOKBACK_MS).toISOString(),
+				),
+				isNotNull(githubRunnerJobs.finishedAt),
+				notExists(
+					db
+						.select({ id: githubRunnerPipelines.githubRunnerPipelineId })
+						.from(githubRunnerPipelines)
+						.where(
+							and(
+								eq(githubRunnerPipelines.githubRunnerPoolId, poolId),
+								eq(
+									githubRunnerPipelines.repository,
+									githubRunnerJobs.repository,
+								),
+								eq(githubRunnerPipelines.runId, githubRunnerJobs.runId),
+								eq(
+									githubRunnerPipelines.runAttempt,
+									githubRunnerJobs.runAttempt,
+								),
+							),
+						),
+				),
+			),
+		)
+		.groupBy(
+			githubRunnerJobs.repository,
+			githubRunnerJobs.runId,
+			githubRunnerJobs.runAttempt,
+		)
+		.having(lt(lastFinished, new Date(now - PIPELINE_SETTLE_MS).toISOString()))
+		.orderBy(sql`${lastFinished} desc`)
+		.limit(PIPELINES_PER_SCAN);
+	if (!candidates.length) return 0;
+	const client = await poolClient(pool);
+	let recorded = 0;
+	// One after the other: a pool's credentials share one rate limit.
+	await sequentially(candidates, async (run) => {
+		const attempt = await client
+			.getRunAttempt(run.repository, run.runId, run.runAttempt)
+			.catch(() => null);
+		const duration = attempt ? pipelineDuration(attempt) : null;
+		if (!attempt || !duration) return;
+		await db
+			.insert(githubRunnerPipelines)
+			.values({
+				organizationId: pool.organizationId,
+				githubRunnerPoolId: poolId,
+				repository: run.repository,
+				runId: run.runId,
+				runAttempt: run.runAttempt,
+				workflow: attempt.name,
+				event: attempt.event,
+				conclusion: attempt.conclusion,
+				...duration,
+			})
+			.onConflictDoNothing();
+		recorded++;
+	});
+	return recorded;
+};
+
+/** Starts the pipeline scan of a pool when due, in the background. */
+const maybeScanPipelines = (pool: GithubRunnerPool) => {
+	const poolId = pool.githubRunnerPoolId;
+	const now = Date.now();
+	if (
+		now - (state.lastPipelineScan.get(poolId) ?? 0) < PIPELINE_SCAN_EVERY_MS ||
+		state.pipelineScans.has(poolId)
+	) {
+		return;
+	}
+	state.lastPipelineScan.set(poolId, now);
+	state.pipelineScans.add(poolId);
+	void scanPipelines(pool)
+		.catch((error) =>
+			console.error(
+				`[github-runners] ${pool.name}: pipeline scan failed`,
+				error,
+			),
+		)
+		.finally(() => state.pipelineScans.delete(poolId));
+};
+
 const tickGithubRunners = async () => {
 	if (!state.leader) return;
 	if (state.running) {
@@ -5632,6 +5756,7 @@ const tickGithubRunners = async () => {
 			nodes.map((node) => [node.githubRunnerPoolId, node.pool]),
 		);
 		refreshRunnerReleases([...pools.values()]);
+		for (const pool of pools.values()) maybeScanPipelines(pool);
 		await Promise.all(
 			[...pools.values()].map((pool) =>
 				recoverInterruptedJobs(pool).catch((error) =>
@@ -5678,6 +5803,9 @@ const tickGithubRunners = async () => {
 						ne(githubRunnerOperations.status, "running"),
 					),
 				);
+			await db
+				.delete(githubRunnerPipelines)
+				.where(lt(githubRunnerPipelines.completedAt, historyCutoff));
 			await db
 				.delete(githubRunnerAlerts)
 				.where(lt(githubRunnerAlerts.resolvedAt, historyCutoff));
