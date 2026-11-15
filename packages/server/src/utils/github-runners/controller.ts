@@ -5011,51 +5011,65 @@ const routeClasses = async (
 	choice: FallbackChoice,
 ) => {
 	const previous = pool.classRouting ?? {};
-	const classes = pool.routingVariable ? (pool.jobClasses ?? []) : [];
-	const next: Record<string, GithubRunnerRouting> = {};
+	const variable = pool.routingVariable;
+	const classes = variable && native ? (pool.jobClasses ?? []) : [];
 	const x64 = x64Availability(nodes, runners);
-	for (const jobClass of classes) {
-		if (!pool.routingVariable || !native) break;
-		const variable = classRoutingVariable(
-			pool.routingVariable,
-			jobClass.suffix,
-		);
-		const arch = jobClass.arch === "x64" ? x64 : native;
-		let routing = decideRouting({
-			previous: previous[jobClass.id] ?? null,
-			force: forcedTarget(pool) ?? (choice.exhausted ? "pool" : null),
-			provider: choice.provider?.kind ?? null,
-			available: arch.available,
-			anyEnabled: arch.anyEnabled,
-			labels: jobClass.arch === "x64" ? pool.labels.map(x64Label) : pool.labels,
-			fallbackLabels: classFallbackLabels(choice, jobClass),
-			now,
-		});
-		routing = await syncRoutingVariable(client, routing, variable, now);
-		next[jobClass.id] = routing;
-	}
-	// Classes gone (or the whole routing): their variables go too.
-	for (const [id, routing] of Object.entries(previous)) {
-		if (next[id] || !routing.variable) continue;
-		// As the main route: a refused delete waits before it is asked again.
-		const since = now - Date.parse(routing.attemptedAt ?? "1970-01-01");
-		if (routing.error && since < ROUTING_RETRY_MS) {
-			next[id] = routing;
-			continue;
-		}
-		const error = await client
-			.deleteVariable(routing.variable)
-			.then(() => null)
-			.catch((failure: unknown) =>
-				failure instanceof Error ? failure.message : String(failure),
+	// Each class has a variable of its own: they are written together (8 at most).
+	const routed = await Promise.all(
+		classes.map(async (jobClass) => {
+			const arch = jobClass.arch === "x64" ? x64 : native;
+			const routing = decideRouting({
+				previous: previous[jobClass.id] ?? null,
+				force: forcedTarget(pool) ?? (choice.exhausted ? "pool" : null),
+				provider: choice.provider?.kind ?? null,
+				available: arch?.available ?? false,
+				anyEnabled: arch?.anyEnabled ?? false,
+				labels:
+					jobClass.arch === "x64" ? pool.labels.map(x64Label) : pool.labels,
+				fallbackLabels: classFallbackLabels(choice, jobClass),
+				now,
+			});
+			const synced = await syncRoutingVariable(
+				client,
+				routing,
+				classRoutingVariable(variable as string, jobClass.suffix),
+				now,
 			);
-		if (error) {
-			next[id] = {
-				...routing,
-				attemptedAt: new Date(now).toISOString(),
-				error: `Cannot delete ${routing.variable}: ${error}`,
-			};
-		}
+			return [jobClass.id, synced] as const;
+		}),
+	);
+	const next: Record<string, GithubRunnerRouting> = Object.fromEntries(routed);
+	// Classes gone (or the whole routing): their variables go too, together.
+	const gone = Object.entries(previous).filter(
+		([id, routing]) => !next[id] && routing.variable,
+	);
+	const kept = await Promise.all(
+		gone.map(
+			async ([id, routing]): Promise<[string, GithubRunnerRouting] | null> => {
+				// As the main route: a refused delete waits before it is asked again.
+				const since = now - Date.parse(routing.attemptedAt ?? "1970-01-01");
+				if (routing.error && since < ROUTING_RETRY_MS) return [id, routing];
+				const error = await client
+					.deleteVariable(routing.variable as string)
+					.then(() => null)
+					.catch((failure: unknown) =>
+						failure instanceof Error ? failure.message : String(failure),
+					);
+				return error
+					? [
+							id,
+							{
+								...routing,
+								attemptedAt: new Date(now).toISOString(),
+								error: `Cannot delete ${routing.variable}: ${error}`,
+							},
+						]
+					: null;
+			},
+		),
+	);
+	for (const entry of kept) {
+		if (entry) next[entry[0]] = entry[1];
 	}
 	if (JSON.stringify(next) !== JSON.stringify(previous)) {
 		await db
