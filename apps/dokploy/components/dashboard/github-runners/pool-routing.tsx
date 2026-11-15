@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { RunnerPool } from "./format";
+import { ClassRoutingLines, JobClassesFields } from "./pool-classes";
 import type { PoolFormValues } from "./pool-form";
 import { ProvidersFields, ProvidersUsage } from "./pool-providers";
 import { NumberInput } from "./shared";
@@ -116,6 +117,10 @@ export const RoutingFields = ({
 					/>
 					<FailoverFields form={form} />
 					<ProvidersFields form={form} pool={pool} />
+					<JobClassesFields
+						form={form}
+						variable={form.getValues("routingVariable")}
+					/>
 				</div>
 			)}
 		</div>
@@ -315,6 +320,7 @@ export const RoutingStatus = ({ pool }: { pool: RunnerPool }) => {
 				{line.text}
 			</span>
 			<X64RoutingLine pool={pool} />
+			<ClassRoutingLines pool={pool} />
 			<ProvidersUsage pool={pool} />
 			<Reroutes pool={pool} />
 		</div>

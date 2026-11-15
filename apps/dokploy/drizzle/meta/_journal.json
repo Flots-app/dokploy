@@ -1324,6 +1324,13 @@
       "when": 1794683524193,
       "tag": "0188_github_runner_fallback_providers",
       "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1794716926997,
+      "tag": "0189_github_runner_job_classes",
+      "breakpoints": true
     }
   ]
 }

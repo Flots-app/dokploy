@@ -61,6 +61,22 @@ export const poolFormSchema = z
 				pricePerMinute: z.number().min(0),
 				overspend: z.number().min(0),
 				warningPercent: z.number().int().min(1).max(100),
+				/** Labels of each job class at this provider, by class id ("" keeps the default). */
+				classLabels: z.record(z.string(), z.string()),
+			}),
+		),
+		jobClasses: z.array(
+			z.object({
+				id: z.string().min(1),
+				suffix: z
+					.string()
+					.trim()
+					.regex(
+						/^[A-Z][A-Z0-9_]{0,30}$/,
+						"Capital letters, digits and underscores",
+					),
+				arch: z.enum(["native", "x64"]),
+				fallbackLabels: z.string().trim().min(1, "A runs-on label is required"),
 			}),
 		),
 		blacksmithOrganization: z.string().trim(),
@@ -135,6 +151,16 @@ export const poolFormDefaults = (pool?: RunnerPool): PoolFormValues => ({
 		x64Labels: provider.x64Labels.join(", "),
 		limited: Boolean(provider.budget),
 		...(provider.budget ?? NEW_PROVIDER_BUDGET),
+		classLabels: Object.fromEntries(
+			Object.entries(provider.classLabels ?? {}).map(([id, labels]) => [
+				id,
+				labels.join(", "),
+			]),
+		),
+	})),
+	jobClasses: (pool?.jobClasses ?? []).map((jobClass) => ({
+		...jobClass,
+		fallbackLabels: jobClass.fallbackLabels.join(", "),
 	})),
 	blacksmithOrganization: pool?.blacksmithOrganization ?? "",
 	blacksmithToken: "",
@@ -199,6 +225,15 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 		x64Labels: parseLabels(provider.x64Labels).length
 			? parseLabels(provider.x64Labels)
 			: parseLabels(provider.labels),
+		classLabels: Object.fromEntries(
+			Object.entries(provider.classLabels)
+				.filter(
+					([id, labels]) =>
+						values.jobClasses.some((jobClass) => jobClass.id === id) &&
+						parseLabels(labels).length > 0,
+				)
+				.map(([id, labels]) => [id, parseLabels(labels)]),
+		),
 		budget: provider.limited
 			? {
 					freeMinutes: provider.freeMinutes,
@@ -207,6 +242,10 @@ export const toPoolInput = (values: PoolFormValues, pool?: RunnerPool) => ({
 					warningPercent: provider.warningPercent,
 				}
 			: null,
+	})),
+	jobClasses: values.jobClasses.map((jobClass) => ({
+		...jobClass,
+		fallbackLabels: parseLabels(jobClass.fallbackLabels),
 	})),
 	blacksmithOrganization: values.blacksmithOrganization || null,
 	// Secrets are never sent back: an empty field keeps the stored one.

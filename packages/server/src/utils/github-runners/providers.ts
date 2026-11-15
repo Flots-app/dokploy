@@ -183,3 +183,20 @@ export const chooseFallback = (input: {
 		skipped,
 	};
 };
+
+/**
+ * Where the jobs of a class go when they leave the pool: the labels the chosen
+ * provider names for the class, else its labels for the class's architecture;
+ * without a provider, the class's own fallback.
+ */
+export const classFallbackLabels = (
+	choice: FallbackChoice,
+	jobClass: { id: string; arch: "native" | "x64"; fallbackLabels: string[] },
+) => {
+	const { provider } = choice;
+	if (!provider) return jobClass.fallbackLabels;
+	return (
+		provider.classLabels?.[jobClass.id] ??
+		(jobClass.arch === "x64" ? provider.x64Labels : provider.labels)
+	);
+};

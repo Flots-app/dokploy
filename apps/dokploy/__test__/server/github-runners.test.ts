@@ -5255,6 +5255,121 @@ echo done`);
 			});
 		});
 
+		it("publishes a job class's variable, on its own fallback while no machine takes jobs", async () => {
+			answer = 204;
+			fetched.length = 0;
+			const published = recordUpdates([]);
+			try {
+				await routePool(
+					pool({
+						routingVariable: "DOKPLOY_RUNS_ON",
+						x64Routing: null,
+						jobClasses: [
+							{
+								id: "android",
+								suffix: "ANDROID",
+								arch: "x64",
+								fallbackLabels: ["ubuntu-24.04-8core"],
+							},
+						],
+						classRouting: {},
+					}),
+				);
+			} finally {
+				published.restore();
+			}
+			expect(fetched).toContain(
+				"PATCH https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_ANDROID",
+			);
+			expect(
+				published.calls.find((call) => call.values.classRouting)?.values
+					.classRouting,
+			).toEqual({
+				android: expect.objectContaining({
+					variable: "DOKPLOY_RUNS_ON_ANDROID",
+					target: "fallback",
+					value: '"ubuntu-24.04-8core"',
+					error: null,
+				}),
+			});
+		});
+
+		it("deletes the variable of a class that went, and keeps it while GitHub refuses", async () => {
+			const routed = {
+				variable: "DOKPLOY_RUNS_ON_ANDROID",
+				target: "fallback",
+				value: '"ubuntu-24.04-8core"',
+				since: "2026-11-15T08:00:00.000Z",
+				unavailableSince: "2026-11-15T08:00:00.000Z",
+				syncedValue: '"ubuntu-24.04-8core"',
+				syncedAt: "2026-11-15T08:00:00.000Z",
+				attemptedAt: "2026-11-15T08:00:00.000Z",
+				error: null,
+			};
+			const gone = pool({
+				routingVariable: "DOKPLOY_RUNS_ON",
+				x64Routing: null,
+				jobClasses: [],
+				classRouting: { android: routed },
+			});
+			answer = 403;
+			fetched.length = 0;
+			const refused = recordUpdates([]);
+			try {
+				await routePool(gone);
+			} finally {
+				refused.restore();
+			}
+			expect(fetched).toContain(
+				"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_ANDROID",
+			);
+			expect(
+				refused.calls.find((call) => call.values.classRouting)?.values
+					.classRouting,
+			).toEqual({
+				android: expect.objectContaining({
+					error: expect.stringContaining(
+						"Cannot delete DOKPLOY_RUNS_ON_ANDROID",
+					),
+				}),
+			});
+			answer = 204;
+			const deleted = recordUpdates([]);
+			try {
+				await routePool(gone);
+			} finally {
+				deleted.restore();
+			}
+			expect(
+				deleted.calls.find((call) => call.values.classRouting)?.values,
+			).toEqual({ classRouting: {} });
+		});
+
+		it("deletes the class variables with a deleted pool", async () => {
+			answer = 204;
+			fetched.length = 0;
+			await expect(
+				clearPoolRouting(
+					pool({
+						githubRunnerPoolId: "pool-e1-classes",
+						routingVariable: "DOKPLOY_RUNS_ON",
+						jobClasses: [
+							{
+								id: "a",
+								suffix: "ANDROID",
+								arch: "x64",
+								fallbackLabels: ["x"],
+							},
+						],
+						classRouting: {},
+					}),
+				),
+			).resolves.toBeNull();
+			expect(fetched).toContain(
+				"DELETE https://api.github.com/orgs/Flots-app/actions/variables/DOKPLOY_RUNS_ON_ANDROID",
+			);
+		});
+
 		it("tells the operator when a deleted pool leaves its variable", async () => {
 			answer = 500;
 			await expect(

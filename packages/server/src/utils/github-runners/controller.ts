@@ -166,6 +166,7 @@ import {
 } from "./probe";
 import {
 	chooseFallback,
+	classFallbackLabels,
 	type FallbackChoice,
 	USAGE_REFRESH_MS,
 } from "./providers";
@@ -4806,8 +4807,17 @@ export const routePool = async (pool: GithubRunnerPool) => {
 	const variable = pool.routingVariable;
 	const now = Date.now();
 	if (!variable) {
-		// The x86_64 variable goes too (see routeX64).
+		// The x86_64 and class variables go too (see routeX64, routeClasses).
 		await routeX64(pool, client, [], [], now);
+		await routeClasses(
+			pool,
+			client,
+			[],
+			[],
+			now,
+			null,
+			fallbackChoice(pool, now),
+		);
 		// Routing turned off: the variable goes, and workflows use their default.
 		// The routing state stays, with the error, until GitHub deleted it.
 		const previous = pool.routing;
@@ -4897,6 +4907,20 @@ export const routePool = async (pool: GithubRunnerPool) => {
 	}
 	await advanceReroutes(pool, client);
 	await routeX64(pool, client, nodes, listed?.runners ?? [], now, choice);
+	await routeClasses(
+		pool,
+		client,
+		nodes,
+		listed?.runners ?? [],
+		now,
+		{
+			available: candidates.some((node) =>
+				runnerOn(node, listed?.runners ?? []),
+			),
+			anyEnabled: nodes.some((node) => node.enabled),
+		},
+		choice,
+	);
 };
 
 /** Writes the routing variable when due; the result says how it went. */
@@ -4939,6 +4963,105 @@ const syncRoutingVariable = async (
 
 /** The variable of the jobs that need x86_64: the routing variable, suffixed. */
 export const x64RoutingVariable = (variable: string) => `${variable}_X64`;
+
+/** Whether an x86_64 runner of the pool is ON, and whether a machine has some at all. */
+const x64Availability = (
+	nodes: GithubRunnerNode[],
+	runners: GithubRunner[],
+) => {
+	const machines = nodes.filter(
+		(node) =>
+			node.enabled &&
+			node.phase === "ready" &&
+			node.platform === "macos" &&
+			node.x64Runners > 0,
+	);
+	return {
+		anyEnabled: machines.length > 0,
+		available: machines.some(
+			(node) =>
+				node.observed?.reachable !== false &&
+				node.observed?.admission?.ok !== false &&
+				!node.observed?.x64?.blocked &&
+				runners.some((runner) => {
+					const slot = slotOfRunner(runnerNamePrefix(node.name), runner.name);
+					return (
+						runner.status === "online" &&
+						slot !== null &&
+						isX64Slot(slot, node.x64Runners)
+					);
+				}),
+		),
+	};
+};
+
+export const classRoutingVariable = (variable: string, suffix: string) =>
+	`${variable}_${suffix}`;
+
+/**
+ * Publishes where the jobs of each class of the pool go (see classes.ts): the
+ * pool's runners of its architecture while one is ON, else the labels the
+ * fallback provider names for it. Variables of classes gone, renamed, or of a
+ * pool whose routing is off are deleted; one GitHub refused to delete stays
+ * recorded, with the error, until it is.
+ */
+const routeClasses = async (
+	pool: GithubRunnerPool,
+	client: GithubRunnerClient,
+	nodes: GithubRunnerNode[],
+	runners: GithubRunner[],
+	now: number,
+	native: { available: boolean; anyEnabled: boolean } | null,
+	choice: FallbackChoice,
+) => {
+	const previous = pool.classRouting ?? {};
+	const classes = pool.routingVariable ? (pool.jobClasses ?? []) : [];
+	const next: Record<string, GithubRunnerRouting> = {};
+	const x64 = x64Availability(nodes, runners);
+	for (const jobClass of classes) {
+		if (!pool.routingVariable || !native) break;
+		const variable = classRoutingVariable(
+			pool.routingVariable,
+			jobClass.suffix,
+		);
+		const arch = jobClass.arch === "x64" ? x64 : native;
+		let routing = decideRouting({
+			previous: previous[jobClass.id] ?? null,
+			force: forcedTarget(pool) ?? (choice.exhausted ? "pool" : null),
+			provider: choice.provider?.kind ?? null,
+			available: arch.available,
+			anyEnabled: arch.anyEnabled,
+			labels: jobClass.arch === "x64" ? pool.labels.map(x64Label) : pool.labels,
+			fallbackLabels: classFallbackLabels(choice, jobClass),
+			now,
+		});
+		routing = await syncRoutingVariable(client, routing, variable, now);
+		next[jobClass.id] = routing;
+	}
+	// Classes gone (or the whole routing): their variables go too.
+	for (const [id, routing] of Object.entries(previous)) {
+		if (next[id] || !routing.variable) continue;
+		const error = await client
+			.deleteVariable(routing.variable)
+			.then(() => null)
+			.catch((failure: unknown) =>
+				failure instanceof Error ? failure.message : String(failure),
+			);
+		if (error) {
+			next[id] = {
+				...routing,
+				attemptedAt: new Date(now).toISOString(),
+				error: `Cannot delete ${routing.variable}: ${error}`,
+			};
+		}
+	}
+	if (JSON.stringify(next) !== JSON.stringify(previous)) {
+		await db
+			.update(githubRunnerPools)
+			.set({ classRouting: next })
+			.where(eq(githubRunnerPools.githubRunnerPoolId, pool.githubRunnerPoolId));
+	}
+};
 
 /**
  * Publishes where the jobs that need x86_64 go (see x64.ts): the x86_64
@@ -4988,33 +5111,13 @@ const routeX64 = async (
 		}
 		return;
 	}
-	const machines = nodes.filter(
-		(node) =>
-			node.enabled &&
-			node.phase === "ready" &&
-			node.platform === "macos" &&
-			node.x64Runners > 0,
-	);
-	const available = machines.some(
-		(node) =>
-			node.observed?.reachable !== false &&
-			node.observed?.admission?.ok !== false &&
-			!node.observed?.x64?.blocked &&
-			runners.some((runner) => {
-				const slot = slotOfRunner(runnerNamePrefix(node.name), runner.name);
-				return (
-					runner.status === "online" &&
-					slot !== null &&
-					isX64Slot(slot, node.x64Runners)
-				);
-			}),
-	);
+	const { available, anyEnabled } = x64Availability(nodes, runners);
 	let routing = decideRouting({
 		previous,
 		force: forcedTarget(pool) ?? (choice.exhausted ? "pool" : null),
 		provider: choice.provider?.kind ?? null,
 		available,
-		anyEnabled: machines.length > 0,
+		anyEnabled,
 		labels: pool.labels.map(x64Label),
 		fallbackLabels: choice.x64Labels,
 		now,
@@ -5461,9 +5564,24 @@ export const clearPoolRouting = async (pool: GithubRunnerPool) => {
 	const x64 =
 		pool.x64Routing?.variable ??
 		(pool.routingVariable ? x64RoutingVariable(pool.routingVariable) : null);
-	const variables = [main, x64].filter((variable): variable is string =>
-		Boolean(variable),
-	);
+	// And those of its job classes (see routeClasses).
+	const classes = [
+		...Object.values(pool.classRouting ?? {}).map(
+			(routing) => routing.variable,
+		),
+		...(pool.routingVariable
+			? (pool.jobClasses ?? []).map((jobClass) =>
+					classRoutingVariable(pool.routingVariable as string, jobClass.suffix),
+				)
+			: []),
+	];
+	const variables = [
+		...new Set(
+			[main, x64, ...classes].filter((variable): variable is string =>
+				Boolean(variable),
+			),
+		),
+	];
 	if (!variables.length) return null;
 	const failed = (variable: string, error: unknown) =>
 		`The Actions variable ${variable} could not be deleted (${error instanceof Error ? error.message : String(error)}): delete it on GitHub, or the workflows keep reading it.`;

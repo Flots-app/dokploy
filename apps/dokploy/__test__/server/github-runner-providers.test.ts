@@ -10,6 +10,7 @@ import {
 import { runnerAlertConditions } from "@dokploy/server/utils/github-runners/alerts";
 import {
 	chooseFallback,
+	classFallbackLabels,
 	limitMinutes,
 	providerState,
 	USAGE_STALE_MS,
@@ -533,5 +534,68 @@ describe("pool settings and alerts", () => {
 		expect(critical?.message).toContain(
 			"Blacksmith: 3100 of its 3000 free minutes used",
 		);
+	});
+});
+
+describe("job classes", () => {
+	const android = {
+		id: "android",
+		arch: "x64" as const,
+		fallbackLabels: ["ubuntu-24.04-8core"],
+	};
+	const none = {
+		provider: null,
+		labels: [],
+		x64Labels: [],
+		exhausted: false,
+		skipped: [],
+	};
+
+	it("go to the runner the provider names for them, else its runner of their architecture", () => {
+		expect(classFallbackLabels(none, android)).toEqual(["ubuntu-24.04-8core"]);
+		expect(
+			classFallbackLabels({ ...none, provider: blacksmith }, android),
+		).toEqual(["blacksmith-2vcpu-ubuntu-2404"]);
+		expect(
+			classFallbackLabels(
+				{
+					...none,
+					provider: {
+						...blacksmith,
+						classLabels: { android: ["blacksmith-8vcpu-ubuntu-2404"] },
+					},
+				},
+				android,
+			),
+		).toEqual(["blacksmith-8vcpu-ubuntu-2404"]);
+		expect(
+			classFallbackLabels(
+				{ ...none, provider: github },
+				{ ...android, arch: "native" },
+			),
+		).toEqual(["ubuntu-24.04-arm"]);
+	});
+
+	it("need their own suffix, never X64, in capitals", () => {
+		const parse = (jobClasses: unknown) =>
+			apiCreateGithubRunnerPool.safeParse({
+				name: "pool",
+				scope: "organization",
+				owner: "Flots-app",
+				authType: "token",
+				token: "ghp_example",
+				jobClasses,
+			});
+		const ok = {
+			id: "a",
+			suffix: "ANDROID",
+			arch: "x64",
+			fallbackLabels: ["x"],
+		};
+		expect(parse([ok]).success).toBe(true);
+		expect(parse([{ ...ok, suffix: "X64" }]).success).toBe(false);
+		expect(parse([{ ...ok, suffix: "android" }]).success).toBe(false);
+		expect(parse([ok, { ...ok, id: "b" }]).success).toBe(false);
+		expect(parse(undefined).data?.jobClasses).toEqual([]);
 	});
 });

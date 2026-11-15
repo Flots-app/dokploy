@@ -274,8 +274,16 @@ Released in `v0.29.14-flots.28` ([Flots-app/dokploy#78](https://github.com/Flots
 Tracked in [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79), with phases 4 to 6.
 
 
-- [ ] Classes beyond x86_64 (ARM64 general, heavy or Android), each with its
-  variable and chain; architecture-aware labels (Blacksmith and GitHub arm64).
+- [x] Job classes per pool (suffix, architecture, own fallback), each with its
+  variable `<routingVariable>_<SUFFIX>`: the pool's runners of its architecture
+  while one is ON, else the runner the fallback provider names for the class, or
+  its runner for that architecture (migration `0189_github_runner_job_classes`).
+- [x] Variables of classes removed or renamed, and of a deleted pool, are deleted;
+  one GitHub refuses stays recorded with the error until it goes.
+- [x] Pool settings: classes and per-provider class runners; the routing card
+  shows a line per class.
+- [ ] Monorepo: read `DOKPLOY_RUNS_ON_ANDROID` (or the classes chosen) in the
+  heavy jobs (phase 6).
 
 ## Phase 4: dead man's switch
 
