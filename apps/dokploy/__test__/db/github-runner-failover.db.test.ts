@@ -94,8 +94,8 @@ describe("machine health", () => {
 
 	it("sets the machine aside once it lost enough jobs, and stores it", async () => {
 		await lose(3);
-		// Ended while the kernel killed processes for memory (oomRerun).
-		await lose(1, { outcome: "completed", rerunStatus: "pending" });
+		// Ended while the kernel killed processes for memory, and found failed.
+		await lose(1, { outcome: "completed", rerunStatus: "requested" });
 		const events: { at: string; message: string }[] = [];
 		const health = await refreshMachineHealth(await machine(), now, events);
 		expect(health).toEqual({

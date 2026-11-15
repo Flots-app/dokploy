@@ -15,6 +15,43 @@ export const ROUTING_RETRY_MS = 30_000;
 /** A job queued for less than this may still be picked by a runner coming up. */
 export const REROUTE_MIN_QUEUED_MS = 60_000;
 
+/** The variable of the jobs that need x86_64: the routing variable, suffixed. */
+export const x64RoutingVariable = (variable: string) => `${variable}_X64`;
+
+/** The variable of a job class (see routeClasses): the routing variable, suffixed. */
+export const classRoutingVariable = (variable: string, suffix: string) =>
+	`${variable}_${suffix}`;
+
+/**
+ * Every Actions variable a pool publishes: its routing variable, the x86_64
+ * one and one per job class, in capitals (GitHub compares names without case).
+ * Two pools of the same owner must share none, or each would overwrite the
+ * other's at every tick.
+ */
+export const publishedVariables = (pool: {
+	routingVariable: string | null;
+	jobClasses?: { suffix: string }[] | null;
+}) => {
+	const variable = pool.routingVariable;
+	if (!variable) return [];
+	return [
+		variable,
+		x64RoutingVariable(variable),
+		...(pool.jobClasses ?? []).map((jobClass) =>
+			classRoutingVariable(variable, jobClass.suffix),
+		),
+	].map((name) => name.toUpperCase());
+};
+
+/** A variable both pools would publish, if any. */
+export const sharedVariable = (
+	a: Parameters<typeof publishedVariables>[0],
+	b: Parameters<typeof publishedVariables>[0],
+) => {
+	const theirs = new Set(publishedVariables(b));
+	return publishedVariables(a).find((name) => theirs.has(name)) ?? null;
+};
+
 export const poolRunsOn = (labels: string[]) =>
 	JSON.stringify(["self-hosted", ...labels]);
 

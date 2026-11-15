@@ -10,11 +10,16 @@ import {
 import { runnerAlertConditions } from "@dokploy/server/utils/github-runners/alerts";
 import {
 	chooseFallback,
+	classFallbackLabels,
 	limitMinutes,
 	providerState,
 	USAGE_STALE_MS,
 } from "@dokploy/server/utils/github-runners/providers";
-import { decideRouting } from "@dokploy/server/utils/github-runners/routing";
+import {
+	decideRouting,
+	publishedVariables,
+	sharedVariable,
+} from "@dokploy/server/utils/github-runners/routing";
 import {
 	BLACKSMITH_CLI_ASSETS,
 	parseBlacksmithUsage,
@@ -23,6 +28,7 @@ import {
 	readBlacksmithUsage,
 	readChainUsage,
 	readGithubBillingUsage,
+	runCommand,
 } from "@dokploy/server/utils/github-runners/usage";
 import { describe, expect, it } from "vitest";
 
@@ -533,5 +539,107 @@ describe("pool settings and alerts", () => {
 		expect(critical?.message).toContain(
 			"Blacksmith: 3100 of its 3000 free minutes used",
 		);
+	});
+});
+
+describe("job classes", () => {
+	const android = {
+		id: "android",
+		arch: "x64" as const,
+		fallbackLabels: ["ubuntu-24.04-8core"],
+	};
+	const none = {
+		provider: null,
+		labels: [],
+		x64Labels: [],
+		exhausted: false,
+		skipped: [],
+	};
+
+	it("go to the runner the provider names for them, else its runner of their architecture", () => {
+		expect(classFallbackLabels(none, android)).toEqual(["ubuntu-24.04-8core"]);
+		expect(
+			classFallbackLabels({ ...none, provider: blacksmith }, android),
+		).toEqual(["blacksmith-2vcpu-ubuntu-2404"]);
+		expect(
+			classFallbackLabels(
+				{
+					...none,
+					provider: {
+						...blacksmith,
+						classLabels: { android: ["blacksmith-8vcpu-ubuntu-2404"] },
+					},
+				},
+				android,
+			),
+		).toEqual(["blacksmith-8vcpu-ubuntu-2404"]);
+		expect(
+			classFallbackLabels(
+				{ ...none, provider: github },
+				{ ...android, arch: "native" },
+			),
+		).toEqual(["ubuntu-24.04-arm"]);
+	});
+
+	it("need their own suffix, never X64, in capitals", () => {
+		const parse = (jobClasses: unknown) =>
+			apiCreateGithubRunnerPool.safeParse({
+				name: "pool",
+				scope: "organization",
+				owner: "Flots-app",
+				authType: "token",
+				token: "ghp_example",
+				jobClasses,
+			});
+		const ok = {
+			id: "a",
+			suffix: "ANDROID",
+			arch: "x64",
+			fallbackLabels: ["x"],
+		};
+		expect(parse([ok]).success).toBe(true);
+		expect(parse([{ ...ok, suffix: "X64" }]).success).toBe(false);
+		expect(parse([{ ...ok, suffix: "android" }]).success).toBe(false);
+		expect(parse([ok, { ...ok, id: "b" }]).success).toBe(false);
+		expect(parse(undefined).data?.jobClasses).toEqual([]);
+	});
+});
+
+describe("variables of two pools", () => {
+	const ci = {
+		routingVariable: "CI",
+		jobClasses: [{ suffix: "ANDROID" }],
+	};
+
+	it("lists every variable a pool publishes, in capitals", () => {
+		expect(publishedVariables(ci)).toEqual(["CI", "CI_X64", "CI_ANDROID"]);
+		expect(
+			publishedVariables({ routingVariable: null, jobClasses: [] }),
+		).toEqual([]);
+	});
+
+	it("finds a name two pools would both publish, whatever its case", () => {
+		// The class variable of one is the routing variable of the other.
+		expect(sharedVariable(ci, { routingVariable: "ci_android" })).toBe(
+			"CI_ANDROID",
+		);
+		// The x86_64 variable of one is the routing variable of the other.
+		expect(sharedVariable({ routingVariable: "CI_X64" }, ci)).toBe("CI_X64");
+		expect(
+			sharedVariable(ci, { routingVariable: "DOKPLOY_RUNS_ON" }),
+		).toBeNull();
+	});
+});
+
+describe("CLI runs", () => {
+	it("reject when the CLI exits without reading its input, never crash the process", async () => {
+		// Before the fix: an uncaught EPIPE on stdin, which takes Dokploy down.
+		await expect(
+			runCommand("/bin/sh", ["-c", "exit 3"], {
+				input: "x".repeat(8 * 1024 * 1024),
+				env: { PATH: "/usr/bin:/bin" } as NodeJS.ProcessEnv,
+				timeoutMs: 10_000,
+			}),
+		).rejects.toThrow(/exited with 3/);
 	});
 });

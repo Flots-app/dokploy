@@ -406,6 +406,22 @@ export interface GithubRunnerFallbackProvider {
 	x64Labels: string[];
 	/** null: no budget, the provider always takes the jobs. */
 	budget: GithubRunnerProviderBudget | null;
+	/** runs-on of each job class at this provider, by class id (see classes.ts). */
+	classLabels?: Record<string, string[]>;
+}
+
+/**
+ * A class of jobs with a routing variable of its own (see classes.ts): the
+ * runners of its architecture on the pool, or its own labels elsewhere, such
+ * as larger runners for Android builds.
+ */
+export interface GithubRunnerJobClass {
+	id: string;
+	/** Its variable is <routingVariable>_<suffix>, e.g. DOKPLOY_RUNS_ON_ANDROID. */
+	suffix: string;
+	arch: "native" | "x64";
+	/** Where it goes without a provider chain, or when the provider names no labels for it. */
+	fallbackLabels: string[];
 }
 
 /** What a provider may cost in a month: its free minutes, then a capped spend. */
@@ -618,6 +634,16 @@ export const githubRunnerPools = pgTable(
 			.$type<GithubRunnerFallbackProvider[]>()
 			.notNull()
 			.default([]),
+		/** Classes of jobs with a routing variable of their own (see classes.ts). */
+		jobClasses: jsonb("jobClasses")
+			.$type<GithubRunnerJobClass[]>()
+			.notNull()
+			.default([]),
+		/** Where the jobs of each class go, by class id. */
+		classRouting: jsonb("classRouting")
+			.$type<Record<string, GithubRunnerRouting>>()
+			.notNull()
+			.default({}),
 		/** Usage of each provider of the chain this month, by provider id. */
 		fallbackUsage: jsonb("fallbackUsage")
 			.$type<Record<string, GithubRunnerProviderUsage>>()
@@ -1189,6 +1215,9 @@ const poolFields = z.object({
 						warningPercent: z.number().int().min(1).max(100),
 					})
 					.nullable(),
+				classLabels: z
+					.record(z.string(), z.array(label).min(1).max(10))
+					.optional(),
 			}),
 		)
 		.max(4)
@@ -1196,6 +1225,32 @@ const poolFields = z.object({
 			(chain) =>
 				new Set(chain.map((provider) => provider.id)).size === chain.length,
 			"Each provider needs its own id",
+		)
+		.default([]),
+	jobClasses: z
+		.array(
+			z.object({
+				id: z.string().trim().min(1).max(32),
+				suffix: z
+					.string()
+					.trim()
+					.regex(
+						/^[A-Z][A-Z0-9_]{0,30}$/,
+						"Capital letters, digits and underscores, starting with a letter",
+					)
+					.refine((suffix) => suffix !== "X64", "X64 is the x86_64 route"),
+				arch: z.enum(["native", "x64"]),
+				fallbackLabels: z.array(label).min(1).max(10),
+			}),
+		)
+		.max(8)
+		.refine(
+			(classes) =>
+				new Set(classes.map((jobClass) => jobClass.id)).size ===
+					classes.length &&
+				new Set(classes.map((jobClass) => jobClass.suffix)).size ===
+					classes.length,
+			"Each class needs its own id and suffix",
 		)
 		.default([]),
 	blacksmithOrganization: z

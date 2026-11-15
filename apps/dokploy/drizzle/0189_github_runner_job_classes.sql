@@ -1,0 +1,2 @@
+ALTER TABLE "github_runner_pool" ADD COLUMN "jobClasses" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "github_runner_pool" ADD COLUMN "classRouting" jsonb DEFAULT '{}'::jsonb NOT NULL;
