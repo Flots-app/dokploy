@@ -204,7 +204,7 @@
 - [x] Route job classes with variables of their own (failover phase 3), and the
   real-code-review fixes of phases 1 to 3, in
   [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79).
-- [ ] Publish `v0.29.14-flots.29` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.29` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
@@ -275,7 +275,7 @@ Released in `v0.29.14-flots.28` ([Flots-app/dokploy#78](https://github.com/Flots
 
 ## Phase 3: job classes
 
-Tracked in [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79), with phases 4 to 6.
+Released in `v0.29.14-flots.29` ([Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79)); no class is configured on the Flots-app pool yet. Phases 4 to 6 are tracked in [Flots-app/dokploy#81](https://github.com/Flots-app/dokploy/pull/81).
 
 
 - [x] Job classes per pool (suffix, architecture, own fallback), each with its
