@@ -15,7 +15,11 @@ import {
 	providerState,
 	USAGE_STALE_MS,
 } from "@dokploy/server/utils/github-runners/providers";
-import { decideRouting } from "@dokploy/server/utils/github-runners/routing";
+import {
+	decideRouting,
+	publishedVariables,
+	sharedVariable,
+} from "@dokploy/server/utils/github-runners/routing";
 import {
 	BLACKSMITH_CLI_ASSETS,
 	parseBlacksmithUsage,
@@ -597,5 +601,31 @@ describe("job classes", () => {
 		expect(parse([{ ...ok, suffix: "android" }]).success).toBe(false);
 		expect(parse([ok, { ...ok, id: "b" }]).success).toBe(false);
 		expect(parse(undefined).data?.jobClasses).toEqual([]);
+	});
+});
+
+describe("variables of two pools", () => {
+	const ci = {
+		routingVariable: "CI",
+		jobClasses: [{ suffix: "ANDROID" }],
+	};
+
+	it("lists every variable a pool publishes, in capitals", () => {
+		expect(publishedVariables(ci)).toEqual(["CI", "CI_X64", "CI_ANDROID"]);
+		expect(
+			publishedVariables({ routingVariable: null, jobClasses: [] }),
+		).toEqual([]);
+	});
+
+	it("finds a name two pools would both publish, whatever its case", () => {
+		// The class variable of one is the routing variable of the other.
+		expect(sharedVariable(ci, { routingVariable: "ci_android" })).toBe(
+			"CI_ANDROID",
+		);
+		// The x86_64 variable of one is the routing variable of the other.
+		expect(sharedVariable({ routingVariable: "CI_X64" }, ci)).toBe("CI_X64");
+		expect(
+			sharedVariable(ci, { routingVariable: "DOKPLOY_RUNS_ON" }),
+		).toBeNull();
 	});
 });

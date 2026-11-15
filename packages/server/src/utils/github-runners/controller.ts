@@ -187,12 +187,14 @@ import {
 } from "./rerun";
 import { canaryProgress, rolloutGate, UPDATE_KIND_LABELS } from "./rollout";
 import {
+	classRoutingVariable,
 	decideRouting,
 	fallbackRunsOn,
 	REROUTE_MIN_QUEUED_MS,
 	ROUTING_RETRY_MS,
 	routingSyncDue,
 	waitsForPool,
+	x64RoutingVariable,
 } from "./routing";
 import {
 	CONTROLLER_SEEN,
@@ -4961,9 +4963,6 @@ const syncRoutingVariable = async (
 	}
 };
 
-/** The variable of the jobs that need x86_64: the routing variable, suffixed. */
-export const x64RoutingVariable = (variable: string) => `${variable}_X64`;
-
 /** Whether an x86_64 runner of the pool is ON, and whether a machine has some at all. */
 const x64Availability = (
 	nodes: GithubRunnerNode[],
@@ -4994,9 +4993,6 @@ const x64Availability = (
 		),
 	};
 };
-
-export const classRoutingVariable = (variable: string, suffix: string) =>
-	`${variable}_${suffix}`;
 
 /**
  * Publishes where the jobs of each class of the pool go (see classes.ts): the
@@ -5041,6 +5037,12 @@ const routeClasses = async (
 	// Classes gone (or the whole routing): their variables go too.
 	for (const [id, routing] of Object.entries(previous)) {
 		if (next[id] || !routing.variable) continue;
+		// As the main route: a refused delete waits before it is asked again.
+		const since = now - Date.parse(routing.attemptedAt ?? "1970-01-01");
+		if (routing.error && since < ROUTING_RETRY_MS) {
+			next[id] = routing;
+			continue;
+		}
 		const error = await client
 			.deleteVariable(routing.variable)
 			.then(() => null)
@@ -5558,6 +5560,9 @@ export const rotateRunnerNodeKey = async (nodeId: string) => {
  * Removes the routing variable of a pool being deleted. A failure does not
  * keep the pool (its credentials may be gone): it is returned for the operator.
  */
+/** Kept here for the callers that import them from the controller. */
+export { classRoutingVariable, x64RoutingVariable };
+
 export const clearPoolRouting = async (pool: GithubRunnerPool) => {
 	const main = pool.routing?.variable ?? pool.routingVariable;
 	// The variable of the jobs that need x86_64 goes too (see routeX64).

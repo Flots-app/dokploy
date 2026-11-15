@@ -5345,6 +5345,41 @@ echo done`);
 			).toEqual({ classRouting: {} });
 		});
 
+		it("waits before asking GitHub again to delete a class variable it refused", async () => {
+			const refusedAt = new Date().toISOString();
+			const stuck = pool({
+				routingVariable: "DOKPLOY_RUNS_ON",
+				x64Routing: null,
+				jobClasses: [],
+				classRouting: {
+					android: {
+						variable: "DOKPLOY_RUNS_ON_ANDROID",
+						target: "fallback",
+						value: '"x"',
+						since: refusedAt,
+						unavailableSince: refusedAt,
+						syncedValue: '"x"',
+						syncedAt: refusedAt,
+						attemptedAt: refusedAt,
+						error: "Cannot delete DOKPLOY_RUNS_ON_ANDROID: HTTP 403",
+					},
+				},
+			});
+			answer = 403;
+			fetched.length = 0;
+			const quiet = recordUpdates([]);
+			try {
+				await routePool(stuck);
+			} finally {
+				quiet.restore();
+			}
+			// Refused a moment ago: no new DELETE before ROUTING_RETRY_MS.
+			expect(
+				fetched.filter((call) => call.includes("DOKPLOY_RUNS_ON_ANDROID")),
+			).toEqual([]);
+			answer = 204;
+		});
+
 		it("deletes the class variables with a deleted pool", async () => {
 			answer = 204;
 			fetched.length = 0;

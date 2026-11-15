@@ -1,6 +1,6 @@
 import { PROVIDER_NAMES } from "@dokploy/server/utils/github-runners/providers";
 import { Plus, Trash2 } from "lucide-react";
-import { type UseFormReturn, useFieldArray } from "react-hook-form";
+import { type UseFormReturn, useFieldArray, useWatch } from "react-hook-form";
 import { Button } from "@/components/ui/button";
 import {
 	FormControl,
@@ -24,11 +24,11 @@ import type { PoolFormValues } from "./pool-form";
 /** Classes of jobs with a routing variable of their own, e.g. heavy Android builds. */
 export const JobClassesFields = ({
 	form,
-	variable,
 }: {
 	form: UseFormReturn<PoolFormValues>;
-	variable: string;
 }) => {
+	// Watched: the description follows the variable as it is typed.
+	const variable = useWatch({ control: form.control, name: "routingVariable" });
 	const { fields, append, remove } = useFieldArray({
 		control: form.control,
 		name: "jobClasses",

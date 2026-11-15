@@ -117,10 +117,7 @@ export const RoutingFields = ({
 					/>
 					<FailoverFields form={form} />
 					<ProvidersFields form={form} pool={pool} />
-					<JobClassesFields
-						form={form}
-						variable={form.getValues("routingVariable")}
-					/>
+					<JobClassesFields form={form} />
 				</div>
 			)}
 		</div>
