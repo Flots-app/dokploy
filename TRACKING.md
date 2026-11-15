@@ -201,6 +201,10 @@
   monthly budgets (failover phase 2), in
   [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78).
 - [x] Publish `v0.29.14-flots.28` from `canary` and deploy it to production.
+- [x] Route job classes with variables of their own (failover phase 3), and the
+  real-code-review fixes of phases 1 to 3, in
+  [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79).
+- [ ] Publish `v0.29.14-flots.29` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
