@@ -284,6 +284,12 @@ Tracked in [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79),
   shows a line per class.
 - [ ] Monorepo: read `DOKPLOY_RUNS_ON_ANDROID` (or the classes chosen) in the
   heavy jobs (phase 6).
+- [x] real-code-review of #79: variable clashes between pools now cover the
+  x86_64 and class variables; a refused class variable delete waits like the
+  main route.
+- [x] real-code-review of the merged #77 and #78: the Blacksmith CLI run no longer
+  crashes the process on EPIPE when the CLI exits early; a job that ended during
+  an OOM kill counts as lost only once found failed.
 
 ## Phase 4: dead man's switch
 

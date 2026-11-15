@@ -27,13 +27,36 @@ const job = (overrides: Partial<Parameters<typeof lostJob>[0]> = {}) => ({
 describe("jobs a machine lost", () => {
 	it("counts interrupted jobs and jobs that ended while the kernel killed for memory", () => {
 		expect(lostJob(job(), null)).toBe(true);
-		// oomRerun queued it: the machine ran out of memory during the job.
+		// oomRerun queued it and the re-run decision found it failed.
 		expect(
-			lostJob(job({ outcome: "completed", rerunStatus: "pending" }), null),
+			lostJob(job({ outcome: "completed", rerunStatus: "requested" }), null),
 		).toBe(true);
 		expect(
 			lostJob(job({ outcome: "completed", rerunStatus: null }), null),
 		).toBe(false);
+	});
+
+	it("counts a job that ended during an OOM kill only once it is known to have failed", () => {
+		// Marked by oomRerun: nothing says yet whether it lost anything.
+		expect(
+			lostJob(job({ outcome: "completed", rerunStatus: "pending" }), null),
+		).toBe(false);
+		// The re-run decision found it failed and asked for a re-run.
+		expect(
+			lostJob(job({ outcome: "completed", rerunStatus: "requested" }), null),
+		).toBe(true);
+		// One OOM kill during two jobs that both succeed sets no machine aside.
+		expect(
+			decideMachineHealth({
+				previous: null,
+				lost: [
+					job({ outcome: "completed" }),
+					job({ outcome: "completed" }),
+				].filter((item) => lostJob(item, null)).length,
+				failover: DEFAULT_FAILOVER,
+				now: Date.parse("2026-11-15T10:00:00Z"),
+			}),
+		).toBeNull();
 	});
 
 	it("does not count a job the re-run decision found successful", () => {

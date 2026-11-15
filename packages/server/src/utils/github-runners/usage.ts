@@ -162,6 +162,10 @@ export const runCommand: RunCommand = (command, args, options) =>
 			stdout.push(chunk);
 		});
 		child.stderr.on("data", () => undefined);
+		// A CLI that exits before reading its input closes the pipe: the write
+		// fails with EPIPE, which unhandled would take the whole process down.
+		// Its exit code tells what happened.
+		child.stdin.on("error", () => undefined);
 		child.on("error", (error) => finish(error));
 		child.on("close", (code) =>
 			finish(

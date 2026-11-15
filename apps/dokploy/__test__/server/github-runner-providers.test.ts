@@ -28,6 +28,7 @@ import {
 	readBlacksmithUsage,
 	readChainUsage,
 	readGithubBillingUsage,
+	runCommand,
 } from "@dokploy/server/utils/github-runners/usage";
 import { describe, expect, it } from "vitest";
 
@@ -627,5 +628,18 @@ describe("variables of two pools", () => {
 		expect(
 			sharedVariable(ci, { routingVariable: "DOKPLOY_RUNS_ON" }),
 		).toBeNull();
+	});
+});
+
+describe("CLI runs", () => {
+	it("reject when the CLI exits without reading its input, never crash the process", async () => {
+		// Before the fix: an uncaught EPIPE on stdin, which takes Dokploy down.
+		await expect(
+			runCommand("/bin/sh", ["-c", "exit 3"], {
+				input: "x".repeat(8 * 1024 * 1024),
+				env: { PATH: "/usr/bin:/bin" } as NodeJS.ProcessEnv,
+				timeoutMs: 10_000,
+			}),
+		).rejects.toThrow(/exited with 3/);
 	});
 });
