@@ -50,6 +50,7 @@ export const ProvidersFields = ({
 			...DEFAULT_LABELS[kind],
 			limited: true,
 			...NEW_PROVIDER_BUDGET,
+			classLabels: {},
 		});
 	return (
 		<div className="grid gap-3 sm:col-span-2">
@@ -129,6 +130,7 @@ export const ProvidersFields = ({
 								)}
 							/>
 						</div>
+						<ProviderClassLabels form={form} index={index} />
 						<FormField
 							control={form.control}
 							name={`fallbackChain.${index}.limited`}
@@ -272,6 +274,48 @@ export const ProvidersFields = ({
 					)}
 				/>
 			)}
+		</div>
+	);
+};
+
+/** The runner of each job class at one provider; empty keeps its architecture's. */
+const ProviderClassLabels = ({
+	form,
+	index,
+}: {
+	form: UseFormReturn<PoolFormValues>;
+	index: number;
+}) => {
+	const classes = useWatch({ control: form.control, name: "jobClasses" });
+	if (!classes?.length) return null;
+	return (
+		<div className="grid gap-3 sm:grid-cols-2">
+			{classes.map((jobClass) => (
+				<FormField
+					key={jobClass.id}
+					control={form.control}
+					name={`fallbackChain.${index}.classLabels.${jobClass.id}`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>
+								Runner of the {jobClass.suffix || "new"} jobs
+							</FormLabel>
+							<FormControl>
+								<Input
+									className="font-mono"
+									placeholder={
+										jobClass.arch === "x64"
+											? "the x86_64 runner above"
+											: "the runner above"
+									}
+									{...field}
+									value={field.value ?? ""}
+								/>
+							</FormControl>
+						</FormItem>
+					)}
+				/>
+			))}
 		</div>
 	);
 };

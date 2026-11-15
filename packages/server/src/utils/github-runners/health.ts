@@ -19,8 +19,8 @@ export const LEADERSHIP_GRACE_MS = 3 * 60_000;
 
 /**
  * The machine a job ran on lost it: interrupted (crash, stop, a runner killed),
- * or ended while the kernel killed processes for memory (see oomRerun). A job
- * the re-run decision found successful lost nothing.
+ * or ended while the kernel killed processes for memory and failed (see
+ * oomRerun). A job the re-run decision found successful lost nothing.
  */
 export const lostJob = (
 	job: {
@@ -46,7 +46,10 @@ export const lostJob = (
 			at < leaderSince + LEADERSHIP_GRACE_MS
 		);
 	}
-	return job.outcome === "completed" && job.rerunStatus !== null;
+	// Ended while the kernel killed processes for memory (oomRerun): lost only
+	// once the re-run decision found it failed and asked for a re-run. One OOM
+	// kill during jobs that all succeed must not set the machine aside.
+	return job.outcome === "completed" && job.rerunStatus === "requested";
 };
 
 export const DEFAULT_FAILOVER: GithubRunnerFailover = {

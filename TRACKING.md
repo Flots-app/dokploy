@@ -200,7 +200,11 @@
 - [x] Fail over to a chain of providers (Blacksmith, GitHub-hosted) within
   monthly budgets (failover phase 2), in
   [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78).
-- [ ] Publish `v0.29.14-flots.28` from `canary` and deploy it to production.
+- [x] Publish `v0.29.14-flots.28` from `canary` and deploy it to production.
+- [x] Route job classes with variables of their own (failover phase 3), and the
+  real-code-review fixes of phases 1 to 3, in
+  [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79).
+- [ ] Publish `v0.29.14-flots.29` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---
@@ -240,7 +244,7 @@ Dokploy decides; workflows read its Actions variables (no selector job).
 
 ## Phase 2: providers and budgets
 
-Design, in [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78):
+Released in `v0.29.14-flots.28` ([Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78)); the Flots-app pool has no chain yet, so nothing changed in production:
 
 - A pool's fallback becomes an ordered chain of providers (Blacksmith,
   GitHub-hosted), each with its labels for general and x86_64 jobs.
@@ -271,8 +275,25 @@ Design, in [Flots-app/dokploy#78](https://github.com/Flots-app/dokploy/pull/78):
 
 ## Phase 3: job classes
 
-- [ ] Classes beyond x86_64 (ARM64 general, heavy or Android), each with its
-  variable and chain; architecture-aware labels (Blacksmith and GitHub arm64).
+Tracked in [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79), with phases 4 to 6.
+
+
+- [x] Job classes per pool (suffix, architecture, own fallback), each with its
+  variable `<routingVariable>_<SUFFIX>`: the pool's runners of its architecture
+  while one is ON, else the runner the fallback provider names for the class, or
+  its runner for that architecture (migration `0189_github_runner_job_classes`).
+- [x] Variables of classes removed or renamed, and of a deleted pool, are deleted;
+  one GitHub refuses stays recorded with the error until it goes.
+- [x] Pool settings: classes and per-provider class runners; the routing card
+  shows a line per class.
+- [ ] Monorepo: read `DOKPLOY_RUNS_ON_ANDROID` (or the classes chosen) in the
+  heavy jobs (phase 6).
+- [x] real-code-review of #79: variable clashes between pools now cover the
+  x86_64 and class variables; a refused class variable delete waits like the
+  main route.
+- [x] real-code-review of the merged #77 and #78: the Blacksmith CLI run no longer
+  crashes the process on EPIPE when the CLI exits early; a job that ended during
+  an OOM kill counts as lost only once found failed.
 
 ## Phase 4: dead man's switch
 

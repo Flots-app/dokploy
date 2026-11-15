@@ -53,6 +53,7 @@ import {
 } from "@dokploy/server/utils/github-runners/pipelines";
 import { nextMachine } from "@dokploy/server/utils/github-runners/placement";
 import { runnerNamePrefix } from "@dokploy/server/utils/github-runners/reconcile";
+import { sharedVariable } from "@dokploy/server/utils/github-runners/routing";
 import { RUNTIME_VERSION } from "@dokploy/server/utils/github-runners/runtime";
 import {
 	MANAGER_ACCOUNT,
@@ -442,6 +443,7 @@ const assertRoutingVariableFree = async (
 		owner: string;
 		repository: string | null;
 		routingVariable: string | null;
+		jobClasses?: { suffix: string }[];
 	},
 	organizationId: string,
 	poolId: string | null,
@@ -456,23 +458,25 @@ const assertRoutingVariableFree = async (
 			owner: true,
 			repository: true,
 			routingVariable: true,
+			jobClasses: true,
 		},
 	});
-	const clash = others.find(
-		(other) =>
-			other.githubRunnerPoolId !== poolId &&
-			other.routingVariable?.toLowerCase() ===
-				pool.routingVariable?.toLowerCase() &&
+	// The x86_64 and job class variables count too: two pools publishing the
+	// same name would overwrite each other's at every tick.
+	for (const other of others) {
+		if (other.githubRunnerPoolId === poolId) continue;
+		const sameTarget =
 			other.owner.toLowerCase() === pool.owner.toLowerCase() &&
 			(other.scope === "organization" ||
 				pool.scope === "organization" ||
-				other.repository?.toLowerCase() === pool.repository?.toLowerCase()),
-	);
-	if (clash) {
-		throw new TRPCError({
-			code: "CONFLICT",
-			message: `Pool ${clash.name} already publishes ${pool.routingVariable} for ${pool.owner}: pick another variable name`,
-		});
+				other.repository?.toLowerCase() === pool.repository?.toLowerCase());
+		const shared = sameTarget ? sharedVariable(pool, other) : null;
+		if (shared) {
+			throw new TRPCError({
+				code: "CONFLICT",
+				message: `Pool ${other.name} already publishes ${shared} for ${pool.owner}: pick another variable name or job class suffix`,
+			});
+		}
 	}
 };
 
