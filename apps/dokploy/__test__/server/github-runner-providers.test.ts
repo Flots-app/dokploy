@@ -637,7 +637,7 @@ describe("CLI runs", () => {
 		await expect(
 			runCommand("/bin/sh", ["-c", "exit 3"], {
 				input: "x".repeat(8 * 1024 * 1024),
-				env: { NODE_ENV: "test", PATH: "/usr/bin:/bin" },
+				env: { PATH: "/usr/bin:/bin", NODE_ENV: process.env.NODE_ENV },
 				timeoutMs: 10_000,
 			}),
 		).rejects.toThrow(/exited with 3/);
