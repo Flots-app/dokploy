@@ -15,6 +15,7 @@ import { Webhooks } from "@octokit/webhooks";
 import { and, eq } from "drizzle-orm";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { applications, compose, github } from "@/server/db/schema";
+import { handleComposePreviewWebhook } from "@/server/queues/compose-previews";
 import type { DeploymentJob } from "@/server/queues/queue-types";
 import { myQueue } from "@/server/queues/queueSetup";
 import { deploy } from "@/server/utils/deploy";
@@ -99,6 +100,32 @@ export default async function handler(
 			.status(400)
 			.json({ message: "We only accept push events or pull_request events" });
 		return;
+	}
+
+	if (req.headers["x-github-event"] === "pull_request") {
+		// Compose PR environments are best effort here: the request is persisted
+		// and the reconciler retries, so never fail the delivery (GitHub does
+		// not redeliver) or skip the application previews handled below.
+		try {
+			await handleComposePreviewWebhook({
+				githubId: githubResult.githubId,
+				owner:
+					githubBody?.repository?.owner?.login ??
+					getGithubRepositoryOwner(githubBody),
+				repository: githubBody?.repository?.name,
+				pullRequestNumber: githubBody?.pull_request?.number,
+				action: githubBody?.action,
+				baseRef: githubBody?.pull_request?.base?.ref,
+				fromFork:
+					githubBody?.pull_request?.head?.repo?.id !==
+					githubBody?.pull_request?.base?.repo?.id,
+				draft: !!githubBody?.pull_request?.draft,
+			});
+		} catch (error) {
+			console.error(
+				`Unable to queue Compose PR environments for delivery ${req.headers["x-github-delivery"] ?? "unknown"}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	// skip workflow runs use keywords

@@ -1,0 +1,23 @@
+name: dokploy-preview-manager-firewall
+services:
+  firewall:
+    build: .
+    image: dokploy-preview-firewall:1
+    container_name: dokploy-preview-firewall
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    security_opt: ['no-new-privileges:true']
+    environment:
+      PREVIEW_FIREWALL_ROLE: manager
+    volumes: ['/etc/dokploy/preview-firewall:/policy']
+    healthcheck:
+      # Healthy once the policy was applied in the last 45 seconds.
+      test: ['CMD', 'sh', '-c', 'test $$(( $$(date +%s) - $$(stat -c %Y /policy/$${PREVIEW_FIREWALL_ROLE}-status.json) )) -lt 45']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    labels:
+      com.dokploy.preview-infrastructure: 'true'

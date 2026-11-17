@@ -19,6 +19,12 @@ import {
 	updateServerById,
 } from "@dokploy/server";
 import { db } from "@dokploy/server/db";
+import {
+	previewFirewallInput,
+	readPreviewFirewall,
+	updatePreviewFirewall,
+} from "@dokploy/server/services/preview-firewall";
+import { configurePreviewWorker } from "@dokploy/server/services/preview-worker";
 import { hasValidLicense } from "@dokploy/server/services/proprietary/license-key";
 import { TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
@@ -52,6 +58,127 @@ import {
 import { applyDockerCleanupSchedule } from "@/server/utils/docker-cleanup";
 
 export const serverRouter = createTRPCRouter({
+	previewFirewall: withPermission("server", "read")
+		.input(z.object({ serverId: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			const accessible = await getAccessibleServerIds(ctx.session);
+			if (!accessible.has(input.serverId))
+				throw new TRPCError({ code: "FORBIDDEN" });
+			return readPreviewFirewall(input.serverId);
+		}),
+	updatePreviewFirewall: withPermission("server", "create")
+		.input(previewFirewallInput)
+		.mutation(async ({ ctx, input }) => {
+			const accessible = await getAccessibleServerIds(ctx.session);
+			if (!accessible.has(input.serverId))
+				throw new TRPCError({ code: "FORBIDDEN" });
+			await updatePreviewFirewall(input);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "server",
+				resourceId: input.serverId,
+				resourceName: "Preview firewall",
+			});
+			return true;
+		}),
+
+	updatePreviewPolicy: withPermission("server", "create")
+		.input(
+			z.object({
+				serverId: z.string().min(1),
+				previewOnly: z.boolean(),
+				swarmManagerId: z.string().min(1).nullable(),
+				previewCapacity: z.number().int().min(1).max(50),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const [accessibleIds, current] = await Promise.all([
+				getAccessibleServerIds(ctx.session),
+				findServerById(input.serverId),
+			]);
+			if (
+				!accessibleIds.has(input.serverId) ||
+				current.organizationId !== ctx.session.activeOrganizationId ||
+				current.serverType !== "deploy"
+			)
+				throw new TRPCError({
+					code: "FORBIDDEN",
+					message: "Select an accessible deployment server",
+				});
+			if (input.swarmManagerId && !accessibleIds.has(input.swarmManagerId))
+				throw new TRPCError({
+					code: "FORBIDDEN",
+					message: "Select an accessible Swarm manager",
+				});
+			if (input.swarmManagerId) {
+				const manager = await findServerById(input.swarmManagerId);
+				if (
+					manager.organizationId !== ctx.session.activeOrganizationId ||
+					!manager.sshKeyId
+				)
+					throw new TRPCError({
+						code: "FORBIDDEN",
+						message: "Invalid Swarm manager",
+					});
+			}
+			if (
+				current.swarmNodeId &&
+				current.swarmManagerId !== input.swarmManagerId
+			) {
+				const active = await db.query.compose.findFirst({
+					where: and(
+						eq(compose.serverId, input.serverId),
+						isNotNull(compose.previewParentId),
+					),
+				});
+				if (active)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Remove active previews before changing managers",
+					});
+			}
+			if (input.previewOnly) {
+				const [regular] = await db.execute<{
+					found: boolean;
+				}>(sql`select exists(
+					select 1 from application where "serverId" = ${input.serverId}
+					union all select 1 from compose where "serverId" = ${input.serverId} and "previewParentId" is null
+					union all select 1 from postgres where "serverId" = ${input.serverId}
+					union all select 1 from mysql where "serverId" = ${input.serverId}
+					union all select 1 from mariadb where "serverId" = ${input.serverId}
+					union all select 1 from mongo where "serverId" = ${input.serverId}
+					union all select 1 from redis where "serverId" = ${input.serverId}
+					union all select 1 from libsql where "serverId" = ${input.serverId}
+				) as found`);
+				if (regular?.found)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Move regular services before reserving this server for previews",
+					});
+			}
+			const swarmNodeId = await configurePreviewWorker(
+				input.serverId,
+				input.swarmManagerId,
+				input.previewOnly,
+			);
+			await db
+				.update(server)
+				.set({
+					previewOnly: input.previewOnly,
+					previewCapacity: input.previewCapacity,
+					swarmNodeId,
+					swarmManagerId: input.swarmManagerId,
+				})
+				.where(eq(server.serverId, input.serverId));
+			await audit(ctx, {
+				action: "update",
+				resourceType: "server",
+				resourceId: input.serverId,
+				resourceName: current.name,
+			});
+			return true;
+		}),
 	create: withPermission("server", "create")
 		.input(apiCreateServer)
 		.mutation(async ({ ctx, input }) => {
@@ -197,7 +324,9 @@ export const serverRouter = createTRPCRouter({
 						eq(server.serverType, "deploy"),
 					),
 		});
-		return result.filter((s) => accessibleIds.has(s.serverId));
+		return result.filter(
+			(s) => accessibleIds.has(s.serverId) && !s.previewOnly,
+		);
 	}),
 	setDefaultBuildServer: withPermission("server", "create")
 		.input(apiSetDefaultBuildServer)
