@@ -15,6 +15,7 @@ import {
 	previewAppName,
 	previewHost,
 } from "../utils/docker/compose-preview";
+import { formatDeploymentError } from "../utils/process/deployment-error";
 import {
 	authGithub,
 	checkUserRepositoryPermissions,
@@ -619,7 +620,8 @@ async function reconcile(previewId: string) {
 				: "Compose preview failed; see the deployment log";
 		if (!(error instanceof ComposePreviewError))
 			console.error(
-				`[compose-preview ${previewId}] PR #${preview.pullRequestNumber} of ${source.name} failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+				// Formatted: a local command error would otherwise carry the command.
+				`[compose-preview ${previewId}] PR #${preview.pullRequestNumber} of ${source.name} failed: ${formatDeploymentError(error).split("\n")[0]}`,
 			);
 		await updatePreview(previewId, {
 			status: "error",

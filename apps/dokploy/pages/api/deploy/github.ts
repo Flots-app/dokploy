@@ -122,8 +122,11 @@ export default async function handler(
 				draft: !!githubBody?.pull_request?.draft,
 			});
 		} catch (error) {
+			// Constant format string: the delivery id and message are arguments.
 			console.error(
-				`Unable to queue Compose PR environments for delivery ${req.headers["x-github-delivery"] ?? "unknown"}: ${error instanceof Error ? error.message : String(error)}`,
+				"Unable to queue Compose PR environments for delivery %s: %s",
+				String(req.headers["x-github-delivery"] ?? "unknown"),
+				error instanceof Error ? error.message : String(error),
 			);
 		}
 	}

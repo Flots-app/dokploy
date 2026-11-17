@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { isIPv4 } from "node:net";
 import { db } from "@dokploy/server/db";
 import { server } from "@dokploy/server/db/schema";
@@ -39,11 +39,19 @@ const stateSchema = z.object({
 const workerPolicyPath = "/etc/dokploy/firewall.json";
 const managerDirectory = "/etc/dokploy/preview-firewall";
 
+/** Whether an agent applied exactly this policy (constant-time comparison). */
+function policyMatches(state: z.infer<typeof stateSchema>, contents: string) {
+	const expected = createHash("sha256").update(contents).digest();
+	const reported = Buffer.from(state.policySha256, "hex");
+	return (
+		reported.length === expected.length && timingSafeEqual(reported, expected)
+	);
+}
+
 function fresh(state: z.infer<typeof stateSchema> | null, contents: string) {
 	return (
 		!!state &&
-		state.policySha256 ===
-			createHash("sha256").update(contents).digest("hex") &&
+		policyMatches(state, contents) &&
 		Math.abs(Date.now() - Date.parse(state.appliedAt)) < 45000
 	);
 }
@@ -53,9 +61,7 @@ type AgentState = z.infer<typeof stateSchema>;
 /** Health of one firewall agent, as shown to operators. */
 function agentHealth(state: AgentState | null, contents: string) {
 	if (!state) return { healthy: false, appliedAt: null, reason: "missing" };
-	if (
-		state.policySha256 !== createHash("sha256").update(contents).digest("hex")
-	)
+	if (!policyMatches(state, contents))
 		return {
 			healthy: false,
 			appliedAt: state.appliedAt,

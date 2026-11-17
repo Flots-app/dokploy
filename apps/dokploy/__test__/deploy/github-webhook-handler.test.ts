@@ -454,7 +454,11 @@ describe("GitHub app webhook auto-deploy", () => {
 		await handler(req, res);
 		// GitHub never redelivers a failed delivery: no 500 for previews.
 		expect(res.status).not.toHaveBeenCalledWith(500);
-		expect(error).toHaveBeenCalledWith(expect.stringContaining("delivery-1"));
+		expect(error).toHaveBeenCalledWith(
+			expect.stringContaining("%s"),
+			"delivery-1",
+			"database unavailable",
+		);
 		error.mockRestore();
 	});
 });
