@@ -172,8 +172,10 @@ export function startComposePreviewReconciler() {
 				columns: { previewId: true },
 				where: reconcileCandidates(now, settledToo),
 			});
-			for (const preview of previews)
-				await enqueueComposePreview(preview.previewId);
+			// Distinct previews: enqueueing them in parallel cannot duplicate a job.
+			await Promise.all(
+				previews.map((preview) => enqueueComposePreview(preview.previewId)),
+			);
 			if (settledToo) {
 				const purged = await db
 					.delete(composePreviews)

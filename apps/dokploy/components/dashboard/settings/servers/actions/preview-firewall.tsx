@@ -75,11 +75,7 @@ export function PreviewFirewallSettings({ serverId }: { serverId: string }) {
 								{agent.healthy ? "●" : "○"} {name} agent
 							</span>
 							{agent.appliedAt && (
-								<>
-									{" "}
-									· applied{" "}
-									{new Date(agent.appliedAt).toLocaleTimeString("en-GB")}
-								</>
+								<> · applied {agent.appliedAt.slice(11, 19)} UTC</>
 							)}
 						</li>
 					))}

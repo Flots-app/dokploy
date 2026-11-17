@@ -170,14 +170,16 @@ export async function updatePreviewFirewall(
 	const advertisedIp = advertised?.endsWith(":2377")
 		? advertised.slice(0, -5)
 		: undefined;
-	const servers = await db.query.server.findMany({
-		where: eq(server.organizationId, worker.organizationId),
-	});
 	// Every node of the cluster must stay reachable on the Swarm ports, not only
 	// preview workers: dropping a regular node's VXLAN or a second manager's
 	// Raft traffic breaks ingress (the 2026-09-12 incident). Recomputed from
 	// the live cluster on every save, so removed nodes lose access.
-	const nodes = await manager.listNodes();
+	const [servers, nodes] = await Promise.all([
+		db.query.server.findMany({
+			where: eq(server.organizationId, worker.organizationId),
+		}),
+		manager.listNodes(),
+	]);
 	const peers = new Set<string>([worker.ipAddress]);
 	for (const node of nodes) {
 		const candidates = [
