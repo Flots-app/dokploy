@@ -1,12 +1,23 @@
 import copy from "copy-to-clipboard";
-import { Copy, ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
+import {
+	Clock,
+	Copy,
+	ExternalLink,
+	GitPullRequest,
+	Loader2,
+} from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { DialogAction } from "@/components/shared/dialog-action";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { RouterOutputs } from "@/utils/api";
-import { formatUtc, isPreviewBusy, previewDomainUrl } from "./utils";
+import {
+	formatUtc,
+	isPreviewBusy,
+	isWaitingForCapacity,
+	previewDomainUrl,
+} from "./utils";
 
 export type Preview = RouterOutputs["composePreview"]["all"][number];
 
@@ -25,7 +36,15 @@ const STATUS: Record<
 	error: { label: "Failed", variant: "destructive" },
 };
 
-function PreviewStatus({ status }: { status: Preview["status"] }) {
+function PreviewStatus({ preview }: { preview: Preview }) {
+	if (isWaitingForCapacity(preview))
+		return (
+			<Badge variant="secondary" className="gap-1">
+				<Clock className="size-3" aria-hidden />
+				Waiting for capacity
+			</Badge>
+		);
+	const { status } = preview;
 	const entry = STATUS[status];
 	return (
 		<Badge variant={entry.variant} className="gap-1">
@@ -83,7 +102,7 @@ function PreviewHeader({
 				) : (
 					<span className="flex items-center gap-1 font-medium">{title}</span>
 				)}
-				<PreviewStatus status={preview.status} />
+				<PreviewStatus preview={preview} />
 				{preview.branch && (
 					<code className="text-sm text-muted-foreground">
 						{preview.branch}
@@ -198,18 +217,21 @@ function PreviewActions({
 					</Button>
 				</DialogAction>
 			)}
-			{onForget && preview.status === "error" && (
-				<DialogAction
-					type="destructive"
-					title={`Forget PR #${preview.pullRequestNumber} environment?`}
-					description="For a worker that is gone for good, when removal keeps failing. Dokploy refuses if the worker still answers; otherwise it deletes the records without contacting any server, and whatever still runs on that machine must be removed by hand."
-					onClick={onForget}
-				>
-					<Button size="sm" variant="ghost">
-						Forget
-					</Button>
-				</DialogAction>
-			)}
+			{onForget &&
+				preview.status === "error" &&
+				// A queued request has no environment to forget.
+				!isWaitingForCapacity(preview) && (
+					<DialogAction
+						type="destructive"
+						title={`Forget PR #${preview.pullRequestNumber} environment?`}
+						description="For a worker that is gone for good, when removal keeps failing. Dokploy refuses if the worker still answers; otherwise it deletes the records without contacting any server, and whatever still runs on that machine must be removed by hand."
+						onClick={onForget}
+					>
+						<Button size="sm" variant="ghost">
+							Forget
+						</Button>
+					</DialogAction>
+				)}
 			{active && preview.expiresAt && (
 				<span className="text-xs text-muted-foreground">
 					Expires {formatUtc(preview.expiresAt)}
@@ -229,11 +251,15 @@ export function PreviewRow({
 	return (
 		<div className="space-y-3 rounded-lg border p-4">
 			<PreviewHeader preview={preview} prUrl={prUrl} />
-			{preview.error && (
-				<p role="alert" className="text-sm text-destructive">
-					{preview.error}
-				</p>
-			)}
+			{preview.error &&
+				(isWaitingForCapacity(preview) ? (
+					// Not a failure: the environment starts on its own once a slot frees.
+					<p className="text-sm text-muted-foreground">{preview.error}</p>
+				) : (
+					<p role="alert" className="text-sm text-destructive">
+						{preview.error}
+					</p>
+				))}
 			{domains.length > 0 && <PreviewUrls domains={domains} />}
 			<PreviewActions {...props} />
 		</div>

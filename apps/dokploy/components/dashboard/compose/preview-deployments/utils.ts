@@ -26,3 +26,12 @@ export const formatUtc = (iso: string) =>
 /** States in which an environment is moving: the list polls faster then. */
 export const isPreviewBusy = (status: string) =>
 	status === "pending" || status === "deploying" || status === "removing";
+
+/** A failed allocation that retries on its own: the server reports it as an
+ * error so it keeps being retried, but it is a queue, not a failure. */
+export const isWaitingForCapacity = (preview: {
+	status: string;
+	error: string | null;
+}) =>
+	preview.status === "error" &&
+	!!preview.error?.startsWith("Waiting for capacity");
