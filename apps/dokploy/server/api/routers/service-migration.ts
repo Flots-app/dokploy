@@ -58,6 +58,8 @@ export const serviceMigrationRouter = createTRPCRouter({
 					where: and(
 						eq(server.organizationId, ctx.session.activeOrganizationId),
 						eq(server.serverType, "deploy"),
+						// Preview-only workers run untrusted PR code.
+						eq(server.previewOnly, false),
 						isNotNull(server.sshKeyId),
 					),
 					columns: {
