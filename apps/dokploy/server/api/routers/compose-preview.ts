@@ -4,7 +4,6 @@ import { compose, composePreviews, server } from "@dokploy/server/db/schema";
 import { apiUpdateComposePreviewSettings } from "@dokploy/server/db/validations/compose-preview";
 import { findComposeById } from "@dokploy/server/services/compose";
 import {
-	ComposePreviewNotFoundError,
 	findComposePreview,
 	forgetComposePreview,
 	requestComposePreview,
@@ -19,7 +18,6 @@ import {
 import { findRegistryById } from "@dokploy/server/services/registry";
 import { getAccessibleServerIds } from "@dokploy/server/services/server";
 import {
-	ComposePreviewError,
 	isComposePreviewError,
 	isolatePreviewCompose,
 	previewAppName,
