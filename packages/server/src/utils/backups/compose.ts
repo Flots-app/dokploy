@@ -22,7 +22,8 @@ import {
 } from "./utils";
 
 export const runComposeBackup = async (
-	compose: Compose,
+	// Loaders strip the PR environment secrets, which a backup never needs.
+	compose: Omit<Compose, "previewEnv" | "previewComposeFile">,
 	backup: BackupSchedule,
 ) => {
 	const { environmentId, name, appName } = compose;

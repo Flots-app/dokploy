@@ -205,6 +205,12 @@
   real-code-review fixes of phases 1 to 3, in
   [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79).
 - [x] Publish `v0.29.14-flots.29` from `canary` and deploy it to production.
+- [x] Isolated Docker Compose PR environments on Swarm workers (sticky PR
+  comment, lease-based reconciler, preview-only workers, firewall agents),
+  reviewed with real-code-review and lab-validated, in
+  [Flots-app/dokploy#82](https://github.com/Flots-app/dokploy/pull/82)
+  (supersedes #36 and #39).
+- [ ] Publish `v0.29.14-flots.30` from `canary` and deploy it to production.
 - [x] Commit, push and open the draft PR.
 
 ---

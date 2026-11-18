@@ -211,7 +211,10 @@ export const findEnvironmentsByProjectId = async (projectId: string) => {
 			mysql: true,
 			postgres: true,
 			redis: true,
-			compose: true,
+			// Preview secrets are only served to envVars readers (composePreview.settings).
+			compose: {
+				columns: { previewEnv: false, previewComposeFile: false },
+			},
 			libsql: true,
 			project: true,
 		},

@@ -114,7 +114,7 @@ export const execFileAsync = async (
 ): Promise<{ stdout: string; stderr: string }> => {
 	const child = execFile(command, args, { env: options.env });
 
-	if (options.input && child.stdin) {
+	if (options.input !== undefined && child.stdin) {
 		child.stdin.write(options.input);
 		child.stdin.end();
 	}
@@ -233,7 +233,8 @@ export const execAsyncRemote = async (
 							stderr += data.toString();
 							onData?.(data.toString());
 						});
-					if (preparedCommand.input) {
+					// End stdin even for empty input, or a reader such as `cat` waits.
+					if (input !== undefined || preparedCommand.input) {
 						stream.end(preparedCommand.input);
 					}
 				});
@@ -284,7 +285,11 @@ export const execAsyncRemote = async (
 				port: server.port,
 				username: server.username,
 				privateKey: server.sshKey?.privateKey,
-				timeout: 99999,
+				readyTimeout: 30000,
+				// Detect a dead server (reboot, network loss) within about a minute
+				// instead of waiting forever on a stalled command.
+				keepaliveInterval: 15000,
+				keepaliveCountMax: 4,
 			});
 	});
 };

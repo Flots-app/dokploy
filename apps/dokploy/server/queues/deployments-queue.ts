@@ -6,6 +6,7 @@ import {
 	rebuildApplication,
 	rebuildCompose,
 	rebuildPreviewApplication,
+	reconcileComposePreview,
 	updateApplicationStatus,
 	updateCompose,
 	updatePreviewDeployment,
@@ -18,6 +19,10 @@ import type { InMemoryJob } from "./in-memory-queue";
  */
 export const processDeploymentJob = async (job: InMemoryJob) => {
 	try {
+		if (job.data.applicationType === "compose-preview") {
+			await reconcileComposePreview(job.data.previewId);
+			return;
+		}
 		const serviceId =
 			job.data.applicationType === "compose"
 				? job.data.composeId

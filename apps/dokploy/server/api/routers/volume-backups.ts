@@ -17,6 +17,7 @@ import {
 	VOLUME_NAME_REGEX,
 	volumeBackups,
 } from "@dokploy/server/db/schema";
+import { composeWithoutPreviewSecrets } from "@dokploy/server/db/schema/compose";
 import { findDestinationById } from "@dokploy/server/services/destination";
 import { checkServicePermissionAndAccess } from "@dokploy/server/services/permission";
 import { findServerById } from "@dokploy/server/services/server";
@@ -67,7 +68,7 @@ export const volumeBackupsRouter = createTRPCRouter({
 					mariadb: true,
 					mongo: true,
 					redis: true,
-					compose: true,
+					compose: composeWithoutPreviewSecrets,
 					libsql: true,
 				},
 				orderBy: [desc(volumeBackups.createdAt)],
