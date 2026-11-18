@@ -233,10 +233,19 @@ export async function isPreviewWorkerReachable(serverId: string) {
 		};
 		// Aborting destroys the request and closes the SSH connection, so a
 		// hung engine never leaves a connection behind.
-		await engine.ping({
-			abortSignal: AbortSignal.timeout(WORKER_PROBE_TIMEOUT_MS),
-		});
-		return true;
+		const ping = engine
+			.ping({ abortSignal: AbortSignal.timeout(WORKER_PROBE_TIMEOUT_MS) })
+			// Settled here: a rejection after the race is decided stays handled.
+			.then(
+				() => true,
+				() => false,
+			);
+		// The abort only takes effect once the SSH tunnel exists; until then
+		// the handshake timeout applies. Bound the answer either way.
+		return await Promise.race([
+			ping,
+			delay(WORKER_PROBE_TIMEOUT_MS + 1_000, false),
+		]);
 	} catch {
 		return false;
 	}
