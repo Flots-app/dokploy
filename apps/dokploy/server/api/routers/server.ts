@@ -173,57 +173,61 @@ export const serverRouter = createTRPCRouter({
 							"Move regular services before reserving this server for previews",
 					});
 			}
-			const swarmNodeId = await configurePreviewWorker(
-				input.serverId,
-				input.swarmManagerId,
-				input.previewOnly,
-			);
 			const releasing = current.previewOnly && !input.previewOnly;
-			await db
-				.transaction(async (tx) => {
-					// Same row lock as preview allocation: a PR environment cannot be
-					// allocated between this check and releasing the reservation.
+			if (releasing)
+				// Database first, under the same row lock as preview allocation:
+				// once committed, no PR environment can be allocated here, and a
+				// refused release never touches the Swarm node.
+				await db.transaction(async (tx) => {
 					await tx
 						.select({ serverId: server.serverId })
 						.from(server)
 						.where(eq(server.serverId, input.serverId))
 						.for("update");
-					if (releasing) {
-						const running = await tx.query.compose.findFirst({
-							where: and(
-								eq(compose.serverId, input.serverId),
-								isNotNull(compose.previewParentId),
-							),
-							columns: { composeId: true },
+					const running = await tx.query.compose.findFirst({
+						where: and(
+							eq(compose.serverId, input.serverId),
+							isNotNull(compose.previewParentId),
+						),
+						columns: { composeId: true },
+					});
+					if (running)
+						throw new TRPCError({
+							code: "BAD_REQUEST",
+							message:
+								"Remove the PR environments running on this server before releasing it for regular services",
 						});
-						if (running)
-							throw new TRPCError({
-								code: "BAD_REQUEST",
-								message:
-									"Remove the PR environments running on this server before releasing it for regular services",
-							});
-					}
 					await tx
 						.update(server)
-						.set({
-							previewOnly: input.previewOnly,
-							previewCapacity: input.previewCapacity,
-							swarmNodeId,
-							swarmManagerId: input.swarmManagerId,
-						})
+						.set({ previewOnly: false })
 						.where(eq(server.serverId, input.serverId));
-				})
-				.catch(async (error) => {
-					// The node label was already released over SSH: restore it, or
-					// Swarm could place regular services next to running PR code.
-					if (releasing)
-						await configurePreviewWorker(
-							input.serverId,
-							input.swarmManagerId,
-							true,
-						).catch(() => {});
-					throw error;
 				});
+			let swarmNodeId: string;
+			try {
+				swarmNodeId = await configurePreviewWorker(
+					input.serverId,
+					input.swarmManagerId,
+					input.previewOnly,
+				);
+			} catch (error) {
+				// The node still carries the reservation label: keep the database
+				// in line with it.
+				if (releasing)
+					await db
+						.update(server)
+						.set({ previewOnly: true })
+						.where(eq(server.serverId, input.serverId));
+				throw error;
+			}
+			await db
+				.update(server)
+				.set({
+					previewOnly: input.previewOnly,
+					previewCapacity: input.previewCapacity,
+					swarmNodeId,
+					swarmManagerId: input.swarmManagerId,
+				})
+				.where(eq(server.serverId, input.serverId));
 			await audit(ctx, {
 				action: "update",
 				resourceType: "server",

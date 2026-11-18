@@ -5,6 +5,7 @@ const m = vi.hoisted(() => ({
 	exec: vi.fn(),
 	updateDeployment: vi.fn(),
 	updateCompose: vi.fn(),
+	ping: vi.fn(async (_options?: { abortSignal?: AbortSignal }) => "OK"),
 }));
 
 vi.mock("@dokploy/server/services/compose", () => ({
@@ -25,7 +26,7 @@ vi.mock("@dokploy/server/services/server", () => ({
 	findServerById: async (serverId: string) => ({
 		serverId,
 		organizationId: "org-1",
-		sshKeyId: "key-1",
+		sshKeyId: serverId === "no-key" ? null : "key-1",
 		serverType: "deploy",
 		swarmNodeId: serverId === "worker-1" ? "node-1" : null,
 		swarmManagerId: serverId === "worker-1" ? "manager-1" : null,
@@ -45,6 +46,7 @@ vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 			}),
 		}),
 		listServices: async () => [],
+		ping: m.ping,
 	}),
 }));
 vi.mock("@dokploy/server/services/preview-firewall", () => ({
@@ -93,7 +95,10 @@ vi.mock("@dokploy/server/utils/process/execAsync", async () => ({
 	execAsyncRemote: m.exec,
 }));
 
-import { deployComposePreviewStack } from "@dokploy/server/services/compose-preview-stack";
+import {
+	deployComposePreviewStack,
+	isPreviewWorkerReachable,
+} from "@dokploy/server/services/compose-preview-stack";
 import {
 	formatPreviewStackTasks,
 	getPreviewStackTasksCommand,
@@ -277,5 +282,24 @@ describe("preview stack failure diagnostics", () => {
 			"Preview failed during compose validation: docker compose config rejected the preview file",
 		);
 		expect(appendedLog()).toContain("===== Compose validation =====");
+	});
+});
+
+describe("worker reachability before forgetting a preview", () => {
+	it("pings the worker with a bounded wait", async () => {
+		m.ping.mockResolvedValueOnce("OK");
+		expect(await isPreviewWorkerReachable("worker-1")).toBe(true);
+		expect(m.ping.mock.calls.at(-1)?.[0]?.abortSignal).toBeInstanceOf(
+			AbortSignal,
+		);
+	});
+	it("never mistakes the Dokploy host for a worker without SSH key", async () => {
+		m.ping.mockClear();
+		expect(await isPreviewWorkerReachable("no-key")).toBe(false);
+		expect(m.ping).not.toHaveBeenCalled();
+	});
+	it("treats a failed or aborted ping as gone", async () => {
+		m.ping.mockRejectedValueOnce(new Error("The operation was aborted"));
+		expect(await isPreviewWorkerReachable("worker-1")).toBe(false);
 	});
 });

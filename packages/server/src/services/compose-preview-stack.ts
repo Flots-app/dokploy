@@ -221,13 +221,25 @@ const WORKER_PROBE_TIMEOUT_MS = 15_000;
  * PR stack would keep running and serving with no record left in Dokploy.
  */
 export async function isPreviewWorkerReachable(serverId: string) {
-	const probe = (async () => {
-		const engine = await getRemoteDocker(serverId);
-		await engine.ping();
+	const worker = await findServerById(serverId);
+	// Without a key, getRemoteDocker would return the Dokploy host's own
+	// engine, which always answers: that says nothing about the worker.
+	if (!worker.sshKeyId) return false;
+	try {
+		const engine = (await getRemoteDocker(serverId)) as unknown as {
+			// dockerode 4 forwards abortSignal to the request (lib/docker.js
+			// ping); @types/dockerode 3.3 does not declare the option.
+			ping: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
+		};
+		// Aborting destroys the request and closes the SSH connection, so a
+		// hung engine never leaves a connection behind.
+		await engine.ping({
+			abortSignal: AbortSignal.timeout(WORKER_PROBE_TIMEOUT_MS),
+		});
 		return true;
-	})().catch(() => false);
-	const timeout = delay(WORKER_PROBE_TIMEOUT_MS, false);
-	return Promise.race([probe, timeout]);
+	} catch {
+		return false;
+	}
 }
 
 export async function assertPreviewSwarmWorker(
