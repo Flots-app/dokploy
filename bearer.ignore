@@ -365,6 +365,24 @@
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
   },
+  "19f331f9718a67178ffea819bf5158b4_0": {
+    "author": "s1nyx",
+    "comment": "Operational log of the Compose PR environments controller: only ids (preview, deployment, PR number), phase names, service names and error messages already redacted by formatDeploymentError or produced by Dokploy itself. No personal data, tokens or command text.",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
+  },
+  "19f331f9718a67178ffea819bf5158b4_1": {
+    "author": "s1nyx",
+    "comment": "Operational log of the Compose PR environments controller: only ids (preview, deployment, PR number), phase names, service names and error messages already redacted by formatDeploymentError or produced by Dokploy itself. No personal data, tokens or command text.",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
+  },
+  "19f331f9718a67178ffea819bf5158b4_2": {
+    "author": "s1nyx",
+    "comment": "Operational log of the Compose PR environments controller: only ids (preview, deployment, PR number), phase names, service names and error messages already redacted by formatDeploymentError or produced by Dokploy itself. No personal data, tokens or command text.",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
+  },
   "1b024c96002478f5bc28e074248cd035_0": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -550,6 +568,18 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "2566f2ceabf18c5308222e4b30bce9d0_0": {
+    "author": "s1nyx",
+    "comment": "Operational log of the Compose PR environments controller: only ids (preview, deployment, PR number), phase names, service names and error messages already redacted by formatDeploymentError or produced by Dokploy itself. No personal data, tokens or command text.",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
+  },
+  "2566f2ceabf18c5308222e4b30bce9d0_1": {
+    "author": "s1nyx",
+    "comment": "Operational log of the Compose PR environments controller: only ids (preview, deployment, PR number), phase names, service names and error messages already redacted by formatDeploymentError or produced by Dokploy itself. No personal data, tokens or command text.",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
   },
   "276640610686d3a3c13b26b41fb5a04b_0": {
     "author": "baseline",
@@ -982,6 +1012,12 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "4f2045132704a91c5cc4384f1d9b9c0c_0": {
+    "author": "s1nyx",
+    "comment": "Test fixture: a fake registry password in a mocked registry record (apps/dokploy/__test__/compose/preview-diagnostics.test.ts), never used against a real registry.",
+    "false_positive": true,
+    "ignored_at": "2026-11-17T21:00:00Z"
   },
   "51bfda7e526a5ab86db5ade6b12837b2_0": {
     "author": "baseline",
@@ -2171,6 +2207,18 @@
     "false_positive": true,
     "ignored_at": "2026-10-26T11:38:17Z"
   },
+  "acfaf1fdf6e9438cff812175ce12fdff_0": {
+    "author": "s1nyx",
+    "comment": "Operational log of the Compose PR environments controller: only ids (preview, deployment, PR number), phase names, service names and error messages already redacted by formatDeploymentError or produced by Dokploy itself. No personal data, tokens or command text.",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
+  },
+  "acfaf1fdf6e9438cff812175ce12fdff_1": {
+    "author": "s1nyx",
+    "comment": "Operational log of the Compose PR environments controller: only ids (preview, deployment, PR number), phase names, service names and error messages already redacted by formatDeploymentError or produced by Dokploy itself. No personal data, tokens or command text.",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
+  },
   "adaeb442739c618425bfc40b7b9a61fb_0": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -2987,6 +3035,12 @@
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
   },
+  "de2ab655daac1ba799a5f841a01cfb6a_10": {
+    "author": "s1nyx",
+    "comment": "Index shift: the Compose PR environments webhook hook adds one logger call earlier in pages/api/deploy/github.ts, which logs only the GitHub delivery id and the queueing error message. The shifted occurrence is the existing baseline entry de2ab655..._9 (Background deployment failed).",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
+  },
   "de2ab655daac1ba799a5f841a01cfb6a_2": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -3550,6 +3604,12 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "fcf4a3701198dff77496080a45ea104a_0": {
+    "author": "s1nyx",
+    "comment": "Best-effort GitHub comment failure: logs the preview id, PR number, owner/repository and the Octokit error message (no token; the request is authenticated by the App installation).",
+    "false_positive": false,
+    "ignored_at": "2026-11-17T21:00:00Z"
   },
   "fde9892656b636f6ad62c66b66172799_0": {
     "author": "baseline",

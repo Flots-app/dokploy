@@ -1,0 +1,70 @@
+# Run with Docker inside the dedicated worker, after installing the firewall image.
+name: dokploy-preview-engine
+services:
+  firewall:
+    image: dokploy-preview-firewall:1
+    container_name: dokploy-preview-firewall
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    security_opt: ['no-new-privileges:true']
+    environment:
+      PREVIEW_FIREWALL_ROLE: worker-engine
+    volumes: ['/etc/dokploy:/policy']
+    labels:
+      com.dokploy.preview-infrastructure: 'true'
+    healthcheck:
+      # Healthy once the policy was applied in the last 45 seconds.
+      test: ['CMD', 'sh', '-c', 'test $$(( $$(date +%s) - $$(stat -c %Y /policy/$${PREVIEW_FIREWALL_ROLE}-status.json) )) -lt 45']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  # Traefik joins every PR network, so it never gets the Docker socket: this
+  # proxy only answers the read-only calls the Docker provider needs.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.1@sha256:3400c429c5f9e1b21d62130fb93b16e2e772d4fb7695bd52fc2b743800b9fe9e
+    container_name: dokploy-preview-socket-proxy
+    restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1
+      EVENTS: 1
+      VERSION: 1
+      POST: 0
+    volumes: ['/var/run/docker.sock:/var/run/docker.sock:ro']
+    networks: [socket]
+    labels:
+      com.dokploy.preview-infrastructure: 'true'
+  proxy:
+    image: traefik:v3.6.7@sha256:a9890c898f379c1905ee5b28342f6b408dc863f08db2dab20e46c267d1ff463a
+    container_name: dokploy-traefik
+    restart: unless-stopped
+    depends_on: [socket-proxy]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ['no-new-privileges:true']
+    networks: [socket, default]
+    command:
+      - --entrypoints.web.address=:80
+      - '--entrypoints.web.forwardedheaders.trustedips=${PREVIEW_MANAGER_IP:?}/32'
+      - --providers.docker=true
+      - --providers.docker.endpoint=tcp://dokploy-preview-socket-proxy:2375
+      - --providers.docker.exposedbydefault=false
+      - '--providers.docker.constraints=Label(`com.dokploy.preview`,`true`)'
+      - --ping=true
+    ports: ['9080:80']
+    labels:
+      com.dokploy.preview-infrastructure: 'true'
+    healthcheck:
+      test: ['CMD', 'traefik', 'healthcheck', '--ping']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+networks:
+  # Internal: nothing on it reaches the outside; only Traefik and the proxy.
+  socket:
+    internal: true

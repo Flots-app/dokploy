@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { paths } from "@dokploy/server/constants";
 import type { Compose } from "@dokploy/server/services/compose";
 import type { Domain } from "@dokploy/server/services/domain";
+import { quote } from "shell-quote";
 import { parse, stringify } from "yaml";
 import { execAsyncRemote } from "../process/execAsync";
 import { cloneBitbucketRepository } from "../providers/bitbucket";
@@ -59,6 +60,8 @@ export const getComposePath = (compose: Compose) => {
 export const loadDockerCompose = async (
 	compose: Compose,
 ): Promise<ComposeSpecification | null> => {
+	if (compose.previewParentId && compose.previewComposeFile)
+		return parse(compose.previewComposeFile) as ComposeSpecification;
 	const path = getComposePath(compose);
 
 	if (existsSync(path)) {
@@ -74,6 +77,8 @@ export const loadDockerCompose = async (
 export const loadDockerComposeRemote = async (
 	compose: Compose,
 ): Promise<ComposeSpecification | null> => {
+	if (compose.previewParentId && compose.previewComposeFile)
+		return parse(compose.previewComposeFile) as ComposeSpecification;
 	const path = getComposePath(compose);
 	try {
 		if (!compose.serverId) {
@@ -81,7 +86,7 @@ export const loadDockerComposeRemote = async (
 		}
 		const { stdout, stderr } = await execAsyncRemote(
 			compose.serverId,
-			`cat ${path}`,
+			`cat ${quote([path])}`,
 		);
 
 		if (stderr) {
@@ -231,6 +236,23 @@ export const addDomainToCompose = async (
 	// Add dokploy-network to the root of the compose file
 	if (!compose.isolatedDeployment) {
 		result.networks = addDokployNetworkToRoot(result.networks);
+	}
+
+	if (compose.composeType === "stack" && !compose.previewParentId) {
+		for (const service of Object.values(result.services || {})) {
+			service.deploy = {
+				...service.deploy,
+				placement: {
+					...service.deploy?.placement,
+					constraints: [
+						...new Set([
+							...(service.deploy?.placement?.constraints || []),
+							"node.labels.com.dokploy.preview-only!=true",
+						]),
+					],
+				},
+			};
+		}
 	}
 
 	return result;

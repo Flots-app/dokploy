@@ -19,6 +19,12 @@ import {
 	updateServerById,
 } from "@dokploy/server";
 import { db } from "@dokploy/server/db";
+import {
+	previewFirewallInput,
+	readPreviewFirewall,
+	updatePreviewFirewall,
+} from "@dokploy/server/services/preview-firewall";
+import { configurePreviewWorker } from "@dokploy/server/services/preview-worker";
 import { hasValidLicense } from "@dokploy/server/services/proprietary/license-key";
 import { TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
@@ -51,7 +57,186 @@ import {
 } from "@/server/db/schema";
 import { applyDockerCleanupSchedule } from "@/server/utils/docker-cleanup";
 
+/** Longest the SSH step of a preview policy update may hold the server lock. */
+const PREVIEW_POLICY_SSH_TIMEOUT_MS = 60_000;
+
 export const serverRouter = createTRPCRouter({
+	previewFirewall: withPermission("server", "read")
+		.input(z.object({ serverId: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			const accessible = await getAccessibleServerIds(ctx.session);
+			if (!accessible.has(input.serverId))
+				throw new TRPCError({ code: "FORBIDDEN" });
+			return readPreviewFirewall(input.serverId);
+		}),
+	updatePreviewFirewall: withPermission("server", "create")
+		.input(previewFirewallInput)
+		.mutation(async ({ ctx, input }) => {
+			const accessible = await getAccessibleServerIds(ctx.session);
+			if (!accessible.has(input.serverId))
+				throw new TRPCError({ code: "FORBIDDEN" });
+			await updatePreviewFirewall(input);
+			await audit(ctx, {
+				action: "update",
+				resourceType: "server",
+				resourceId: input.serverId,
+				resourceName: "Preview firewall",
+			});
+			return true;
+		}),
+
+	updatePreviewPolicy: withPermission("server", "create")
+		.input(
+			z.object({
+				serverId: z.string().min(1),
+				previewOnly: z.boolean(),
+				swarmManagerId: z.string().min(1).nullable(),
+				previewCapacity: z.number().int().min(1).max(50),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const [accessibleIds, current] = await Promise.all([
+				getAccessibleServerIds(ctx.session),
+				findServerById(input.serverId),
+			]);
+			if (
+				!accessibleIds.has(input.serverId) ||
+				current.organizationId !== ctx.session.activeOrganizationId ||
+				current.serverType !== "deploy"
+			)
+				throw new TRPCError({
+					code: "FORBIDDEN",
+					message: "Select an accessible deployment server",
+				});
+			if (input.swarmManagerId && !accessibleIds.has(input.swarmManagerId))
+				throw new TRPCError({
+					code: "FORBIDDEN",
+					message: "Select an accessible Swarm manager",
+				});
+			if (input.swarmManagerId) {
+				const manager = await findServerById(input.swarmManagerId);
+				if (
+					manager.organizationId !== ctx.session.activeOrganizationId ||
+					!manager.sshKeyId
+				)
+					throw new TRPCError({
+						code: "FORBIDDEN",
+						message: "Invalid Swarm manager",
+					});
+			}
+			// One transaction holding the server row lock across every check and
+			// the SSH step (a rare admin action). Policy updates for a server are
+			// serialized; preview allocation and any insert referencing this
+			// server wait for it (FOR UPDATE conflicts with the FOR KEY SHARE an
+			// FK insert takes); readers keep seeing the committed policy until the
+			// node label really changed; any failure rolls everything back.
+			await db.transaction(async (tx) => {
+				const [locked] = await tx
+					.select({
+						previewOnly: server.previewOnly,
+						swarmNodeId: server.swarmNodeId,
+						swarmManagerId: server.swarmManagerId,
+					})
+					.from(server)
+					.where(eq(server.serverId, input.serverId))
+					.for("update");
+				const previewRunning = async () =>
+					!!(await tx.query.compose.findFirst({
+						where: and(
+							eq(compose.serverId, input.serverId),
+							isNotNull(compose.previewParentId),
+						),
+						columns: { composeId: true },
+					}));
+				if (
+					locked?.swarmNodeId &&
+					locked.swarmManagerId !== input.swarmManagerId &&
+					(await previewRunning())
+				)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Remove active previews before changing managers",
+					});
+				// Releasing the reservation would let regular services land next
+				// to running PR code.
+				if (
+					locked?.previewOnly &&
+					!input.previewOnly &&
+					(await previewRunning())
+				)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Remove the PR environments running on this server before releasing it for regular services",
+					});
+				if (input.previewOnly) {
+					const [regular] = await tx.execute<{
+						found: boolean;
+					}>(sql`select exists(
+						select 1 from application where "serverId" = ${input.serverId}
+						union all select 1 from compose where "serverId" = ${input.serverId} and "previewParentId" is null
+						union all select 1 from postgres where "serverId" = ${input.serverId}
+						union all select 1 from mysql where "serverId" = ${input.serverId}
+						union all select 1 from mariadb where "serverId" = ${input.serverId}
+						union all select 1 from mongo where "serverId" = ${input.serverId}
+						union all select 1 from redis where "serverId" = ${input.serverId}
+						union all select 1 from libsql where "serverId" = ${input.serverId}
+					) as found`);
+					if (regular?.found)
+						throw new TRPCError({
+							code: "BAD_REQUEST",
+							message:
+								"Move regular services before reserving this server for previews",
+						});
+				}
+				// Never hold the lock on an engine that stopped answering. The node
+				// label is changed last and idempotently: saving again re-applies it.
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const timedOut = new Promise<never>((_, reject) => {
+					timer = setTimeout(
+						() =>
+							reject(
+								new TRPCError({
+									code: "GATEWAY_TIMEOUT",
+									message:
+										"The worker or the Swarm manager did not answer within a minute; nothing was saved. Check the servers and save again",
+								}),
+							),
+						PREVIEW_POLICY_SSH_TIMEOUT_MS,
+					);
+				});
+				let swarmNodeId: string;
+				try {
+					// Promise.race observes both: a late rejection stays handled.
+					swarmNodeId = await Promise.race([
+						configurePreviewWorker(
+							input.serverId,
+							input.swarmManagerId,
+							input.previewOnly,
+						),
+						timedOut,
+					]);
+				} finally {
+					clearTimeout(timer);
+				}
+				await tx
+					.update(server)
+					.set({
+						previewOnly: input.previewOnly,
+						previewCapacity: input.previewCapacity,
+						swarmNodeId,
+						swarmManagerId: input.swarmManagerId,
+					})
+					.where(eq(server.serverId, input.serverId));
+			});
+			await audit(ctx, {
+				action: "update",
+				resourceType: "server",
+				resourceId: input.serverId,
+				resourceName: current.name,
+			});
+			return true;
+		}),
 	create: withPermission("server", "create")
 		.input(apiCreateServer)
 		.mutation(async ({ ctx, input }) => {
@@ -197,7 +382,9 @@ export const serverRouter = createTRPCRouter({
 						eq(server.serverType, "deploy"),
 					),
 		});
-		return result.filter((s) => accessibleIds.has(s.serverId));
+		return result.filter(
+			(s) => accessibleIds.has(s.serverId) && !s.previewOnly,
+		);
 	}),
 	setDefaultBuildServer: withPermission("server", "create")
 		.input(apiSetDefaultBuildServer)

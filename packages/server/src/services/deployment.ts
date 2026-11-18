@@ -16,6 +16,7 @@ import {
 	environments,
 	projects,
 } from "@dokploy/server/db/schema";
+import { composeWithoutPreviewSecrets } from "@dokploy/server/db/schema/compose";
 import { removeDirectoryIfExistsContent } from "@dokploy/server/utils/filesystem/directory";
 import {
 	execAsync,
@@ -85,7 +86,7 @@ export const findDeploymentById = async (deploymentId: string) => {
 		where: eq(deployments.deploymentId, deploymentId),
 		with: {
 			application: true,
-			compose: true,
+			compose: composeWithoutPreviewSecrets,
 			schedule: true,
 		},
 	});

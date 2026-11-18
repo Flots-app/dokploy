@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+	type AnyPgColumn,
 	boolean,
 	check,
 	integer,
@@ -48,6 +49,14 @@ export const server = pgTable(
 			.notNull()
 			.default(false),
 		buildsConcurrency: integer("buildsConcurrency").notNull().default(1),
+		previewOnly: boolean("previewOnly").notNull().default(false),
+		previewCapacity: integer("previewCapacity").notNull().default(3),
+		swarmNodeId: text("swarmNodeId"),
+		// A worker's previews can only be cleaned up through its manager.
+		swarmManagerId: text("swarmManagerId").references(
+			(): AnyPgColumn => server.serverId,
+			{ onDelete: "restrict" },
+		),
 		createdAt: text("createdAt").notNull(),
 		organizationId: text("organizationId")
 			.notNull()

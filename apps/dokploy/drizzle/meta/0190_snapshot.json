@@ -1,5 +1,5 @@
 {
-  "id": "b9c94beb-cf28-4d73-8ac7-9d20b43ecc91",
+  "id": "7ee43d34-e42f-45c9-a858-76d2b13a7d3e",
   "prevId": "f77dbba2-0002-4833-9234-86d529f0af2e",
   "version": "7",
   "dialect": "postgresql",
@@ -2347,6 +2347,38 @@
           "primaryKey": false,
           "notNull": false
         },
+        "previewSettings": {
+          "name": "previewSettings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "previewEnv": {
+          "name": "previewEnv",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "previewComposeFile": {
+          "name": "previewComposeFile",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "previewParentId": {
+          "name": "previewParentId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "previewCommitSha": {
+          "name": "previewCommitSha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "composeFile": {
           "name": "composeFile",
           "type": "text",
@@ -2616,8 +2648,37 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "compose_preview_parent_idx": {
+          "name": "compose_preview_parent_idx",
+          "columns": [
+            {
+              "expression": "previewParentId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
+        "compose_previewParentId_compose_composeId_fk": {
+          "name": "compose_previewParentId_compose_composeId_fk",
+          "tableFrom": "compose",
+          "tableTo": "compose",
+          "columnsFrom": [
+            "previewParentId"
+          ],
+          "columnsTo": [
+            "composeId"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "compose_customGitSSHKeyId_ssh-key_sshKeyId_fk": {
           "name": "compose_customGitSSHKeyId_ssh-key_sshKeyId_fk",
           "tableFrom": "compose",
@@ -2733,6 +2794,279 @@
             "registryId"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.composePreview": {
+      "name": "composePreview",
+      "schema": "",
+      "columns": {
+        "previewId": {
+          "name": "previewId",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "sourceComposeId": {
+          "name": "sourceComposeId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "composeId": {
+          "name": "composeId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "environmentId": {
+          "name": "environmentId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "serverId": {
+          "name": "serverId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pullRequestNumber": {
+          "name": "pullRequestNumber",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "branch": {
+          "name": "branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "url": {
+          "name": "url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "deployedSha": {
+          "name": "deployedSha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "commentId": {
+          "name": "commentId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "composePreviewStatus",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "manualCleanup": {
+          "name": "manualCleanup",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expiresAt": {
+          "name": "expiresAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requestedAt": {
+          "name": "requestedAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reconciledAt": {
+          "name": "reconciledAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lockedBy": {
+          "name": "lockedBy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lockedUntil": {
+          "name": "lockedUntil",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "authorizedSha": {
+          "name": "authorizedSha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "compose_preview_source_pr_unique": {
+          "name": "compose_preview_source_pr_unique",
+          "columns": [
+            {
+              "expression": "sourceComposeId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pullRequestNumber",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "compose_preview_server_idx": {
+          "name": "compose_preview_server_idx",
+          "columns": [
+            {
+              "expression": "serverId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "compose_preview_compose_idx": {
+          "name": "compose_preview_compose_idx",
+          "columns": [
+            {
+              "expression": "composeId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "compose_preview_environment_idx": {
+          "name": "compose_preview_environment_idx",
+          "columns": [
+            {
+              "expression": "environmentId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "compose_preview_status_idx": {
+          "name": "compose_preview_status_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "composePreview_sourceComposeId_compose_composeId_fk": {
+          "name": "composePreview_sourceComposeId_compose_composeId_fk",
+          "tableFrom": "composePreview",
+          "tableTo": "compose",
+          "columnsFrom": [
+            "sourceComposeId"
+          ],
+          "columnsTo": [
+            "composeId"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "composePreview_composeId_compose_composeId_fk": {
+          "name": "composePreview_composeId_compose_composeId_fk",
+          "tableFrom": "composePreview",
+          "tableTo": "compose",
+          "columnsFrom": [
+            "composeId"
+          ],
+          "columnsTo": [
+            "composeId"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "composePreview_environmentId_environment_environmentId_fk": {
+          "name": "composePreview_environmentId_environment_environmentId_fk",
+          "tableFrom": "composePreview",
+          "tableTo": "environment",
+          "columnsFrom": [
+            "environmentId"
+          ],
+          "columnsTo": [
+            "environmentId"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "composePreview_serverId_server_serverId_fk": {
+          "name": "composePreview_serverId_server_serverId_fk",
+          "tableFrom": "composePreview",
+          "tableTo": "server",
+          "columnsFrom": [
+            "serverId"
+          ],
+          "columnsTo": [
+            "serverId"
+          ],
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -8114,13 +8448,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'install'"
-        },
         "status": {
           "name": "status",
           "type": "osUpdateRunStatus",
@@ -8413,23 +8740,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"os_update_run\".\"trigger\" = 'manual' AND \"os_update_run\".\"kind\" = 'install' AND \"os_update_run\".\"status\" IN ('pending', 'running')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "os_update_run_handoff_active_unique": {
-          "name": "os_update_run_handoff_active_unique",
-          "columns": [
-            {
-              "expression": "githubRunnerNodeId",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"os_update_run\".\"kind\" = 'handoff' AND \"os_update_run\".\"status\" IN ('pending', 'running')",
+          "where": "\"os_update_run\".\"trigger\" = 'manual' AND \"os_update_run\".\"status\" IN ('pending', 'running')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -8496,10 +8807,6 @@
         "os_update_run_one_machine": {
           "name": "os_update_run_one_machine",
           "value": "num_nonnulls(\"os_update_run\".\"serverId\", \"os_update_run\".\"githubRunnerNodeId\") = 1"
-        },
-        "os_update_run_kind": {
-          "name": "os_update_run_kind",
-          "value": "\"os_update_run\".\"kind\" IN ('install', 'handoff')"
         }
       },
       "isRLSEnabled": false
@@ -10035,6 +10342,32 @@
           "notNull": true,
           "default": 1
         },
+        "previewOnly": {
+          "name": "previewOnly",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "previewCapacity": {
+          "name": "previewCapacity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 3
+        },
+        "swarmNodeId": {
+          "name": "swarmNodeId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "swarmManagerId": {
+          "name": "swarmManagerId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "createdAt": {
           "name": "createdAt",
           "type": "text",
@@ -10110,6 +10443,19 @@
         }
       },
       "foreignKeys": {
+        "server_swarmManagerId_server_serverId_fk": {
+          "name": "server_swarmManagerId_server_serverId_fk",
+          "tableFrom": "server",
+          "tableTo": "server",
+          "columnsFrom": [
+            "swarmManagerId"
+          ],
+          "columnsTo": [
+            "serverId"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "server_organizationId_organization_id_fk": {
           "name": "server_organizationId_organization_id_fk",
           "tableFrom": "server",
@@ -11417,6 +11763,18 @@
         "bitbucket",
         "gitea",
         "raw"
+      ]
+    },
+    "public.composePreviewStatus": {
+      "name": "composePreviewStatus",
+      "schema": "public",
+      "values": [
+        "pending",
+        "deploying",
+        "ready",
+        "removing",
+        "closed",
+        "error"
       ]
     },
     "public.deploymentStatus": {

@@ -1,5 +1,6 @@
 import { db } from "@dokploy/server/db";
 import { type apiCreateBackup, backups } from "@dokploy/server/db/schema";
+import { composeWithoutPreviewSecrets } from "@dokploy/server/db/schema/compose";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import type { z } from "zod";
@@ -42,7 +43,7 @@ export const findBackupById = async (backupId: string) => {
 					secretAccessKey: false,
 				},
 			},
-			compose: true,
+			compose: composeWithoutPreviewSecrets,
 		},
 	});
 	if (!backup) {

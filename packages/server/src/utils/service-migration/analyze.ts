@@ -406,6 +406,8 @@ const checkTargetServer = async (
 		problems.push("it is a Build Server, not a Deploy Server");
 	}
 	if (targetServer.serverStatus !== "active") problems.push("it is inactive");
+	if (targetServer.previewOnly)
+		problems.push("it is reserved for PR environments");
 	if (!targetServer.sshKeyId) problems.push("it has no SSH key");
 	if (service.buildServerId === targetServer.serverId) {
 		problems.push("it is the Build Server of this service");

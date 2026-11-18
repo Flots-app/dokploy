@@ -64,3 +64,13 @@ secrets:
       # The same constant, compiled into the Next.js build of the image.
       - "**/.next/**/dashboard/settings/certificates*.js"
     statement: "False positive: UI placeholder constant holding sample text, not a real key"
+
+misconfigurations:
+  - id: DS-0002
+    paths:
+      - "ops/compose-preview/firewall/Dockerfile"
+    statement: "Root by design: the agent programs iptables (NET_ADMIN, NET_RAW on the host network namespace). It runs read-only, with no-new-privileges and only those two capabilities, and is not reachable from PR workloads"
+  - id: DS-0002
+    paths:
+      - "ops/compose-preview/worker/Dockerfile"
+    statement: "Root by design: a Docker-in-Docker engine (dockerd requires root, privileged container). Documented in ops/compose-preview/README.md as not a boundary for hostile tenants; only same-repository PRs from authors with write access run there"

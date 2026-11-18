@@ -20,6 +20,7 @@ import type {
 	PlacementSwarm,
 } from "@dokploy/server/db/schema/shared";
 import type { Domain } from "@dokploy/server/services/domain";
+import { assertServerAllowsRegularService } from "@dokploy/server/services/server";
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 
@@ -406,6 +407,8 @@ export const setServiceServerId = async (
 	id: string,
 	serverId: string | null,
 ) => {
+	// Last line of defence: a preview-only worker runs untrusted PR code.
+	await assertServerAllowsRegularService(serverId);
 	switch (type) {
 		case "application":
 			await db
