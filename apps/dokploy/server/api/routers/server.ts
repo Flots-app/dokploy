@@ -57,6 +57,9 @@ import {
 } from "@/server/db/schema";
 import { applyDockerCleanupSchedule } from "@/server/utils/docker-cleanup";
 
+/** Longest the SSH step of a preview policy update may hold the server lock. */
+const PREVIEW_POLICY_SSH_TIMEOUT_MS = 60_000;
+
 export const serverRouter = createTRPCRouter({
 	previewFirewall: withPermission("server", "read")
 		.input(z.object({ serverId: z.string().min(1) }))
@@ -121,90 +124,101 @@ export const serverRouter = createTRPCRouter({
 						message: "Invalid Swarm manager",
 					});
 			}
-			if (
-				current.swarmNodeId &&
-				current.swarmManagerId !== input.swarmManagerId
-			) {
-				const active = await db.query.compose.findFirst({
-					where: and(
-						eq(compose.serverId, input.serverId),
-						isNotNull(compose.previewParentId),
-					),
-				});
-				if (active)
-					throw new TRPCError({
-						code: "BAD_REQUEST",
-						message: "Remove active previews before changing managers",
-					});
-			}
-			if (current.previewOnly && !input.previewOnly) {
-				// Releasing the reservation would let regular services land next
-				// to running PR code.
-				const running = await db.query.compose.findFirst({
-					where: and(
-						eq(compose.serverId, input.serverId),
-						isNotNull(compose.previewParentId),
-					),
-				});
-				if (running)
-					throw new TRPCError({
-						code: "BAD_REQUEST",
-						message:
-							"Remove the PR environments running on this server before releasing it for regular services",
-					});
-			}
-			if (input.previewOnly) {
-				const [regular] = await db.execute<{
-					found: boolean;
-				}>(sql`select exists(
-					select 1 from application where "serverId" = ${input.serverId}
-					union all select 1 from compose where "serverId" = ${input.serverId} and "previewParentId" is null
-					union all select 1 from postgres where "serverId" = ${input.serverId}
-					union all select 1 from mysql where "serverId" = ${input.serverId}
-					union all select 1 from mariadb where "serverId" = ${input.serverId}
-					union all select 1 from mongo where "serverId" = ${input.serverId}
-					union all select 1 from redis where "serverId" = ${input.serverId}
-					union all select 1 from libsql where "serverId" = ${input.serverId}
-				) as found`);
-				if (regular?.found)
-					throw new TRPCError({
-						code: "BAD_REQUEST",
-						message:
-							"Move regular services before reserving this server for previews",
-					});
-			}
-			// One transaction holding the server row lock across the SSH step
-			// (a rare admin action): policy updates for a server are serialized,
-			// preview allocation waits, other readers keep seeing the committed
-			// reservation until the node label really changed, and any failure
-			// rolls everything back. configurePreviewWorker updates the node
-			// label last, so a failure leaves the label as it was.
+			// One transaction holding the server row lock across every check and
+			// the SSH step (a rare admin action). Policy updates for a server are
+			// serialized; preview allocation and any insert referencing this
+			// server wait for it (FOR UPDATE conflicts with the FOR KEY SHARE an
+			// FK insert takes); readers keep seeing the committed policy until the
+			// node label really changed; any failure rolls everything back.
 			await db.transaction(async (tx) => {
 				const [locked] = await tx
-					.select({ previewOnly: server.previewOnly })
+					.select({
+						previewOnly: server.previewOnly,
+						swarmNodeId: server.swarmNodeId,
+						swarmManagerId: server.swarmManagerId,
+					})
 					.from(server)
 					.where(eq(server.serverId, input.serverId))
 					.for("update");
-				if (locked?.previewOnly && !input.previewOnly) {
-					const running = await tx.query.compose.findFirst({
+				const previewRunning = async () =>
+					!!(await tx.query.compose.findFirst({
 						where: and(
 							eq(compose.serverId, input.serverId),
 							isNotNull(compose.previewParentId),
 						),
 						columns: { composeId: true },
+					}));
+				if (
+					locked?.swarmNodeId &&
+					locked.swarmManagerId !== input.swarmManagerId &&
+					(await previewRunning())
+				)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Remove active previews before changing managers",
 					});
-					if (running)
+				// Releasing the reservation would let regular services land next
+				// to running PR code.
+				if (
+					locked?.previewOnly &&
+					!input.previewOnly &&
+					(await previewRunning())
+				)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Remove the PR environments running on this server before releasing it for regular services",
+					});
+				if (input.previewOnly) {
+					const [regular] = await tx.execute<{
+						found: boolean;
+					}>(sql`select exists(
+						select 1 from application where "serverId" = ${input.serverId}
+						union all select 1 from compose where "serverId" = ${input.serverId} and "previewParentId" is null
+						union all select 1 from postgres where "serverId" = ${input.serverId}
+						union all select 1 from mysql where "serverId" = ${input.serverId}
+						union all select 1 from mariadb where "serverId" = ${input.serverId}
+						union all select 1 from mongo where "serverId" = ${input.serverId}
+						union all select 1 from redis where "serverId" = ${input.serverId}
+						union all select 1 from libsql where "serverId" = ${input.serverId}
+					) as found`);
+					if (regular?.found)
 						throw new TRPCError({
 							code: "BAD_REQUEST",
 							message:
-								"Remove the PR environments running on this server before releasing it for regular services",
+								"Move regular services before reserving this server for previews",
 						});
 				}
-				const swarmNodeId = await configurePreviewWorker(
-					input.serverId,
-					input.swarmManagerId,
-					input.previewOnly,
-				);
+				// Never hold the lock on an engine that stopped answering. The node
+				// label is changed last and idempotently: saving again re-applies it.
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const timedOut = new Promise<never>((_, reject) => {
+					timer = setTimeout(
+						() =>
+							reject(
+								new TRPCError({
+									code: "TIMEOUT",
+									message:
+										"The worker or the Swarm manager did not answer within a minute; nothing was saved. Check the servers and save again",
+								}),
+							),
+						PREVIEW_POLICY_SSH_TIMEOUT_MS,
+					);
+				});
+				let swarmNodeId: string;
+				try {
+					// Promise.race observes both: a late rejection stays handled.
+					swarmNodeId = await Promise.race([
+						configurePreviewWorker(
+							input.serverId,
+							input.swarmManagerId,
+							input.previewOnly,
+						),
+						timedOut,
+					]);
+				} finally {
+					clearTimeout(timer);
+				}
 				await tx
 					.update(server)
 					.set({
