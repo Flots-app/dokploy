@@ -197,7 +197,7 @@ export const serverRouter = createTRPCRouter({
 						() =>
 							reject(
 								new TRPCError({
-									code: "TIMEOUT",
+									code: "GATEWAY_TIMEOUT",
 									message:
 										"The worker or the Swarm manager did not answer within a minute; nothing was saved. Check the servers and save again",
 								}),

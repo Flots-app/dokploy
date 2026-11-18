@@ -1,6 +1,7 @@
 /**
- * Reserving and releasing a preview worker, on a real database: every check
- * runs under the server row lock, and a refused change never reaches Swarm.
+ * Reserving and releasing a preview worker, on a real database: the checks
+ * wait for concurrent writes on the server row, and a refused change never
+ * reaches Swarm.
  */
 import { db } from "@dokploy/server/db";
 import {
@@ -9,6 +10,7 @@ import {
 	environments,
 	projects,
 	server,
+	sshKeys,
 } from "@dokploy/server/db/schema";
 import { eq } from "drizzle-orm";
 import {
@@ -39,6 +41,7 @@ type Context = Parameters<typeof serverRouter.createCaller>[0];
 
 let owner: Person;
 let workerId: string;
+let managerId: string;
 let environmentId: string;
 let sourceId: string;
 const caller = () =>
@@ -67,6 +70,26 @@ beforeAll(async () => {
 		})
 		.returning();
 	workerId = worker!.serverId;
+	const [key] = await db
+		.insert(sshKeys)
+		.values({
+			name: "manager",
+			publicKey: "ssh-ed25519 AAAA manager",
+			organizationId: owner.organizationId,
+		})
+		.returning();
+	const [manager] = await db
+		.insert(server)
+		.values({
+			name: "manager",
+			ipAddress: "100.64.0.31",
+			port: 22,
+			createdAt: new Date().toISOString(),
+			organizationId: owner.organizationId,
+			sshKeyId: key!.sshKeyId,
+		})
+		.returning();
+	managerId = manager!.serverId;
 	const [project] = await db
 		.insert(projects)
 		.values({ name: "policy", organizationId: owner.organizationId })
@@ -87,6 +110,7 @@ afterAll(async () => {
 	await db.delete(compose).where(eq(compose.previewParentId, sourceId));
 	await db.delete(applications).where(eq(applications.serverId, workerId));
 	await db.delete(server).where(eq(server.serverId, workerId));
+	await db.delete(server).where(eq(server.serverId, managerId));
 	await removeCreatedRows();
 });
 
@@ -96,6 +120,41 @@ beforeEach(() => {
 });
 
 describe("preview worker reservation", () => {
+	it("waits for a concurrent service creation, then sees it and refuses", async () => {
+		let commit!: () => void;
+		const held = new Promise<void>((resolve) => {
+			commit = resolve;
+		});
+		let inserted!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			inserted = resolve;
+		});
+		// An application creation on this server, not committed yet: its
+		// foreign key holds FOR KEY SHARE on the server row.
+		const creation = db.transaction(async (tx) => {
+			await tx
+				.insert(applications)
+				.values({ name: "racing", environmentId, serverId: workerId });
+			inserted();
+			await held;
+		});
+		await ready;
+		let settled = false;
+		const attempt = policy(true).finally(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		// The policy update waits on the server row lock instead of checking
+		// a state that is about to change.
+		expect(settled).toBe(false);
+		commit();
+		await creation;
+		await expect(attempt).rejects.toThrow("Move regular services");
+		expect(swarm.configure).not.toHaveBeenCalled();
+		expect(await reservation()).toBe(false);
+		await db.delete(applications).where(eq(applications.serverId, workerId));
+	});
+
 	it("refuses to reserve a server that runs regular services, before Swarm", async () => {
 		const [app] = await db
 			.insert(applications)
@@ -135,7 +194,29 @@ describe("preview worker reservation", () => {
 		await db.delete(compose).where(eq(compose.composeId, child!.composeId));
 	});
 
-	it("rolls back when Swarm refuses the change", async () => {
+	it("refuses to change managers while PR code runs, before Swarm", async () => {
+		const [child] = await db
+			.insert(compose)
+			.values({
+				name: "source · PR #2",
+				environmentId,
+				serverId: workerId,
+				previewParentId: sourceId,
+			})
+			.returning();
+		await expect(
+			caller().updatePreviewPolicy({
+				serverId: workerId,
+				previewOnly: true,
+				swarmManagerId: managerId,
+				previewCapacity: 3,
+			}),
+		).rejects.toThrow("Remove active previews before changing managers");
+		expect(swarm.configure).not.toHaveBeenCalled();
+		await db.delete(compose).where(eq(compose.composeId, child!.composeId));
+	});
+
+	it("saves nothing when Swarm refuses the change", async () => {
 		swarm.configure.mockRejectedValue(new Error("node is not ready"));
 		await expect(policy(false)).rejects.toThrow("node is not ready");
 		expect(await reservation()).toBe(true);
