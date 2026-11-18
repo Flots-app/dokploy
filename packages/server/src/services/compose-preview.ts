@@ -30,6 +30,7 @@ import {
 import {
 	cleanupComposePreviewStack,
 	deployComposePreviewStack,
+	isPreviewWorkerReachable,
 } from "./compose-preview-stack";
 import { findGithubById } from "./github";
 
@@ -172,9 +173,13 @@ export async function forgetComposePreview(previewId: string) {
 		);
 	try {
 		const preview = await findComposePreview(previewId);
-		if (preview.status !== "error" && preview.status !== "removing")
+		if (preview.status !== "error")
 			throw new ComposePreviewError(
 				"Only a failed PR environment can be forgotten; remove it normally instead",
+			);
+		if (preview.serverId && (await isPreviewWorkerReachable(preview.serverId)))
+			throw new ComposePreviewError(
+				"The worker still answers: use Remove environment, which also stops its stack. Forget is only for a worker that is gone",
 			);
 		await releasePreviewRecords(preview, { manualCleanup: true });
 		return preview;

@@ -23,11 +23,16 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createOrganization, type Person, removeCreatedRows } from "./fixtures";
 
-const stack = vi.hoisted(() => ({ deploy: vi.fn(), cleanup: vi.fn() }));
+const stack = vi.hoisted(() => ({
+	deploy: vi.fn(),
+	cleanup: vi.fn(),
+	reachable: vi.fn(async () => false),
+}));
 vi.mock("@dokploy/server/services/compose-preview-stack", () => ({
 	deployComposePreviewStack: stack.deploy,
 	cleanupComposePreviewStack: stack.cleanup,
 	assertPreviewSwarmWorker: vi.fn(),
+	isPreviewWorkerReachable: stack.reachable,
 	runPreviewManager: vi.fn(),
 }));
 
@@ -439,6 +444,11 @@ describe("a pull request through Dokploy, end to end", () => {
 			.update(composePreviews)
 			.set({ status: "error", error: "Preview worker is unreachable over SSH" })
 			.where(eq(composePreviews.previewId, preview.previewId));
+		// A worker that still answers must be removed for real, not forgotten.
+		stack.reachable.mockResolvedValueOnce(true);
+		await expect(forgetComposePreview(preview.previewId)).rejects.toThrow(
+			"The worker still answers",
+		);
 		await forgetComposePreview(preview.previewId);
 		const forgotten = await db.query.composePreviews.findFirst({
 			where: eq(composePreviews.previewId, preview.previewId),

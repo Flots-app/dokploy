@@ -271,6 +271,15 @@ Postgres with migrations, Redis and Mailpit. Paid integrations and external
 storage are disabled. Mail stays in the private preview mail server. Supply
 dedicated sandbox integration credentials explicitly when testing those features.
 
+## Upgrading from an earlier build
+
+PR environments only run on a worker reserved for previews. A worker that ran
+previews without the reservation turns its next deploy into an error: reserve
+it (server actions) or remove its environments. An expired environment comes
+back on new code only (PR opened, reopened or pushed). Adding a required label
+or leaving draft recreates an environment removed for that reason, but not an
+expired one.
+
 ## Operate, debug and roll back
 
 Check the state of an environment from the Dokploy host's database or the
@@ -297,7 +306,7 @@ Common failures:
 | `Preview worker is unreachable over SSH` | Check the worker container, port 2222 on the tailnet, and the SSH key in Dokploy |
 | `Waiting for capacity` | Close a PR, or raise the worker capacity or the service limit |
 | `Reserve this server for Compose previews first` | PR code only runs on a reserved worker: turn on the reservation in the server's actions |
-| Removal keeps failing because the worker or manager is gone for good | An owner or admin uses **Forget** on the failed PR environment: Dokploy deletes the records without contacting any server; remove leftovers on that machine by hand |
+| Removal keeps failing because the worker or manager is gone for good | An owner or admin uses **Forget** on the failed PR environment. Dokploy refuses while the worker still answers (use Remove then); otherwise it deletes the records without contacting any server, and leftovers on that machine are removed by hand |
 | `Registry did not return an immutable digest` | Check the registry credentials and that the registry supports digests |
 | `Services did not stay healthy … (api is unhealthy)` | Read the container logs in the build log; fix the healthcheck or the start command |
 

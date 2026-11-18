@@ -212,6 +212,24 @@ function escapeInterpolation(value: unknown): unknown {
 	return value;
 }
 
+/** How long the forget path waits for a worker before treating it as gone. */
+const WORKER_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * Whether a worker's Docker engine still answers over SSH. Used before
+ * forgetting a preview: a reachable worker must be cleaned up for real, or its
+ * PR stack would keep running and serving with no record left in Dokploy.
+ */
+export async function isPreviewWorkerReachable(serverId: string) {
+	const probe = (async () => {
+		const engine = await getRemoteDocker(serverId);
+		await engine.ping();
+		return true;
+	})().catch(() => false);
+	const timeout = delay(WORKER_PROBE_TIMEOUT_MS, false);
+	return Promise.race([probe, timeout]);
+}
+
 export async function assertPreviewSwarmWorker(
 	workerId: string,
 	requireReady = true,

@@ -202,7 +202,7 @@ function PreviewActions({
 				<DialogAction
 					type="destructive"
 					title={`Forget PR #${preview.pullRequestNumber} environment?`}
-					description="Use this only when its worker is gone for good and removal keeps failing. Dokploy deletes the records without contacting any server: whatever still runs on that machine must be removed by hand."
+					description="For a worker that is gone for good, when removal keeps failing. Dokploy refuses if the worker still answers; otherwise it deletes the records without contacting any server, and whatever still runs on that machine must be removed by hand."
 					onClick={onForget}
 				>
 					<Button size="sm" variant="ghost">

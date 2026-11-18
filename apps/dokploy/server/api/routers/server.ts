@@ -178,15 +178,52 @@ export const serverRouter = createTRPCRouter({
 				input.swarmManagerId,
 				input.previewOnly,
 			);
+			const releasing = current.previewOnly && !input.previewOnly;
 			await db
-				.update(server)
-				.set({
-					previewOnly: input.previewOnly,
-					previewCapacity: input.previewCapacity,
-					swarmNodeId,
-					swarmManagerId: input.swarmManagerId,
+				.transaction(async (tx) => {
+					// Same row lock as preview allocation: a PR environment cannot be
+					// allocated between this check and releasing the reservation.
+					await tx
+						.select({ serverId: server.serverId })
+						.from(server)
+						.where(eq(server.serverId, input.serverId))
+						.for("update");
+					if (releasing) {
+						const running = await tx.query.compose.findFirst({
+							where: and(
+								eq(compose.serverId, input.serverId),
+								isNotNull(compose.previewParentId),
+							),
+							columns: { composeId: true },
+						});
+						if (running)
+							throw new TRPCError({
+								code: "BAD_REQUEST",
+								message:
+									"Remove the PR environments running on this server before releasing it for regular services",
+							});
+					}
+					await tx
+						.update(server)
+						.set({
+							previewOnly: input.previewOnly,
+							previewCapacity: input.previewCapacity,
+							swarmNodeId,
+							swarmManagerId: input.swarmManagerId,
+						})
+						.where(eq(server.serverId, input.serverId));
 				})
-				.where(eq(server.serverId, input.serverId));
+				.catch(async (error) => {
+					// The node label was already released over SSH: restore it, or
+					// Swarm could place regular services next to running PR code.
+					if (releasing)
+						await configurePreviewWorker(
+							input.serverId,
+							input.swarmManagerId,
+							true,
+						).catch(() => {});
+					throw error;
+				});
 			await audit(ctx, {
 				action: "update",
 				resourceType: "server",
