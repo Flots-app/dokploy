@@ -1,6 +1,7 @@
 import dns from "node:dns";
 import { promisify } from "node:util";
 import { db } from "@dokploy/server/db";
+import { composeWithoutPreviewSecrets } from "@dokploy/server/db/schema/compose";
 import { getWebServerSettings } from "@dokploy/server/services/web-server-settings";
 import { generateRandomDomain } from "@dokploy/server/templates";
 import { manageDomain } from "@dokploy/server/utils/traefik/domain";
@@ -107,7 +108,7 @@ export const findDomainsByComposeId = async (composeId: string) => {
 	const domainsArray = await db.query.domains.findMany({
 		where: eq(domains.composeId, composeId),
 		with: {
-			compose: true,
+			compose: composeWithoutPreviewSecrets,
 		},
 	});
 

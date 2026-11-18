@@ -1,5 +1,6 @@
 import { IS_CLOUD, removeScheduleJob, scheduleJob } from "@dokploy/server";
 import { db } from "@dokploy/server/db";
+import { composeWithoutPreviewSecrets } from "@dokploy/server/db/schema/compose";
 import { deployments } from "@dokploy/server/db/schema/deployment";
 import {
 	createScheduleSchema,
@@ -261,7 +262,7 @@ export const scheduleRouter = createTRPCRouter({
 				with: {
 					application: true,
 					server: true,
-					compose: true,
+					compose: composeWithoutPreviewSecrets,
 					deployments: {
 						orderBy: [desc(deployments.createdAt)],
 					},

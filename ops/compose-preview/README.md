@@ -62,6 +62,14 @@ They are also written to the stack's `.env` under the same names.
 
    Never use `swarm init --force-new-cluster` to add a worker to a working
    production cluster: that caused the 12 September 2026 ingress incident.
+
+   Once the manager firewall agent runs, it only accepts Swarm traffic from
+   nodes already listed by `docker node ls`. To add any node later (a preview
+   worker or a regular one), first add its address under **Nodes about to join
+   the Swarm** in a worker's preview network firewall, apply, wait for the
+   manager agent to report healthy, then run `docker swarm join`. Remove the
+   entry once the node appears in `docker node ls`. Re-apply the policy after a
+   node's address changes.
 4. Verify every existing service excludes preview nodes. This release adds
    `node.labels.com.dokploy.preview-only!=true` to ordinary Dokploy deployments.
    Older services need that constraint persisted in their Dokploy settings and
@@ -156,7 +164,7 @@ policy).
 | Worker host DOCKER-USER | Filters Docker-published preview ports using original conntrack destination |
 | Worker engine INPUT | Only the manager reaches Swarm; configured administrator IPs reach SSH |
 | Worker engine DOCKER-USER | Only the manager reaches the preview proxy (published port 9080, matched on the original destination port) |
-| Workload egress | Rejects private, tailnet, metadata, every server registered in Dokploy, the manager, and configured addresses. DNS (port 53 only) stays open to the worker's own resolvers, read from the worker when the policy is saved, so builds resolve names even behind a private VPC resolver. A Docker-in-Docker worker on a Compose network sees Docker's embedded resolver (127.0.0.11): its inner engine then falls back to public resolvers for builds, and PR overlays resolve through the worker itself. On a network where only a private resolver answers, set `dns:` on the worker service to that resolver: Dokploy then reads it from the worker and allows it |
+| Workload egress | Rejects private, tailnet, metadata, every server registered in Dokploy, the manager, and configured addresses. DNS (port 53 only) stays open to the worker's resolvers that Dokploy can read, and to the **Private DNS resolvers for PR builds** listed in the firewall settings. A Docker-in-Docker worker on a Compose network only shows Docker's embedded resolver (127.0.0.11): its inner engine then uses public resolvers for builds, and PR overlays resolve through the worker. Where public DNS is blocked, list the private resolver in the firewall settings; Dokploy cannot detect it |
 | PR network | One private overlay per stack; no shared application network or published service ports. The worker's Traefik joins every PR overlay to route it, so a PR can reach another PR's **public** routes through it, as anyone on the internet can |
 
 Agents manage only `DOKPLOY-PREVIEW-*` chains. They do not flush Docker, Tailscale
@@ -288,24 +296,32 @@ Common failures:
 | `Preview firewall is not healthy: … agent stopped reporting` | Restart that agent (`docker compose … up -d firewall`) and read its logs |
 | `Preview worker is unreachable over SSH` | Check the worker container, port 2222 on the tailnet, and the SSH key in Dokploy |
 | `Waiting for capacity` | Close a PR, or raise the worker capacity or the service limit |
+| `Reserve this server for Compose previews first` | PR code only runs on a reserved worker: turn on the reservation in the server's actions |
+| Removal keeps failing because the worker or manager is gone for good | An owner or admin uses **Forget** on the failed PR environment: Dokploy deletes the records without contacting any server; remove leftovers on that machine by hand |
 | `Registry did not return an immutable digest` | Check the registry credentials and that the registry supports digests |
 | `Services did not stay healthy … (api is unhealthy)` | Read the container logs in the build log; fix the healthcheck or the start command |
 
 To take previews out of service: turn **Enable PR environments** off on each
 source (this removes every environment, even if the worker is gone), then set
-the worker's policy back to regular in its server actions. To remove the
+the worker's policy back to regular in its server actions (Dokploy refuses while PR environments still run on it). To remove the
 firewall agents, run their uninstall mode **before** removing the containers;
 stopping an agent alone keeps its last rules in place (fail closed):
 
 ```sh
 # Stop the agent first, or its loop re-applies the rules within ten seconds.
 docker stop dokploy-preview-firewall
-# Same role and policy directory as the agent (manager: /etc/dokploy/preview-firewall).
+# Same role and policy mount as the agent being removed:
+#   manager:       -e PREVIEW_FIREWALL_ROLE=manager       -v /etc/dokploy/preview-firewall:/policy
+#   worker-host:   -e PREVIEW_FIREWALL_ROLE=worker-host   -v dokploy-preview-worker_state:/policy
+#   worker-engine: -e PREVIEW_FIREWALL_ROLE=worker-engine -v /etc/dokploy:/policy  (inside the worker)
 docker run --rm --network host --cap-add NET_ADMIN --cap-add NET_RAW \
   -e PREVIEW_FIREWALL_ROLE=worker-engine -v /etc/dokploy:/policy \
   dokploy-preview-firewall:1 --uninstall
 docker rm dokploy-preview-firewall
 ```
+
+Use the worker-host line on the outer host: its policy lives in the worker
+project's named volume, not in a host directory.
 
 Then leave the Swarm from the worker (`docker swarm leave`) and remove the node
 on the manager (`docker node rm <node>`). Never re-initialize the manager.

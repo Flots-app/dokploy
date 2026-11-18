@@ -271,6 +271,14 @@ export const apiFetchServices = z.object({
 	type: z.enum(["fetch", "cache"]).optional().default("cache"),
 });
 
+/**
+ * Load a compose relation without the PR environment secrets: they are only
+ * served to users who can read environment variables (composePreview.settings).
+ */
+export const composeWithoutPreviewSecrets = {
+	columns: { previewEnv: false, previewComposeFile: false },
+} as const;
+
 export const apiUpdateCompose = createSchema
 	.partial()
 	.extend({

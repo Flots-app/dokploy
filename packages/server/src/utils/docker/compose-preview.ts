@@ -16,6 +16,14 @@ export class ComposePreviewError extends Error {
 	override name = "ComposePreviewError";
 }
 
+/**
+ * Prefer this to `instanceof`: Next.js and tsx can evaluate this module more
+ * than once, and an error from another copy would fail `instanceof` and lose
+ * its developer-facing message.
+ */
+export const isComposePreviewError = (error: unknown): error is Error =>
+	error instanceof Error && error.name === "ComposePreviewError";
+
 export function previewAppName(sourceId: string, pr: number) {
 	return `preview-${createHash("sha256").update(sourceId).digest("hex").slice(0, 12)}-pr-${pr}`;
 }

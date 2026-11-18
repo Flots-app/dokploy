@@ -107,6 +107,16 @@ function PreviewList({
 		},
 		onError: (failure) => toast.error(failure.message),
 	});
+	const { data: currentUser } = api.user.get.useQuery();
+	const isAdmin =
+		currentUser?.role === "owner" || currentUser?.role === "admin";
+	const forget = api.composePreview.forget.useMutation({
+		onSuccess: async () => {
+			await refresh();
+			toast.success("PR environment forgotten");
+		},
+		onError: (failure) => toast.error(failure.message),
+	});
 	const enabled = !!source?.previewSettings?.enabled;
 	const repositoryUrl =
 		source?.owner && source.repository
@@ -165,6 +175,11 @@ function PreviewList({
 					}
 					onDeploy={() => deployPr(preview.pullRequestNumber)}
 					onRemove={() => remove.mutate({ previewId: preview.previewId })}
+					onForget={
+						isAdmin && canRemove
+							? () => forget.mutate({ previewId: preview.previewId })
+							: undefined
+					}
 				/>
 			))}
 		</CardContent>

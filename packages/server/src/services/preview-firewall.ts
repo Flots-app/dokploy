@@ -15,6 +15,12 @@ export const previewFirewallInput = z.object({
 	serverId: z.string().min(1),
 	sshAdmins: z.array(ip).max(30),
 	blockedAddresses: z.array(ip).max(100),
+	/** Nodes about to join the Swarm: not in `docker node ls` yet, so they
+	 * must be allowed on the manager's Swarm ports explicitly. */
+	joiningNodes: z.array(ip).max(20).default([]),
+	/** Private resolvers the engine cannot reveal (Docker's embedded DNS hides
+	 * the upstream servers behind 127.0.0.11). */
+	dnsResolvers: z.array(ip).max(10).default([]),
 });
 const policySchema = z.object({
 	address: ip,
@@ -27,6 +33,8 @@ const policySchema = z.object({
 	blockedAddresses: z.array(ip).default([]),
 	/** What the operator typed; `blockedAddresses` adds known servers. */
 	operatorBlockedAddresses: z.array(ip).optional(),
+	operatorJoiningNodes: z.array(ip).optional(),
+	operatorDnsResolvers: z.array(ip).optional(),
 	controlPlaneMappings: z
 		.array(z.object({ advertised: ip, reachable: ip }))
 		.default([]),
@@ -204,6 +212,7 @@ export async function updatePreviewFirewall(
 	for (const item of servers)
 		if (item.swarmNodeId && item.swarmManagerId === worker.swarmManagerId)
 			peers.add(ip.parse(item.ipAddress));
+	for (const node of input.joiningNodes) peers.add(node);
 	peers.delete(address);
 	// Workloads must not reach any server Dokploy manages (public addresses
 	// are not covered by the private-range rules of the engine agent).
@@ -218,15 +227,16 @@ export async function updatePreviewFirewall(
 		"cat /run/systemd/resolve/resolv.conf 2>/dev/null || cat /etc/resolv.conf",
 	).catch(() => ({ stdout: "" }));
 	const dnsResolvers = [
-		...new Set(
-			resolvConf.stdout
+		...new Set([
+			...input.dnsResolvers,
+			...resolvConf.stdout
 				.split("\n")
 				.map((line) => line.match(/^\s*nameserver\s+(\S+)/)?.[1])
 				.filter(
 					(value): value is string =>
 						!!value && isIPv4(value) && !value.startsWith("127."),
 				),
-		),
+		]),
 	];
 	const policy = policySchema.parse({
 		address: worker.ipAddress,
@@ -237,6 +247,8 @@ export async function updatePreviewFirewall(
 		),
 		sshAdmins: input.sshAdmins,
 		operatorBlockedAddresses: input.blockedAddresses,
+		operatorJoiningNodes: input.joiningNodes,
+		operatorDnsResolvers: input.dnsResolvers,
 		blockedAddresses: [
 			...new Set([...input.blockedAddresses, ...automaticallyBlocked, address]),
 		],

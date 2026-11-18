@@ -137,6 +137,22 @@ export const serverRouter = createTRPCRouter({
 						message: "Remove active previews before changing managers",
 					});
 			}
+			if (current.previewOnly && !input.previewOnly) {
+				// Releasing the reservation would let regular services land next
+				// to running PR code.
+				const running = await db.query.compose.findFirst({
+					where: and(
+						eq(compose.serverId, input.serverId),
+						isNotNull(compose.previewParentId),
+					),
+				});
+				if (running)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Remove the PR environments running on this server before releasing it for regular services",
+					});
+			}
 			if (input.previewOnly) {
 				const [regular] = await db.execute<{
 					found: boolean;

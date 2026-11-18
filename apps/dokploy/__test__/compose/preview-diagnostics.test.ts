@@ -29,6 +29,7 @@ vi.mock("@dokploy/server/services/server", () => ({
 		serverType: "deploy",
 		swarmNodeId: serverId === "worker-1" ? "node-1" : null,
 		swarmManagerId: serverId === "worker-1" ? "manager-1" : null,
+		previewOnly: serverId === "worker-1",
 		ipAddress: "10.0.0.2",
 	}),
 }));

@@ -107,8 +107,9 @@ function NoWorkerAlert() {
 				>
 					Remote servers
 				</Link>
-				, choose <strong>Preview worker</strong> in its actions and save the
-				worker policy and firewall.
+				, open <strong>View Actions</strong>, select its Swarm manager, turn on{" "}
+				<strong>Reserve this server for Compose previews</strong>, save, then
+				apply the preview network firewall.
 			</AlertDescription>
 		</Alert>
 	);
@@ -133,7 +134,8 @@ function TargetFields({
 		(worker) =>
 			worker.serverType === "deploy" &&
 			worker.serverStatus === "active" &&
-			!!worker.swarmNodeId,
+			!!worker.swarmNodeId &&
+			worker.previewOnly,
 	);
 	return (
 		<>
@@ -154,9 +156,7 @@ function TargetFields({
 						<SelectContent>
 							{readyWorkers.map((worker) => (
 								<SelectItem key={worker.serverId} value={worker.serverId}>
-									{worker.name}
-									{worker.previewOnly ? " · previews only" : ""} · up to{" "}
-									{worker.previewCapacity} PRs
+									{worker.name} · up to {worker.previewCapacity} PRs
 								</SelectItem>
 							))}
 						</SelectContent>
@@ -519,18 +519,20 @@ function LoadedPreviewSettings({
 						/>
 						<LimitFields numbers={numbers} setNumbers={setNumbers} />
 						<TlsFields settings={settings} set={set} />
-						<EnvEditor value={env} onChange={setEnv} disabled={locked} />
-						<ComposeOverrideEditor
-							value={composeFile}
-							onChange={setComposeFile}
-							disabled={locked}
-						/>
-						{canEdit && (
-							<Button type="submit" isLoading={mutation.isPending}>
-								Save settings
-							</Button>
-						)}
 					</fieldset>
+					{/* Outside the fieldset: read-only users can still reveal the
+					    variables the server returns to them. */}
+					<EnvEditor value={env} onChange={setEnv} disabled={locked} />
+					<ComposeOverrideEditor
+						value={composeFile}
+						onChange={setComposeFile}
+						disabled={locked}
+					/>
+					{canEdit && (
+						<Button type="submit" isLoading={mutation.isPending}>
+							Save settings
+						</Button>
+					)}
 				</form>
 			</CardContent>
 		</Card>

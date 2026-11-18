@@ -58,15 +58,9 @@ export async function enqueueComposePreview(previewId: string) {
 	});
 }
 
-/** pull_request actions that mean "the PR has new content or became eligible". */
-const ACTIVITY_ACTIONS = new Set([
-	"opened",
-	"reopened",
-	"synchronize",
-	"ready_for_review",
-	"labeled",
-	"edited",
-]);
+/** pull_request actions that bring new code: an expired environment comes
+ * back on them. A title edit or a label only re-checks eligibility. */
+const ACTIVITY_ACTIONS = new Set(["opened", "reopened", "synchronize"]);
 
 export async function handleComposePreviewWebhook(input: {
 	githubId: string;

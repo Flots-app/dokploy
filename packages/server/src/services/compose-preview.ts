@@ -12,6 +12,7 @@ import { nanoid } from "nanoid";
 import { composePreviewSettingsSchema } from "../db/validations/compose-preview";
 import {
 	ComposePreviewError,
+	isComposePreviewError,
 	previewAppName,
 	previewHost,
 } from "../utils/docker/compose-preview";
@@ -38,7 +39,7 @@ export type ComposePreview = typeof composePreviews.$inferSelect;
  * Why a preview is (re)requested:
  * - `manual`: someone deployed it from Dokploy; clears a manual removal and
  *   restarts its lifetime.
- * - `activity`: a push, reopen or label on the PR. Lets an expired (already
+ * - `activity`: new code on the PR (opened, reopened, pushed). Lets an expired (already
  *   removed) environment come back, but keeps a manual removal. A running
  *   environment's lifetime restarts only when a new commit is deployed.
  * - `sync`: anything else (closed PR, settings change, periodic check).
@@ -125,6 +126,14 @@ export async function cleanupComposePreview(preview: ComposePreview) {
 			throw new ComposePreviewError("Preview ownership mismatch");
 		await cleanupComposePreviewStack(instance, preview.previewId);
 	}
+	await releasePreviewRecords(preview);
+}
+
+/** Drop the instance rows and mark the preview closed (after a cleanup). */
+async function releasePreviewRecords(
+	preview: ComposePreview,
+	extra: Partial<ComposePreview> = {},
+) {
 	await db.transaction(async (tx) => {
 		await tx
 			.update(composePreviews)
@@ -136,6 +145,7 @@ export async function cleanupComposePreview(preview: ComposePreview) {
 				error: null,
 				deployedSha: null,
 				reconciledAt: preview.requestedAt,
+				...extra,
 			})
 			.where(eq(composePreviews.previewId, preview.previewId));
 		if (preview.composeId)
@@ -145,6 +155,32 @@ export async function cleanupComposePreview(preview: ComposePreview) {
 				.delete(environments)
 				.where(eq(environments.environmentId, preview.environmentId));
 	});
+}
+
+/**
+ * Last resort when a preview's worker or manager is gone for good and its
+ * cleanup can never succeed: forget the records without contacting any
+ * server, so the source, its project and the server can be deleted again.
+ * Whatever still runs on the lost machine must be removed by hand. The
+ * preview stays removed until someone redeploys it.
+ */
+export async function forgetComposePreview(previewId: string) {
+	const token = await acquirePreviewLease(previewId);
+	if (!token)
+		throw new ComposePreviewError(
+			"This PR environment is being deployed or removed; try again once that run ends",
+		);
+	try {
+		const preview = await findComposePreview(previewId);
+		if (preview.status !== "error" && preview.status !== "removing")
+			throw new ComposePreviewError(
+				"Only a failed PR environment can be forgotten; remove it normally instead",
+			);
+		await releasePreviewRecords(preview, { manualCleanup: true });
+		return preview;
+	} finally {
+		await releasePreviewLease(previewId, token);
+	}
 }
 
 type Source = Awaited<ReturnType<typeof findComposeById>>;
@@ -170,10 +206,12 @@ async function allocatePreview(
 			worker.serverType !== "deploy" ||
 			worker.serverStatus !== "active" ||
 			!worker.sshKeyId ||
-			!worker.swarmNodeId
+			!worker.swarmNodeId ||
+			// PR code never shares a server with regular services.
+			!worker.previewOnly
 		)
 			throw new ComposePreviewError(
-				"Preview worker is unavailable: it must be an active deployment server with an SSH key and a configured Swarm worker",
+				"Preview worker is unavailable: it must be an active deployment server with an SSH key, a configured Swarm worker, and be reserved for previews",
 			);
 		const current = await tx.query.composePreviews.findFirst({
 			where: eq(composePreviews.previewId, preview.previewId),
@@ -614,11 +652,10 @@ async function reconcile(previewId: string) {
 		});
 		await feedback("ready", { sha: pr.head.sha, urls, logsPath, expiresAt });
 	} catch (error) {
-		const message =
-			error instanceof ComposePreviewError
-				? error.message.slice(0, 500)
-				: "Compose preview failed; see the deployment log";
-		if (!(error instanceof ComposePreviewError))
+		const message = isComposePreviewError(error)
+			? error.message.slice(0, 500)
+			: "Compose preview failed; see the deployment log";
+		if (!isComposePreviewError(error))
 			console.error(
 				// Formatted: a local command error would otherwise carry the command.
 				`[compose-preview ${previewId}] PR #${preview.pullRequestNumber} of ${source.name} failed: ${formatDeploymentError(error).split("\n")[0]}`,

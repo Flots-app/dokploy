@@ -7,6 +7,7 @@ import { getCreateEnvFileCommand } from "../utils/builders/compose";
 import { getComposeRegistryLoginCommand } from "../utils/builders/compose-build-server";
 import {
 	ComposePreviewError,
+	isComposePreviewError,
 	isolatePreviewCompose,
 } from "../utils/docker/compose-preview";
 import {
@@ -219,6 +220,11 @@ export async function assertPreviewSwarmWorker(
 	if (!worker.swarmNodeId || !worker.sshKeyId || worker.serverType !== "deploy")
 		throw new ComposePreviewError(
 			"Configure this server's Swarm worker settings first",
+		);
+	// Cleanup (requireReady false) must still work after a server is released.
+	if (requireReady && !worker.previewOnly)
+		throw new ComposePreviewError(
+			"Reserve this server for Compose previews first: PR code never shares a server with regular services",
 		);
 	if (worker.swarmManagerId) {
 		const managerServer = await findServerById(worker.swarmManagerId);
@@ -605,8 +611,7 @@ export async function deployComposePreviewStack(
 	} catch (error) {
 		// Our own messages are safe to show. Anything else may carry command
 		// text, so it only goes to the deployment log, formatted and redacted.
-		const reason =
-			error instanceof ComposePreviewError ? error.message : undefined;
+		const reason = isComposePreviewError(error) ? error.message : undefined;
 		const failure = reason
 			? `Preview failed during ${phase.toLowerCase()}: ${reason}`
 			: `Preview failed during ${phase.toLowerCase()}; see the deployment log`;

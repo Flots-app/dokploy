@@ -142,6 +142,8 @@ interface PreviewActionsProps {
 	removing: boolean;
 	onDeploy: () => void;
 	onRemove: () => void;
+	/** Admins only: forget a failed environment whose worker is gone. */
+	onForget?: () => void;
 }
 
 function PreviewActions({
@@ -153,6 +155,7 @@ function PreviewActions({
 	removing,
 	onDeploy,
 	onRemove,
+	onForget,
 }: PreviewActionsProps) {
 	const active = preview.status !== "closed";
 	const removable = canRemove && active && preview.status !== "removing";
@@ -192,6 +195,18 @@ function PreviewActions({
 						isLoading={removing}
 					>
 						Remove environment
+					</Button>
+				</DialogAction>
+			)}
+			{onForget && preview.status === "error" && (
+				<DialogAction
+					type="destructive"
+					title={`Forget PR #${preview.pullRequestNumber} environment?`}
+					description="Use this only when its worker is gone for good and removal keeps failing. Dokploy deletes the records without contacting any server: whatever still runs on that machine must be removed by hand."
+					onClick={onForget}
+				>
+					<Button size="sm" variant="ghost">
+						Forget
 					</Button>
 				</DialogAction>
 			)}

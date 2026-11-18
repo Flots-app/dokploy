@@ -2,6 +2,7 @@ import { db } from "@dokploy/server/db";
 import {
 	compose,
 	composePreviews,
+	domains,
 	environments,
 	projects,
 	server,
@@ -11,6 +12,7 @@ import {
 	releasePreviewLease,
 	requestComposePreview,
 } from "@dokploy/server/services/compose-preview";
+import { findDomainsByComposeId } from "@dokploy/server/services/domain";
 import { haveActiveServices } from "@dokploy/server/services/server";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -259,6 +261,29 @@ describe("reconciler candidates", () => {
 				"waiting",
 			].sort(),
 		);
+	});
+});
+
+describe("PR environment secrets", () => {
+	it("are not loaded with the domains of a Compose", async () => {
+		await db
+			.update(compose)
+			.set({
+				previewEnv: "TOKEN=preview-secret",
+				previewComposeFile: "services: {}",
+			})
+			.where(eq(compose.composeId, sourceId));
+		await db.insert(domains).values({
+			host: "secrets-check.example.com",
+			composeId: sourceId,
+			serviceName: "web",
+			domainType: "compose",
+		});
+		const loaded = await findDomainsByComposeId(sourceId);
+		expect(loaded[0]?.compose).toBeTruthy();
+		expect(loaded[0]?.compose).not.toHaveProperty("previewEnv");
+		expect(loaded[0]?.compose).not.toHaveProperty("previewComposeFile");
+		await db.delete(domains).where(eq(domains.composeId, sourceId));
 	});
 });
 

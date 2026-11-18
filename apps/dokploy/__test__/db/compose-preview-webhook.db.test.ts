@@ -31,6 +31,7 @@ vi.mock("@dokploy/server/services/compose-preview-stack", () => ({
 	runPreviewManager: vi.fn(),
 }));
 
+import { forgetComposePreview } from "@dokploy/server/services/compose-preview";
 import { handleComposePreviewWebhook } from "@/server/queues/compose-previews";
 import { myQueue } from "@/server/queues/queueSetup";
 
@@ -81,7 +82,7 @@ const fakeGitHub = async (input: RequestInfo | URL, init?: RequestInit) => {
 			permissions: { contents: "read", pull_requests: "write" },
 			repository_selection: "all",
 		});
-	if (method === "GET" && url.pathname === "/repos/acme/app/pulls/7")
+	if (method === "GET" && /^\/repos\/acme\/app\/pulls\/\d+$/.test(url.pathname))
 		return json(200, gh.pr, { etag: `"${JSON.stringify(gh.pr).length}"` });
 	if (
 		method === "GET" &&
@@ -90,7 +91,7 @@ const fakeGitHub = async (input: RequestInfo | URL, init?: RequestInit) => {
 		return json(200, { permission: "write", user: { login: "alice" } });
 	if (
 		method === "POST" &&
-		url.pathname === "/repos/acme/app/issues/7/comments"
+		/^\/repos\/acme\/app\/issues\/\d+\/comments$/.test(url.pathname)
 	) {
 		const id = 9000 + gh.comments.size;
 		gh.comments.set(id, body.body);
@@ -254,7 +255,11 @@ const deliver = async (action: string) => {
 		draft: false,
 	});
 	const preview = await db.query.composePreviews.findFirst({
-		where: eq(composePreviews.sourceComposeId, sourceId),
+		where: (row, { and }) =>
+			and(
+				eq(row.sourceComposeId, sourceId),
+				eq(row.pullRequestNumber, payload.pull_request.number as number),
+			),
 	});
 	return preview!;
 };
@@ -372,5 +377,87 @@ describe("a pull request through Dokploy, end to end", () => {
 				and(eq(row.sourceComposeId, sourceId), eq(row.pullRequestNumber, 8)),
 		});
 		expect(fork).toBeUndefined();
+	});
+
+	it("never runs PR code on a server that is not reserved for previews", async () => {
+		await db
+			.update(server)
+			.set({ previewOnly: false })
+			.where(eq(server.serverId, workerId));
+		gh.pr = {
+			...gh.pr,
+			number: 9,
+			state: "open",
+			merged: false,
+			head: { ref: "feature/billing", sha: "c".repeat(40), repo: { id: 1 } },
+		};
+		const deploys = stack.deploy.mock.calls.length;
+		try {
+			await handleComposePreviewWebhook({
+				githubId,
+				owner: "acme",
+				repository: "app",
+				pullRequestNumber: 9,
+				action: "opened",
+				baseRef: "main",
+				fromFork: false,
+				draft: false,
+			});
+			const requested = await db.query.composePreviews.findFirst({
+				where: (row, { and }) =>
+					and(eq(row.sourceComposeId, sourceId), eq(row.pullRequestNumber, 9)),
+			});
+			const failed = await settle(requested!.previewId);
+			expect(failed.status).toBe("error");
+			expect(failed.error).toContain("reserved for previews");
+			expect(failed.composeId).toBeNull();
+			expect(stack.deploy.mock.calls.length).toBe(deploys);
+		} finally {
+			await db
+				.update(server)
+				.set({ previewOnly: true })
+				.where(eq(server.serverId, workerId));
+		}
+	});
+
+	it("lets an admin forget a failed environment whose worker is gone", async () => {
+		gh.pr = {
+			...gh.pr,
+			number: 7,
+			state: "open",
+			merged: false,
+			head: { ref: "feature/login", sha: "d".repeat(40), repo: { id: 1 } },
+		};
+		const preview = await deliver("reopened");
+		await settle(preview.previewId);
+		const running = await db.query.composePreviews.findFirst({
+			where: eq(composePreviews.previewId, preview.previewId),
+		});
+		expect(running?.composeId).toBeTruthy();
+		// The worker is unreachable: every removal attempt fails.
+		await db
+			.update(composePreviews)
+			.set({ status: "error", error: "Preview worker is unreachable over SSH" })
+			.where(eq(composePreviews.previewId, preview.previewId));
+		await forgetComposePreview(preview.previewId);
+		const forgotten = await db.query.composePreviews.findFirst({
+			where: eq(composePreviews.previewId, preview.previewId),
+		});
+		expect(forgotten).toMatchObject({
+			status: "closed",
+			composeId: null,
+			environmentId: null,
+			manualCleanup: true,
+		});
+		expect(
+			await db.query.compose.findFirst({
+				where: eq(compose.composeId, running!.composeId!),
+			}),
+		).toBeUndefined();
+		// Forgetting never contacted a server.
+		expect(stack.cleanup.mock.calls.length).toBe(1);
+		await expect(forgetComposePreview(preview.previewId)).rejects.toThrow(
+			"Only a failed PR environment can be forgotten",
+		);
 	});
 });

@@ -2,6 +2,7 @@ import { composePreviewSettingsSchema } from "@dokploy/server/db/validations/com
 import type { Domain } from "@dokploy/server/services/domain";
 import {
 	ComposePreviewError,
+	isComposePreviewError,
 	isolatePreviewCompose,
 	previewAppName,
 	previewHost,
@@ -392,5 +393,20 @@ describe("actionable isolation errors", () => {
 				"Preview service api: cap_add is not supported",
 			);
 		}
+	});
+});
+
+describe("preview errors across module copies", () => {
+	it("are recognised by name, not by class identity", () => {
+		// Next.js or tsx can load the module twice: same name, different class.
+		class CopiedComposePreviewError extends Error {
+			override name = "ComposePreviewError";
+		}
+		const copy = new CopiedComposePreviewError("Waiting for capacity");
+		expect(copy instanceof ComposePreviewError).toBe(false);
+		expect(isComposePreviewError(copy)).toBe(true);
+		expect(isComposePreviewError(new Error("ssh root@host failed"))).toBe(
+			false,
+		);
 	});
 });

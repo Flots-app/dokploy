@@ -6,6 +6,7 @@ import { findComposeById } from "@dokploy/server/services/compose";
 import {
 	ComposePreviewNotFoundError,
 	findComposePreview,
+	forgetComposePreview,
 	requestComposePreview,
 	requestComposePreviewCleanup,
 } from "@dokploy/server/services/compose-preview";
@@ -19,6 +20,7 @@ import { findRegistryById } from "@dokploy/server/services/registry";
 import { getAccessibleServerIds } from "@dokploy/server/services/server";
 import {
 	ComposePreviewError,
+	isComposePreviewError,
 	isolatePreviewCompose,
 	previewAppName,
 } from "@dokploy/server/utils/docker/compose-preview";
@@ -27,7 +29,7 @@ import { desc, eq } from "drizzle-orm";
 import { parse } from "yaml";
 import { z } from "zod";
 import { enqueueComposePreview } from "@/server/queues/compose-previews";
-import { createTRPCRouter, protectedProcedure } from "../trpc";
+import { adminProcedure, createTRPCRouter, protectedProcedure } from "../trpc";
 import { audit } from "../utils/audit";
 
 const sourceInput = z.object({ composeId: z.string().min(1) });
@@ -131,16 +133,21 @@ export const composePreviewRouter = createTRPCRouter({
 						message:
 							"Select an accessible, active deployment worker with an SSH key",
 					});
+				if (!worker.previewOnly)
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Reserve this worker for Compose previews first (server actions): PR code never shares a server with regular services",
+					});
 				await checkPreviewTargets(source, ctx.session, input.settings);
 				try {
 					await assertPreviewSwarmWorker(input.settings.serverId);
 				} catch (error) {
 					throw new TRPCError({
 						code: "BAD_REQUEST",
-						message:
-							error instanceof ComposePreviewError
-								? error.message
-								: "Unable to reach the preview worker over SSH",
+						message: isComposePreviewError(error)
+							? error.message
+							: "Unable to reach the preview worker over SSH",
 					});
 				}
 				if (!source.domains.length)
@@ -160,10 +167,9 @@ export const composePreviewRouter = createTRPCRouter({
 				} catch (error) {
 					throw new TRPCError({
 						code: "BAD_REQUEST",
-						message:
-							error instanceof ComposePreviewError
-								? error.message
-								: `The Compose file override is not valid YAML: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+						message: isComposePreviewError(error)
+							? error.message
+							: `The Compose file override is not valid YAML: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
 					});
 				}
 			}
@@ -253,7 +259,10 @@ export const composePreviewRouter = createTRPCRouter({
 		.mutation(async ({ ctx, input }) => {
 			const preview = await findComposePreview(input.previewId).catch(
 				(error) => {
-					if (error instanceof ComposePreviewNotFoundError)
+					if (
+						error instanceof Error &&
+						error.name === "ComposePreviewNotFoundError"
+					)
 						throw new TRPCError({
 							code: "NOT_FOUND",
 							message: "PR environment not found",
@@ -275,6 +284,45 @@ export const composePreviewRouter = createTRPCRouter({
 				resourceType: "compose",
 				resourceId: preview.sourceComposeId,
 				resourceName: `PR #${preview.pullRequestNumber}`,
+			});
+			return true;
+		}),
+	/** Last resort for a failed preview whose worker is gone for good. */
+	forget: adminProcedure
+		.input(z.object({ previewId: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			const preview = await findComposePreview(input.previewId).catch(
+				(error) => {
+					if (
+						error instanceof Error &&
+						error.name === "ComposePreviewNotFoundError"
+					)
+						throw new TRPCError({
+							code: "NOT_FOUND",
+							message: "PR environment not found",
+						});
+					throw error;
+				},
+			);
+			await sourceForOrganization(
+				preview.sourceComposeId,
+				ctx.session.activeOrganizationId,
+			);
+			await checkServicePermissionAndAccess(ctx, preview.sourceComposeId, {
+				service: ["delete"],
+			});
+			try {
+				await forgetComposePreview(preview.previewId);
+			} catch (error) {
+				if (isComposePreviewError(error))
+					throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+				throw error;
+			}
+			await audit(ctx, {
+				action: "delete",
+				resourceType: "compose",
+				resourceId: preview.sourceComposeId,
+				resourceName: `PR #${preview.pullRequestNumber} (forgotten without remote cleanup)`,
 			});
 			return true;
 		}),
