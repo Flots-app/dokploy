@@ -1,0 +1,3 @@
+# Local builds of the provider
+/terraform-provider-dokploy
+/dist/
