@@ -1,9 +1,13 @@
 # syntax=docker/dockerfile:1
-FROM node:24.4.0-slim AS base
+# Explicit Debian release: a bare `-slim` tag follows whichever Debian Node.js
+# builds on. 24.22.x bundles npm 11.19, whose single copy of tar is >= 7.5.19.
+FROM node:24.22.3-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
-RUN corepack prepare pnpm@10.22.0 --activate
+# pnpm >= 10.34.5 bundles tar >= 7.5.19 (10.22.0 shipped 7.5.2). Keep in sync
+# with `packageManager`: corepack downloads that exact version when pnpm runs.
+RUN corepack prepare pnpm@10.34.9 --activate
 
 FROM base AS build
 COPY . /usr/src/app
@@ -52,7 +56,7 @@ COPY --from=build /prod/dokploy/node_modules ./node_modules
 
 
 # Install docker
-RUN curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh --version 28.5.2 && rm get-docker.sh && curl https://rclone.org/install.sh | bash
+RUN curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh --version 29.10.0 && rm get-docker.sh && curl https://rclone.org/install.sh | bash
 
 # Install Nixpacks and tsx
 # | VERBOSE=1 VERSION=1.21.0 bash
@@ -64,11 +68,11 @@ RUN curl -sSL https://nixpacks.com/install.sh -o install.sh \
     && pnpm install -g tsx
 
 # Install Railpack
-ARG RAILPACK_VERSION=0.15.4
+ARG RAILPACK_VERSION=0.43.0
 RUN curl -sSL https://railpack.com/install.sh | bash
 
 # Install buildpacks
-COPY --from=buildpacksio/pack:0.39.1 /usr/local/bin/pack /usr/local/bin/pack
+COPY --from=buildpacksio/pack:0.40.11 /usr/local/bin/pack /usr/local/bin/pack
 
 EXPOSE 3000
 
