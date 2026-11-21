@@ -9,8 +9,6 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { OnboardingLayout } from "@/components/layouts/onboarding-layout";
-import { SignInWithGithub } from "@/components/proprietary/auth/sign-in-with-github";
-import { SignInWithGoogle } from "@/components/proprietary/auth/sign-in-with-google";
 import { AlertBlock } from "@/components/shared/alert-block";
 import { Logo } from "@/components/shared/logo";
 import { Button } from "@/components/ui/button";
@@ -25,7 +23,6 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth-client";
-import { useWhitelabelingPublic } from "@/utils/hooks/use-whitelabeling";
 
 const registerSchema = z
 	.object({
@@ -78,7 +75,6 @@ interface Props {
 
 const Register = ({ isCloud }: Props) => {
 	const router = useRouter();
-	const { config: whitelabeling } = useWhitelabelingPublic();
 	const [isError, setIsError] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [data, setData] = useState<any>(null);
@@ -126,14 +122,7 @@ const Register = ({ isCloud }: Props) => {
 				<div className="flex flex-col items-center gap-4 w-full">
 					<CardTitle className="text-2xl font-bold flex  items-center gap-2">
 						<Link href="/" className="flex flex-row items-center gap-2">
-							<Logo
-								className="size-12"
-								logoUrl={
-									whitelabeling?.loginLogoUrl ||
-									whitelabeling?.logoUrl ||
-									undefined
-								}
-							/>
+							<Logo className="size-12" />
 						</Link>
 						{isCloud ? "Sign Up" : "Setup the server"}
 					</CardTitle>
@@ -159,17 +148,6 @@ const Register = ({ isCloud }: Props) => {
 							</AlertBlock>
 						)}
 						<CardContent className="p-0">
-							{isCloud && (
-								<div className="flex flex-col gap-2">
-									<SignInWithGithub />
-									<SignInWithGoogle />
-								</div>
-							)}
-							{isCloud && (
-								<p className="mb-4 text-center text-xs text-muted-foreground">
-									Or register with email
-								</p>
-							)}
 							<Form {...form}>
 								<form
 									method="post"

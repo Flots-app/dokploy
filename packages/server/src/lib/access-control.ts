@@ -54,9 +54,8 @@ export const statements = {
 } as const;
 
 /**
- * Enterprise-only resources. For static roles (owner/admin/member),
- * permission checks on these resources are bypassed — they only apply
- * when using custom roles with an enterprise license.
+ * Resources that only custom roles can restrict. For the static roles
+ * (owner/admin), permission checks on these resources are bypassed.
  */
 export const enterpriseOnlyResources = new Set<string>([
 	"volume",

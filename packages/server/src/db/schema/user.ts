@@ -54,7 +54,8 @@ export const user = pgTable("user", {
 	// Metrics
 	enablePaidFeatures: boolean("enablePaidFeatures").notNull().default(false),
 	allowImpersonation: boolean("allowImpersonation").notNull().default(false),
-	// Enterprise / proprietary features
+	// Legacy license columns: no longer read or written, kept so no migration is
+	// needed.
 	enableEnterpriseFeatures: boolean("enableEnterpriseFeatures")
 		.notNull()
 		.default(false),

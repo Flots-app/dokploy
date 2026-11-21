@@ -147,8 +147,6 @@ export const contextOf = (
 		updatedAt: new Date(),
 		role: person.role,
 		ownerId: person.userId,
-		enableEnterpriseFeatures: false,
-		isValidEnterpriseLicense: false,
 	},
 });
 

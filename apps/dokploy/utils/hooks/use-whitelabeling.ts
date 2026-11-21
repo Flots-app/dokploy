@@ -1,25 +1,12 @@
-import { api } from "@/utils/api";
+type WhitelabelingConfig = {
+	appName?: string | null;
+};
 
 /**
- * Hook to access whitelabeling config for authenticated pages (dashboard, services, etc.).
- * Requires the user to be logged in.
+ * Whitelabeling went away with the license system: there is never a custom
+ * branding. The hook stays so the service pages keep upstream's code (and its
+ * merge surface); drop it when those pages are next touched.
  */
 export function useWhitelabeling() {
-	const { data, ...rest } = api.whitelabeling.get.useQuery(undefined, {
-		staleTime: 5 * 60 * 1000,
-		refetchOnWindowFocus: false,
-	});
-	return { config: data ?? null, ...rest };
-}
-
-/**
- * Hook to access the public whitelabeling config.
- * Only for unauthenticated pages (login, register, error, invitation, password reset).
- */
-export function useWhitelabelingPublic() {
-	const { data, ...rest } = api.whitelabeling.getPublic.useQuery(undefined, {
-		staleTime: 5 * 60 * 1000,
-		refetchOnWindowFocus: false,
-	});
-	return { config: data ?? null, ...rest };
+	return { config: null as WhitelabelingConfig | null };
 }

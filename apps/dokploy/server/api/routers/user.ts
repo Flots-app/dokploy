@@ -30,7 +30,6 @@ import {
 	hasPermission,
 	resolvePermissions,
 } from "@dokploy/server/services/permission";
-import { hasValidLicense } from "@dokploy/server/services/proprietary/license-key";
 import { TRPCError } from "@trpc/server";
 import * as bcrypt from "bcrypt";
 import { and, asc, eq, gt, ne } from "drizzle-orm";
@@ -384,20 +383,14 @@ export const userRouter = createTRPCRouter({
 
 				const { id, accessedGitProviders, accessedServers, ...rest } = input;
 
-				const licensed = await hasValidLicense(
-					ctx.session?.activeOrganizationId || "",
-				);
-
 				await db
 					.update(member)
 					.set({
 						...rest,
-						...(licensed && accessedGitProviders !== undefined
+						...(accessedGitProviders !== undefined
 							? { accessedGitProviders }
 							: {}),
-						...(licensed && accessedServers !== undefined
-							? { accessedServers }
-							: {}),
+						...(accessedServers !== undefined ? { accessedServers } : {}),
 					})
 					.where(
 						and(
