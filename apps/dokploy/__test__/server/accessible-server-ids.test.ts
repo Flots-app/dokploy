@@ -47,12 +47,23 @@ describe("getAccessibleServerIds", () => {
 		expect(ids).toEqual(new Set(["srv-a", "srv-b", "srv-c"]));
 	});
 
-	it("keeps every server when the member record is missing", async () => {
+	it("gives no server to someone who is not a member of the organization", async () => {
 		mockDb.query.member.findFirst.mockResolvedValue(null);
 
 		const ids = await getAccessibleServerIds(session);
 
-		expect(ids).toEqual(new Set(["srv-a", "srv-b", "srv-c"]));
+		expect(ids).toEqual(new Set());
+	});
+
+	it("never returns a server id that is not in the organization", async () => {
+		mockDb.query.member.findFirst.mockResolvedValue({
+			role: "member",
+			accessedServers: ["srv-a", "server-of-another-org"],
+		});
+
+		const ids = await getAccessibleServerIds(session);
+
+		expect(ids).toEqual(new Set(["srv-a"]));
 	});
 
 	it("restricts a member to the servers an admin assigned", async () => {

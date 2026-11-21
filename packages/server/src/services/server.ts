@@ -424,16 +424,27 @@ export const getAccessibleServerIds = async (session: {
 		columns: { accessedServers: true, role: true },
 	});
 
-	if (memberRecord?.role === "owner" || memberRecord?.role === "admin") {
-		return new Set(allOrgServers.map((s) => s.serverId));
+	// Not a member of this organization (a removed member whose API key still
+	// carries the organization id, for instance): no server at all. Callers such
+	// as the WebSocket terminal authorize on `has(serverId)` alone.
+	if (!memberRecord) {
+		return new Set();
+	}
+
+	const orgServerIds = new Set(allOrgServers.map((s) => s.serverId));
+
+	if (memberRecord.role === "owner" || memberRecord.role === "admin") {
+		return orgServerIds;
 	}
 
 	// An empty assignment means "no restriction": members keep seeing every
 	// server of the organization until an admin explicitly assigns some.
-	const assigned = memberRecord?.accessedServers ?? [];
+	const assigned = memberRecord.accessedServers ?? [];
 	if (assigned.length === 0) {
-		return new Set(allOrgServers.map((s) => s.serverId));
+		return orgServerIds;
 	}
 
-	return new Set(assigned);
+	// The assignment is free-form input, so only keep ids of this organization.
+	// Callers such as the WebSocket terminal authorize on `has(serverId)` alone.
+	return new Set(assigned.filter((serverId) => orgServerIds.has(serverId)));
 };

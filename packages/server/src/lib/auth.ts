@@ -71,6 +71,12 @@ const createBetterAuth = () =>
 			"/organization/create",
 			"/organization/update",
 			"/organization/delete",
+			// Custom roles have no management UI any more: keep the raw
+			// dynamic-access-control endpoints from creating roles that
+			// resolveRole would now honor.
+			"/organization/create-role",
+			"/organization/update-role",
+			"/organization/delete-role",
 			...(!IS_CLOUD ? ["/verify-email"] : []),
 		],
 		secret: betterAuthSecret,
