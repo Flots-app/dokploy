@@ -58,6 +58,7 @@ import {
 import { UseKeyboardNav } from "@/hooks/use-keyboard-nav";
 import { appRouter } from "@/server/api/root";
 import { api } from "@/utils/api";
+import { useWhitelabeling } from "@/utils/hooks/use-whitelabeling";
 
 type TabState =
 	| "projects"
@@ -100,6 +101,8 @@ const Service = (
 	const { data: environments } = api.environment.byProjectId.useQuery({
 		projectId: data?.environment?.project?.projectId || "",
 	});
+	const { config: whitelabeling } = useWhitelabeling();
+	const appName = whitelabeling?.appName || "Dokploy";
 	const environmentDropdownItems =
 		environments?.map((env) => ({
 			name: env.name,
@@ -112,7 +115,8 @@ const Service = (
 			<AdvanceBreadcrumb />
 			<Head>
 				<title>
-					Application: {data?.name} - {data?.environment.project.name} | Dokploy
+					Application: {data?.name} - {data?.environment.project.name} |{" "}
+					{appName}
 				</title>
 			</Head>
 			<div className="w-full">
