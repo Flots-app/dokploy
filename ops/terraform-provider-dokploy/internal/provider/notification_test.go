@@ -88,9 +88,9 @@ resource "dokploy_notification_%s" "n" {
 			if tc.typ != "gotify" && tc.typ != "ntfy" {
 				flags2 += "\n  server_threshold = true"
 			}
-			wantSecret := tc.secretValue
+			wantStored := tc.secretValue
 			if tc.typ == "custom" {
-				wantSecret = "FIXTURE-CUSTOM-HEADER"
+				wantStored = "FIXTURE-CUSTOM-HEADER"
 			}
 			steps := []resource.TestStep{
 				{
@@ -106,7 +106,7 @@ resource "dokploy_notification_%s" "n" {
 						if n["notificationType"] != tc.typ || n["name"] != "first" || n["appDeploy"] != true {
 							return fmt.Errorf("unexpected notification: %v", n)
 						}
-						if got := secretOf(sub, tc.secretKey); got != wantSecret {
+						if got := secretOf(sub, tc.secretKey); got != wantStored {
 							return fmt.Errorf("secret not sent: %v", sub)
 						}
 						if tc.extraKey != "" && secretOf(sub, tc.extraKey) != tc.extraValue {
@@ -131,7 +131,7 @@ resource "dokploy_notification_%s" "n" {
 						if n["name"] != "renamed" || n["appDeploy"] != false {
 							return fmt.Errorf("not updated: %v", n)
 						}
-						if got := secretOf(sub, tc.secretKey); got != wantSecret {
+						if got := secretOf(sub, tc.secretKey); got != wantStored {
 							return fmt.Errorf("the update lost the secret: %v", sub)
 						}
 						body := a.calls.last("notification.update" + strings.ToUpper(tc.typ[:1]) + tc.typ[1:])
