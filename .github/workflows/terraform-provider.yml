@@ -25,6 +25,9 @@ permissions:
 
 env:
   TERRAFORM_VERSION: 1.16.0
+  # sha256 of terraform_<version>_linux_amd64.zip, from the release's
+  # terraform_<version>_SHA256SUMS; update both together.
+  TERRAFORM_SHA256: 41d05b927aa174f15d1228c4eba832a323b716c68b415ef5a00179f46cc602d3
 
 jobs:
   test:
@@ -46,11 +49,18 @@ jobs:
           go-version-file: ops/terraform-provider-dokploy/go.mod
           cache-dependency-path: ops/terraform-provider-dokploy/go.sum
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-          terraform_wrapper: false
+      # The tests drive the real Terraform binary. hashicorp/setup-terraform is not
+      # an authorized action (.plumber.yaml): the release archive is downloaded
+      # and checked against the SHA-256 pinned above instead.
+      - name: Install Terraform
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL -o terraform.zip \
+            "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          echo "${TERRAFORM_SHA256}  terraform.zip" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/terraform-bin"
+          unzip -q terraform.zip terraform -d "$RUNNER_TEMP/terraform-bin"
+          echo "$RUNNER_TEMP/terraform-bin" >> "$GITHUB_PATH"
 
       - name: Check formatting
         run: |
@@ -88,7 +98,9 @@ jobs:
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: ops/terraform-provider-dokploy/go.mod
-          cache-dependency-path: ops/terraform-provider-dokploy/go.sum
+          # A release must not restore a cache an earlier run (a pull request)
+          # could have poisoned.
+          cache: false
 
       - name: Build the archives
         id: build
