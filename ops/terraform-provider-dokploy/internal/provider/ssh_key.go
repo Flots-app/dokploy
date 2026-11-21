@@ -42,7 +42,7 @@ func init() {
 		// The procedure answers nothing: find the key by its public key.
 		var all []map[string]any
 		if err := c.Query(ctx, "sshKey.all", nil, &all); err != nil {
-			return "", err
+			return "", fmt.Errorf("the SSH key was created but the list could not be read (%w): it exists in Dokploy, check the dashboard and import or delete it before applying again", err)
 		}
 		for _, k := range all {
 			if k["publicKey"] == in.Body["publicKey"] && k["name"] == in.Body["name"] {

@@ -134,7 +134,13 @@ func rnNodeRemove(ctx context.Context, c *client.Client, id, mode string, uninst
 	if err != nil {
 		return err
 	}
-	rnWaitNodeGone(ctx, c, id)
+	gone, err := rnWaitNodeGone(ctx, c, id)
+	if err != nil {
+		return warningError{msg: "The removal was requested but its progress cannot be read: " + err.Error()}
+	}
+	if !gone {
+		return warningError{msg: "Dokploy is still draining the machine: its removal goes on in the background. Remove the pool only once the machine is gone from the dashboard."}
+	}
 	return nil
 }
 
@@ -207,6 +213,11 @@ func (r *rnNodeResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 	force, _ := rnBoolOf(state["destroy_force"])
 	if err := rnNodeRemove(ctx, r.client, id, mode, uninstall, force); err != nil && !errors.Is(err, client.ErrNotFound) {
+		var w warningError
+		if errors.As(err, &w) {
+			resp.Diagnostics.AddWarning(fmt.Sprintf("github_runner_node %s: removal not finished", id), w.msg)
+			return
+		}
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot delete github_runner_node %s", id), err.Error())
 	}
 }

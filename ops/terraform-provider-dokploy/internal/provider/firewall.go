@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/Flots-app/dokploy/ops/terraform-provider-dokploy/internal/client"
 )
@@ -71,7 +72,9 @@ func init() {
 		if err := rnFirewallAttach(ctx, c, id, rnStrings(in.Body["runnerPoolIds"]), rnStrings(in.Body["runnerNodeIds"]), nil, nil); err != nil {
 			// The engine only records an object whose creation succeeded:
 			// take the half-built firewall away rather than orphan it.
-			_ = c.TRPCMutate(ctx, "firewall.remove", map[string]any{"firewallId": id}, nil)
+			if rerr := c.TRPCMutate(ctx, "firewall.remove", map[string]any{"firewallId": id}, nil); rerr != nil {
+				return "", fmt.Errorf("%w (and the half-built firewall %s could not be removed: %v)", err, id, rerr)
+			}
 			return "", err
 		}
 		return id, nil
@@ -95,9 +98,35 @@ func init() {
 	register(s)
 }
 
+// rnFirewallMu serializes the changes of firewall memberships: Terraform applies
+// resources in parallel and detaching is not scoped to a firewall.
+var rnFirewallMu sync.Mutex
+
+// rnFirewallHolds reports whether the firewall currently has the target attached.
+func rnFirewallHolds(ctx context.Context, c *client.Client, id, typ, target string) (bool, error) {
+	list, err := rnList(ctx, c, "firewall.list")
+	if err != nil {
+		return false, err
+	}
+	fw, err := rnFind(list, "firewallId", id)
+	if err != nil {
+		return false, err
+	}
+	targets, _ := fw["targets"].([]any)
+	for _, t := range targets {
+		m := rnMap(t)
+		if m["type"] == typ && asString(m["id"]) == target {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // rnFirewallAttach attaches the given targets to the firewall and detaches the
 // others.
 func rnFirewallAttach(ctx context.Context, c *client.Client, id string, addPools, addNodes, dropPools, dropNodes []string) error {
+	rnFirewallMu.Lock()
+	defer rnFirewallMu.Unlock()
 	attach := func(typ string, ids []string) error {
 		for _, t := range ids {
 			err := c.TRPCMutate(ctx, "firewall.attach", map[string]any{"firewallId": id, "target": map[string]any{"type": typ, "id": t}}, nil)
@@ -109,6 +138,17 @@ func rnFirewallAttach(ctx context.Context, c *client.Client, id string, addPools
 	}
 	detach := func(typ string, ids []string) error {
 		for _, t := range ids {
+			// firewall.detach names only the target, not the firewall: when another
+			// firewall of the same apply has already taken it over, detaching now
+			// would leave the target without any firewall. Only detach what this
+			// firewall still holds.
+			held, herr := rnFirewallHolds(ctx, c, id, typ, t)
+			if herr != nil {
+				return fmt.Errorf("read the firewall before detaching %s %s: %w", typ, t, herr)
+			}
+			if !held {
+				continue
+			}
 			err := c.TRPCMutate(ctx, "firewall.detach", map[string]any{"target": map[string]any{"type": typ, "id": t}}, nil)
 			if err != nil {
 				return fmt.Errorf("detach %s %s: %w", typ, t, err)

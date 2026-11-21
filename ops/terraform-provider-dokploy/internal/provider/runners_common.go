@@ -170,20 +170,21 @@ var (
 // rnWaitNodeGone waits (for a while) until the machine disappears from the
 // overview: removing a machine drains it first, and its pool cannot be removed
 // before. Running out of time is not an error: the removal goes on in Dokploy.
-func rnWaitNodeGone(ctx context.Context, c *client.Client, id string) {
+func rnWaitNodeGone(ctx context.Context, c *client.Client, id string) (gone bool, err error) {
 	deadline := time.Now().Add(rnPollFor)
 	for time.Now().Before(deadline) {
 		pools, err := rnPoolList(ctx, c)
 		if err != nil {
-			return
+			return false, err
 		}
 		if _, err := rnNodeOf(pools, id); err != nil {
-			return
+			return true, nil
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false, ctx.Err()
 		case <-time.After(rnPollEvery):
 		}
 	}
+	return false, nil
 }

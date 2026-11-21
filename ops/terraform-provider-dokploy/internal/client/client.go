@@ -30,15 +30,20 @@ type APIError struct {
 	Status  int
 	Proc    string
 	Message string
+	// missing is set when the answer is a 404 from Dokploy itself about an object
+	// that does not exist: a JSON error with a message. A bare 404 (a proxy or
+	// Traefik answering while the dashboard restarts) or an unknown procedure is
+	// not "deleted outside Terraform".
+	missing bool
 }
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("dokploy %s: HTTP %d: %s", e.Proc, e.Status, e.Message)
 }
 
-// Is lets errors.Is(err, ErrNotFound) match a 404.
+// Is lets errors.Is(err, ErrNotFound) match Dokploy's "object not found" answer.
 func (e *APIError) Is(target error) bool {
-	return target == ErrNotFound && e.Status == http.StatusNotFound
+	return target == ErrNotFound && e.missing
 }
 
 // Client talks to one Dokploy instance.
@@ -51,9 +56,8 @@ type Client struct {
 	retries   int
 	backoff   time.Duration
 
-	orgOnce sync.Once
-	orgID   string
-	orgErr  error
+	orgMu sync.Mutex
+	orgID string
 }
 
 // Options configures New.
@@ -101,7 +105,12 @@ func New(o Options) (*Client, error) {
 		backoff:   o.Backoff,
 	}
 	if c.http == nil {
-		c.http = &http.Client{Timeout: 2 * time.Minute}
+		c.http = &http.Client{
+			Timeout: 2 * time.Minute,
+			// Go only strips Authorization and Cookie on a cross-host redirect:
+			// x-api-key and the Cloudflare Access headers would be forwarded.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
 	}
 	if c.userAgent == "" {
 		c.userAgent = "terraform-provider-dokploy"
@@ -224,7 +233,11 @@ func (c *Client) do(ctx context.Context, method, proc, u string, body any, out a
 			}
 			return nil
 		}
-		lastErr = &APIError{Status: resp.StatusCode, Proc: proc, Message: errorMessage(raw)}
+		msg, structured := errorMessage(raw)
+		lastErr = &APIError{
+			Status: resp.StatusCode, Proc: proc, Message: msg,
+			missing: resp.StatusCode == http.StatusNotFound && structured && !strings.Contains(msg, "No procedure found"),
+		}
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			continue
 		}
@@ -234,8 +247,9 @@ func (c *Client) do(ctx context.Context, method, proc, u string, body any, out a
 }
 
 // errorMessage extracts the human message of a tRPC/REST error body, without
-// ever echoing request data.
-func errorMessage(raw []byte) string {
+// ever echoing request data. structured reports that the body was a JSON error
+// carrying a message.
+func errorMessage(raw []byte) (msg string, structured bool) {
 	var e struct {
 		Message string `json:"message"`
 		Error   struct {
@@ -248,43 +262,54 @@ func errorMessage(raw []byte) string {
 	if json.Unmarshal(raw, &e) == nil {
 		switch {
 		case e.Message != "":
-			return e.Message
+			return truncate(e.Message), true
 		case e.Error.Message != "":
-			return e.Error.Message
+			return truncate(e.Error.Message), true
 		case e.Error.JSON.Message != "":
-			return e.Error.JSON.Message
+			return truncate(e.Error.JSON.Message), true
 		}
 	}
-	s := strings.TrimSpace(string(raw))
-	if len(s) > 300 {
-		s = s[:300] + "..."
+	t := truncate(strings.TrimSpace(string(raw)))
+	if t == "" {
+		return "empty response", false
 	}
-	if s == "" {
-		return "empty response"
-	}
-	return s
+	return t, false
 }
 
 // OrganizationID returns the id of the organization the API key acts in. Some
 // create procedures require it in their payload although the server overrides
-// it with the session's.
+// it with the session's. Only a success is cached.
 func (c *Client) OrganizationID(ctx context.Context) (string, error) {
-	c.orgOnce.Do(func() {
-		var out struct {
-			ID string `json:"id"`
-		}
-		if err := c.Query(ctx, "organization.active", nil, &out); err != nil {
-			c.orgErr = err
-			return
-		}
-		c.orgID = out.ID
-	})
-	if c.orgErr != nil {
-		// Do not cache a failure forever.
-		err := c.orgErr
-		c.orgOnce = sync.Once{}
-		c.orgErr = nil
+	c.orgMu.Lock()
+	defer c.orgMu.Unlock()
+	if c.orgID != "" {
+		return c.orgID, nil
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := c.Query(ctx, "organization.active", nil, &out); err != nil {
 		return "", err
 	}
+	if out.ID == "" {
+		return "", errors.New("dokploy: organization.active returned no id")
+	}
+	c.orgID = out.ID
 	return c.orgID, nil
+}
+
+// truncate keeps an error message readable and safe: servers sometimes answer with
+// a whole command line or stack trace, and Drizzle query errors carry the SQL
+// followed by its bound parameters ("\nparams: ..."), which include secrets
+// (compose backup metadata, destination keys). Everything from the parameters on
+// is dropped.
+func truncate(s string) string {
+	const max = 500
+	if i := strings.Index(s, "\nparams:"); i >= 0 {
+		s = s[:i] + "\n(query parameters withheld)"
+	}
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }

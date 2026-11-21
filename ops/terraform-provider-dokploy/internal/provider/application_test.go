@@ -46,6 +46,9 @@ func applicationFake(t *testing.T) (*applicationAPI, *httptest.Server) {
 		appName, _ := body["appName"].(string)
 		if appName == "" {
 			appName = fmt.Sprintf("app-generated-%d", f.next+1)
+		} else {
+			// Like buildAppName in Dokploy: the requested name is only a prefix.
+			appName += "-ab12cd"
 		}
 		obj := map[string]any{
 			"name": body["name"], "appName": appName, "description": body["description"],
@@ -421,7 +424,7 @@ func TestApplicationLifecycle(t *testing.T) {
 				ResourceName:            addr,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"env.", "secret_env_keys", "secret_env_wo_version", "secrets_version"},
+				ImportStateVerifyIgnore: []string{"env.", "secret_env_keys", "secret_env_wo_version", "secrets_version", "build_args"},
 			},
 		},
 	})
@@ -526,7 +529,7 @@ resource "dokploy_application" "staging" {
 					statecheck.ExpectKnownValue("dokploy_application.staging", tfjsonpath.New("stop_grace_period_swarm"), knownvalue.Null()),
 					statecheck.ExpectKnownValue("dokploy_application.staging", tfjsonpath.New("command"), knownvalue.Null()),
 					statecheck.ExpectKnownValue("dokploy_application.staging", tfjsonpath.New("watch_paths"), knownvalue.ListSizeExact(0)),
-					statecheck.ExpectKnownValue("dokploy_application.staging", tfjsonpath.New("build_args"), knownvalue.MapSizeExact(0)),
+					statecheck.ExpectKnownValue("dokploy_application.staging", tfjsonpath.New("build_args"), knownvalue.Null()),
 					statecheck.ExpectKnownValue("dokploy_application.staging", tfjsonpath.New("placement_swarm"), knownvalue.StringExact(`{"Constraints":["node.labels.com.dokploy.preview-only!=true"]}`)),
 				},
 				Check: func(s *terraform.State) error {

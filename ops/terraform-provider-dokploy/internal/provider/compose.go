@@ -87,7 +87,7 @@ func init() {
 		Name: "compose",
 		Desc: "A Dokploy Compose service (docker-compose or Swarm stack), built from a Git repository or from an inline compose file. " +
 			"Terraform only manages the configuration: it never deploys, starts or stops anything, deployments stay triggered by Dokploy (webhook, auto deploy) or by hand. " +
-			"Destroying the resource removes the service from Dokploy and its containers or stack from the server, but keeps its Docker volumes (deleteVolumes=false). " +
+			"Destroying the resource removes the service from Dokploy and its containers or stack from the server, but keeps its Docker named volumes (deleteVolumes=false); the project directory on the server is removed, bind mounts into its files/ directory included. " +
 			"An empty string means \"not set\" for the optional text and id attributes. The webhook token of the service is not exposed.",
 		IDKey:      "composeId",
 		ImportHint: "Import with the composeId.",
@@ -133,7 +133,7 @@ func init() {
 			{Name: "gitea_owner", Kind: String, Desc: "Gitea owner."},
 			{Name: "gitea_branch", Kind: String, Desc: "Gitea branch."},
 
-			{Name: "custom_git_url", Kind: String, Desc: "Repository URL of a git (custom Git) source."},
+			{Name: "custom_git_url", Kind: String, Opaque: true, Desc: "Repository URL of a git (custom Git) source. Managed only when declared: the URL may embed credentials, so an undeclared one is never read into the state."},
 			{Name: "custom_git_branch", Kind: String, Desc: "Branch of a git (custom Git) source."},
 			{Name: "custom_git_ssh_key_id", API: "customGitSSHKeyId", Kind: String, Desc: "SSH key (dokploy_ssh_key id) used to clone a git (custom Git) source."},
 
@@ -161,7 +161,7 @@ func init() {
 	s.UseREST(CRUD{
 		Router:     "compose",
 		DeleteProc: "compose.delete",
-		// Volumes are kept: a destroy must not wipe the data of a service.
+		// Named volumes are kept; Dokploy still removes the project directory.
 		DeleteBody: func(id string) map[string]any {
 			return map[string]any{"composeId": id, "deleteVolumes": false}
 		},

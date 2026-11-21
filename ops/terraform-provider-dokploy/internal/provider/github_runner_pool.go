@@ -127,7 +127,16 @@ func init() {
 		return c.TRPCMutate(ctx, "githubRunner.updatePool", body, nil)
 	}
 	s.Delete = func(ctx context.Context, c *client.Client, id string) error {
-		return c.TRPCMutate(ctx, "githubRunner.removePool", map[string]any{"githubRunnerPoolId": id}, nil)
+		var out map[string]any
+		if err := c.TRPCMutate(ctx, "githubRunner.removePool", map[string]any{"githubRunnerPoolId": id}, &out); err != nil {
+			return err
+		}
+		// Removing a pool also deletes its routing variables on GitHub; when that
+		// fails Dokploy still answers success, with a warning.
+		if w := asString(out["warning"]); w != "" {
+			return warningError{msg: "Dokploy removed the pool but reports: " + w}
+		}
+		return nil
 	}
 	register(s)
 }

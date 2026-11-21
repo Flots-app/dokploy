@@ -11,6 +11,7 @@ func init() {
 	s := &Spec{
 		Name: "registry",
 		Desc: "A container registry Dokploy logs in to (image pulls and pushes). The password is write-only: Dokploy keeps it, Terraform never stores it. " +
+			"Destroying it runs docker logout on the Dokploy host and clears the build registry (and build server) of every application and Compose service that uses it. " +
 			"Dokploy runs a docker login on its host at every create and update, so the credentials must be valid.",
 		IDKey:          "registryId",
 		ImportHint:     "Import with the registryId.",

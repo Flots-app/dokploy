@@ -138,6 +138,8 @@ func checkTraefikFileConfig(cfg Obj, d *diag.Diagnostics) {
 			d.AddAttributeError(path.Root("path"), "Invalid path", "The path must be absolute and below "+traefikRoot+", for example "+traefikRoot+"dynamic/redirects.yml.")
 		case strings.Contains(filePath, ".."), strings.ContainsRune(filePath, 0):
 			d.AddAttributeError(path.Root("path"), "Invalid path", "The path must not contain \"..\".")
+		case strings.HasSuffix(filePath, "/acme.json"), strings.Contains(filePath, "/certificates/"), strings.HasSuffix(filePath, ".key"), strings.HasSuffix(filePath, ".pem"):
+			d.AddAttributeError(path.Root("path"), "Invalid path", "Certificates, private keys and the ACME account file hold secrets, which the content (stored in the state) must never carry.")
 		}
 	}
 }
@@ -146,7 +148,7 @@ func init() {
 	s := &Spec{
 		Name: "traefik_file",
 		Desc: "A Traefik configuration file kept by Dokploy: the static traefik.yml (target main), the dynamic file of the dashboard (web_server, dokploy.yml), the shared middlewares (middlewares, middlewares.yml) or any other file below /etc/dokploy/traefik of the Dokploy host or of a remote server (file). " +
-			"The whole content is managed as text and stored in the state: never put a secret in it. " +
+			"The whole content is managed as text and stored in the state: never put a secret in it. Dokploy writes the basic-auth users (password hashes) of its dokploy_security resources into middlewares.yml: do not manage that file with Terraform on a host that uses them. " +
 			"Dokploy has no procedure to delete a file, so destroying the resource only forgets it. " +
 			"Dynamic files are hot-reloaded by Traefik: a file with an invalid router breaks routing at once. " +
 			"Terraform never restarts Traefik: a change of traefik.yml (static configuration) is read at the next restart, and a mistake in it is a latent outage for that restart.",

@@ -261,7 +261,7 @@ func init() {
 		}
 		after, err := bkListBackups(ctx, c, body)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("the backup was created but the list could not be read (%w): it exists in Dokploy, check the dashboard and import or delete it before applying again", err)
 		}
 		var fresh []bkRef
 		for _, b := range after {

@@ -216,6 +216,12 @@ func (k dbKind) spec() *Spec {
 			// changePassword has no REST route in the OpenAPI document: call
 			// the tRPC endpoint, which the dashboard itself uses.
 			if err := c.TRPCMutate(ctx, router+".changePassword", input, nil); err != nil {
+				// A failing command is reported by Dokploy with the command line,
+				// and so with the new (and the current) password: never forward it.
+				var apiErr *client.APIError
+				if errors.As(err, &apiErr) && apiErr.Status >= 500 {
+					return fmt.Errorf("change the %s password: changePassword failed (HTTP %d); is the container running? See the Dokploy logs", kind, apiErr.Status)
+				}
 				return fmt.Errorf("change the %s password: %w", kind, err)
 			}
 			return nil

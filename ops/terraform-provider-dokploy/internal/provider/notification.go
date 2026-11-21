@@ -127,7 +127,7 @@ func (k notifKind) spec() *Spec {
 		}
 		after, err := notifList(ctx, c, k.typ)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("the notification was created but the list could not be read (%w): it exists in Dokploy, check the dashboard and import or delete it before applying again", err)
 		}
 		var fresh []notifRef
 		for _, n := range after {
@@ -279,7 +279,7 @@ func init() {
 			noThreshold: true,
 			fields: []Field{
 				{Name: "server_url", Kind: String, Required: true, Desc: "ntfy server URL."},
-				{Name: "topic", Kind: String, Required: true, Desc: "ntfy topic."},
+				{Name: "topic", Kind: String, Required: true, Sensitive: true, Desc: "ntfy topic. ntfy topics act as passwords: the value is stored in the state (redacted in plans); keep it out of shared states."},
 				{Name: "access_token_wo", API: "accessToken", Kind: String, WriteOnly: true, Desc: "Optional ntfy access token; when left out on an update, the token Dokploy holds is kept."},
 				{Name: "priority", Kind: Int, Default: 3, Desc: "Message priority (at least 1)."},
 			},
@@ -304,7 +304,7 @@ func init() {
 			typ:  "custom",
 			desc: "A custom webhook notification. The headers are write-only (they usually carry a token): Dokploy keeps them, Terraform never stores them; header_names lists their names.",
 			fields: []Field{
-				{Name: "endpoint", Kind: String, Required: true, Desc: "URL the notifications are POSTed to."},
+				{Name: "endpoint", Kind: String, Required: true, Sensitive: true, Desc: "URL the notifications are POSTed to. A webhook URL can carry a token: the value is stored in the state (redacted in plans), unlike the write-only webhook URLs of the other notification types."},
 				{Name: "headers_wo", API: "headers", Kind: StringMap, WriteOnly: true, Desc: "HTTP headers sent with every notification. When left out on an update, the headers Dokploy holds are kept."},
 				{Name: "header_names", API: "headers", Kind: StringSet, ReadOnly: true, FromAPI: notifHeaderNames, Volatile: true, Desc: "Names of the headers Dokploy holds, reported for drift detection."},
 			},

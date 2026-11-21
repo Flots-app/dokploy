@@ -229,6 +229,19 @@ func checkWebServerSettingsConfig(cfg Obj, d *diag.Diagnostics) {
 		for _, p := range l {
 			if !traefikPortRe.MatchString(p) {
 				d.AddAttributeError(path.Root("traefik_ports"), "Invalid Traefik port", fmt.Sprintf("%q does not match published:target/protocol, for example 8080:8080/tcp.", p))
+				continue
+			}
+			// Dokploy removes the Traefik container before it recreates it with the
+			// new ports and ignores a failed creation: an invalid port leaves no
+			// Traefik, and so no API to repair it. Ports 80 and 443 are Traefik's own
+			// and are never reported back as additional ports.
+			m := traefikPortRe.FindStringSubmatch(p)
+			published, _ := strconv.Atoi(m[1])
+			target, _ := strconv.Atoi(m[2])
+			if published < 1 || published > 65535 || target < 1 || target > 65535 {
+				d.AddAttributeError(path.Root("traefik_ports"), "Invalid Traefik port", fmt.Sprintf("%q: ports must be between 1 and 65535.", p))
+			} else if target == 80 || target == 443 {
+				d.AddAttributeError(path.Root("traefik_ports"), "Invalid Traefik port", fmt.Sprintf("%q: the target ports 80 and 443 belong to Traefik itself.", p))
 			}
 		}
 	}
@@ -243,10 +256,10 @@ func init() {
 		IDKey:      "id",
 		ImportHint: "Singleton: import with any id, for example web-server.",
 		Fields: []Field{
-			{Name: "host", Kind: String, Desc: "Domain of the dashboard. Changing it (or https, certificate_type, letsencrypt_email) makes Dokploy regenerate the dynamic Traefik file dokploy.yml: if a dokploy_traefik_file manages that file, make it depend on this resource so it is written last."},
+			{Name: "host", Kind: String, Desc: "Domain of the dashboard. Changing it (or https, certificate_type, letsencrypt_email) makes Dokploy regenerate the dynamic Traefik file dokploy.yml: if a dokploy_traefik_file manages that file, make it depend on this resource so it is written last. A new host also rewrites both Traefik router rules to Host(new host): the dashboard then leaves the old host, so the provider's refresh after the change fails if DOKPLOY_URL still points to it."},
 			{Name: "https", Kind: Bool, Desc: "Whether the dashboard is served over HTTPS (adds the redirect to HTTPS)."},
 			{Name: "certificate_type", Kind: String, OneOf: []string{"letsencrypt", "none", "custom"}, Desc: "Certificate of the dashboard."},
-			{Name: "letsencrypt_email", API: "letsEncryptEmail", Kind: String, Desc: "Contact email of the Let's Encrypt account. Setting it edits the resolver in traefik.yml; Traefik reads it at its next restart. It cannot be cleared through the API."},
+			{Name: "letsencrypt_email", API: "letsEncryptEmail", Kind: String, Desc: "Contact email of the Let's Encrypt account. Setting it re-serializes traefik.yml (its resolver section); Traefik reads it at its next restart. It cannot be cleared through the API."},
 			{Name: "server_ip", Kind: String, Desc: "Public IP address of the Dokploy host, used to build the domains Dokploy suggests."},
 			{Name: "enable_docker_cleanup", Kind: Bool, Desc: "Whether Dokploy prunes unused Docker data on its own host every day."},
 			{Name: "log_cleanup_cron", Kind: String, FromAPI: func(v any) any {

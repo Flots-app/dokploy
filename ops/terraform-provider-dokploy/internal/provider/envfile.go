@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -38,6 +39,7 @@ type envEntry struct {
 // earlier one, as dotenv does. A value that opens a double or single quote
 // and does not close it on the same line continues on the following lines.
 func parseEnv(text string) []envEntry {
+	text = strings.TrimPrefix(text, "\ufeff")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
 	byKey := map[string]int{}
@@ -53,13 +55,17 @@ func parseEnv(text string) []envEntry {
 			continue
 		}
 		key := strings.TrimSpace(line[:eq])
-		key = strings.TrimSpace(strings.TrimPrefix(key, "export "))
+		if rest, ok := strings.CutPrefix(key, "export"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+			key = strings.TrimSpace(rest)
+		}
 		if !envKeyPattern.MatchString(key) {
 			continue
 		}
 		value := line[eq+1:]
 		raw := line
-		if q := openQuote(value); q != 0 {
+		// A quote that is never closed does not swallow the following lines:
+		// dotenv reads such a value up to the end of its line.
+		if q := openQuote(value); q != 0 && !closesQuote(value, q) && closesLater(lines[i+1:], q) {
 			for !closesQuote(value, q) && i+1 < len(lines) {
 				i++
 				value += "\n" + lines[i]
@@ -80,7 +86,7 @@ func parseEnv(text string) []envEntry {
 // openQuote returns the quote character if value starts a quoted string.
 func openQuote(value string) byte {
 	v := strings.TrimLeft(value, " \t")
-	if v != "" && (v[0] == '"' || v[0] == '\'') {
+	if v != "" && (v[0] == '"' || v[0] == '\'' || v[0] == '`') {
 		return v[0]
 	}
 	return 0
@@ -96,6 +102,16 @@ func closesQuote(value string, q byte) bool {
 			continue
 		}
 		if v[i] == q {
+			return true
+		}
+	}
+	return false
+}
+
+// closesLater reports whether one of the following lines contains the quote.
+func closesLater(lines []string, q byte) bool {
+	for _, l := range lines {
+		if strings.IndexByte(l, q) >= 0 {
 			return true
 		}
 	}
@@ -119,6 +135,52 @@ func envIndex(entries []envEntry) map[string]envEntry {
 	return m
 }
 
+// publicRawProblem explains why a public value, written as the literal text after
+// the '=' of a dotenv line, would be read back differently by Dokploy, or "" when
+// it is safe. Dokploy parses the text with dotenv: an unquoted '#' starts a
+// comment, a line break ends the value, edge blanks are trimmed and a quote that
+// is opened must be closed.
+func publicRawProblem(v string) string {
+	if v == "" {
+		return ""
+	}
+	if v != strings.TrimSpace(v) {
+		return "it starts or ends with a blank, which dotenv trims: quote it"
+	}
+	if q := openQuote(v); q != 0 {
+		if len(v) < 2 || v[len(v)-1] != q || strings.Count(v, string(q)) != 2 {
+			return "it opens a quote that is not closed at its end, or holds the quote twice inside"
+		}
+		return ""
+	}
+	if strings.ContainsAny(v, "#\r\n") {
+		return "it contains '#' or a line break, which dotenv does not keep outside quotes: quote it, for example \"'text'\""
+	}
+	return ""
+}
+
+// quoteSecretValue returns the dotenv text that Dokploy parses back to exactly
+// the given value. Secret values are values, not text: they are quoted as needed.
+func quoteSecretValue(v string) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	plain := v == strings.TrimSpace(v) && !strings.ContainsAny(v, "#\r\n\"'`")
+	if plain {
+		return v, nil
+	}
+	for _, q := range []byte{'\'', '`', '"'} {
+		if strings.IndexByte(v, q) >= 0 {
+			continue
+		}
+		if q == '"' && strings.Contains(v, "\\") {
+			continue // dotenv expands escapes inside double quotes
+		}
+		return string(q) + v + string(q), nil
+	}
+	return "", errors.New("the value holds all three quote characters (', \", `) and cannot be stored in a dotenv text")
+}
+
 // renderEnv builds the environment text to store: public variables from
 // `public`, secret variables from `secretValues` when given, otherwise copied
 // from `remote`. Entries are sorted by key so the output is deterministic.
@@ -129,15 +191,25 @@ func renderEnv(public map[string]string, secretKeys []string, secretValues map[s
 		if !envKeyPattern.MatchString(k) {
 			return "", fmt.Errorf("invalid environment variable name %q", k)
 		}
+		if why := publicRawProblem(v); why != "" {
+			return "", fmt.Errorf("public variable %q: %s", k, why)
+		}
 		lines[k] = k + "=" + v
 	}
 	var missing []string
 	for _, k := range secretKeys {
+		if !envKeyPattern.MatchString(k) {
+			return "", fmt.Errorf("invalid environment variable name %q in secret_env_keys", k)
+		}
 		if _, dup := lines[k]; dup {
 			return "", fmt.Errorf("variable %q is declared both in env and in secret_env_keys", k)
 		}
 		if v, ok := secretValues[k]; ok {
-			lines[k] = k + "=" + v
+			quoted, err := quoteSecretValue(v)
+			if err != nil {
+				return "", fmt.Errorf("secret variable %q: %w", k, err)
+			}
+			lines[k] = k + "=" + quoted
 			continue
 		}
 		if e, ok := remoteByKey[k]; ok {
@@ -165,5 +237,17 @@ func renderEnv(public map[string]string, secretKeys []string, secretValues map[s
 		b.WriteString(lines[k])
 		b.WriteByte('\n')
 	}
-	return b.String(), nil
+	text := b.String()
+	// The text must read back as exactly the declared variables: a value that
+	// slipped a line break or an unclosed quote through would add or swallow one.
+	got := envKeys(parseEnv(text))
+	if len(got) != len(keys) {
+		return "", fmt.Errorf("the environment text would read back with %d variables instead of %d: a value contains a line break or a quote that dotenv reads differently", len(got), len(keys))
+	}
+	for i := range keys {
+		if got[i] != keys[i] {
+			return "", fmt.Errorf("the environment text would read back with the variable %q instead of %q", got[i], keys[i])
+		}
+	}
+	return text, nil
 }

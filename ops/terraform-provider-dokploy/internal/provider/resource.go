@@ -26,6 +26,12 @@ import (
 	"github.com/Flots-app/dokploy/ops/terraform-provider-dokploy/internal/client"
 )
 
+// warningError, returned by a Delete hook, makes the engine report a warning: the
+// object is gone, but something around it needs the operator's attention.
+type warningError struct{ msg string }
+
+func (w warningError) Error() string { return w.msg }
+
 // Obj is the attributes of a resource, as Terraform values.
 type Obj map[string]tftypes.Value
 
@@ -424,6 +430,9 @@ func (s *Spec) fieldsChanged(plan, state Obj, remote map[string]any) bool {
 		if !ok || p.Type() == nil || !p.IsFullyKnown() {
 			continue
 		}
+		if f.Opaque && p.IsNull() {
+			continue // not declared: left to what Dokploy holds
+		}
 		prev, ok := state[f.Name]
 		if f.Opaque && (!ok || prev.Type() == nil || prev.IsNull()) {
 			// First time the attribute is declared: Dokploy may already hold
@@ -514,13 +523,19 @@ func (s *Spec) stateVals(id string, remote map[string]any, ref Obj, applying boo
 	return out
 }
 
-func (r *genericResource) writeEnv(ctx context.Context, id string, plan, cfg Obj, remote map[string]any) error {
+func (r *genericResource) writeEnv(ctx context.Context, id string, plan, cfg, state Obj, remote map[string]any) error {
 	if r.spec.Env == nil || !envManaged(plan) {
 		return nil
 	}
 	public, _ := mapOf(plan["env"])
 	secretKeys, _ := setOf(plan["secret_env_keys"])
-	wo, _ := mapOf(cfg["secret_env_wo"])
+	// Write-only values are sent on creation, and afterwards only when
+	// secret_env_wo_version changes: otherwise a secret rotated in Dokploy would be
+	// silently reverted by any unrelated update.
+	var wo map[string]string
+	if state == nil || !plan["secret_env_wo_version"].Equal(state["secret_env_wo_version"]) {
+		wo, _ = mapOf(cfg["secret_env_wo"])
+	}
 	current := parseEnv(asString(remote[r.spec.envAPI()]))
 	text, err := renderEnv(public, secretKeys, wo, current)
 	if err != nil {
@@ -561,6 +576,11 @@ func (r *genericResource) Create(ctx context.Context, req resource.CreateRequest
 	in := Input{Body: r.spec.body(plan, cfg, true), Plan: plan, Config: cfg}
 	id, err := r.spec.Create(ctx, r.client, in)
 	if err != nil {
+		if id != "" {
+			// The object exists in Dokploy: keep it in the state, tainted, so a
+			// retry replaces it instead of creating a duplicate.
+			resp.State.Raw = finalize(ty, r.partialState(id, plan))
+		}
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot create %s", r.spec.Name), err.Error())
 		return
 	}
@@ -572,7 +592,7 @@ func (r *genericResource) Create(ctx context.Context, req resource.CreateRequest
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot read the new %s", r.spec.Name), err.Error())
 		return
 	}
-	if err := r.writeEnv(ctx, id, plan, cfg, remote); err != nil {
+	if err := r.writeEnv(ctx, id, plan, cfg, nil, remote); err != nil {
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot set the environment of the new %s", r.spec.Name), err.Error())
 		return
 	}
@@ -654,7 +674,7 @@ func (r *genericResource) Update(ctx context.Context, req resource.UpdateRequest
 			return
 		}
 	}
-	if err := r.writeEnv(ctx, id, plan, cfg, remote); err != nil {
+	if err := r.writeEnv(ctx, id, plan, cfg, state, remote); err != nil {
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot set the environment of %s %s", r.spec.Name, id), err.Error())
 		return
 	}
@@ -674,6 +694,11 @@ func (r *genericResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 	id, _ := stringOf(state["id"])
 	if err := r.spec.Delete(ctx, r.client, id); err != nil && !errors.Is(err, client.ErrNotFound) {
+		var w warningError
+		if errors.As(err, &w) {
+			resp.Diagnostics.AddWarning(fmt.Sprintf("%s %s was removed, with a warning", r.spec.Name, id), w.msg)
+			return
+		}
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot delete %s %s", r.spec.Name, id), err.Error())
 	}
 }
@@ -744,7 +769,8 @@ func typesSet(ctx context.Context, v tftypes.Value) (types.Set, diag.Diagnostics
 	return types.SetValueFrom(ctx, types.StringType, elems)
 }
 
-// ValidateConfig checks the environment declarations.
+// ValidateConfig checks the environment declarations at plan time, before
+// anything is created.
 func (r *genericResource) ValidateConfig(_ context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	if r.spec.Env == nil || req.Config.Raw.IsNull() {
 		return
@@ -755,25 +781,40 @@ func (r *genericResource) ValidateConfig(_ context.Context, req resource.Validat
 	}
 	public, okPub := mapOf(cfg["env"])
 	secret, okSec := setOf(cfg["secret_env_keys"])
-	if okPub && okSec {
-		declared := map[string]bool{}
+	declared := map[string]bool{}
+	if okSec {
 		for _, k := range secret {
 			declared[k] = true
-		}
-		for k := range public {
-			if declared[k] {
-				resp.Diagnostics.AddAttributeError(path.Root("env"), "Variable declared twice", fmt.Sprintf("%q is in env and in secret_env_keys.", k))
+			if !envKeyPattern.MatchString(k) {
+				resp.Diagnostics.AddAttributeError(path.Root("secret_env_keys"), "Invalid variable name", fmt.Sprintf("%q is not a valid environment variable name.", k))
 			}
 		}
 	}
-	if wo, ok := mapOf(cfg["secret_env_wo"]); ok && okSec {
-		declared := map[string]bool{}
-		for _, k := range secret {
-			declared[k] = true
+	if okPub {
+		for k, v := range public {
+			if !envKeyPattern.MatchString(k) {
+				resp.Diagnostics.AddAttributeError(path.Root("env"), "Invalid variable name", fmt.Sprintf("%q is not a valid environment variable name.", k))
+			}
+			if declared[k] {
+				resp.Diagnostics.AddAttributeError(path.Root("env"), "Variable declared twice", fmt.Sprintf("%q is in env and in secret_env_keys.", k))
+			}
+			if why := publicRawProblem(v); why != "" {
+				resp.Diagnostics.AddAttributeError(path.Root("env"), "Value dotenv would read differently", fmt.Sprintf("%q: %s.", k, why))
+			}
 		}
-		for k := range wo {
-			if !declared[k] {
-				resp.Diagnostics.AddAttributeError(path.Root("secret_env_wo"), "Unknown secret variable", fmt.Sprintf("%q is not listed in secret_env_keys.", k))
+	}
+	if wo, ok := mapOf(cfg["secret_env_wo"]); ok && len(wo) > 0 {
+		if cfg["secret_env_keys"].IsNull() {
+			resp.Diagnostics.AddAttributeError(path.Root("secret_env_wo"), "Unknown secret variable", "secret_env_wo is set but secret_env_keys is not: list the variables it sets in secret_env_keys.")
+		}
+		if okSec {
+			for k, v := range wo {
+				if !declared[k] {
+					resp.Diagnostics.AddAttributeError(path.Root("secret_env_wo"), "Unknown secret variable", fmt.Sprintf("%q is not listed in secret_env_keys.", k))
+				}
+				if _, err := quoteSecretValue(v); err != nil {
+					resp.Diagnostics.AddAttributeError(path.Root("secret_env_wo"), "Value cannot be stored", fmt.Sprintf("%q: %s.", k, err))
+				}
 			}
 		}
 	}
