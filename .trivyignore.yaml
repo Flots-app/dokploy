@@ -1,61 +1,22 @@
 # Trivy exceptions. Every entry needs a statement; vulnerabilities also need an
 # expiry so the exception cannot outlive the debt it tracks.
 #
-# Baseline recorded when Trivy was adopted (2026-10-24): CRITICAL findings that
-# already shipped. They stop being ignored on the expiry date, which turns the
-# scheduled Trivy run red until the dependency is upgraded. Do not extend an
-# expiry without a linked tracking issue; upgrade the dependency instead.
+# There is no `vulnerabilities:` section on purpose. The baseline recorded when
+# Trivy was adopted (2026-10-24) expired on 2026-11-21 and turned the gate red,
+# as designed; it was cleared by upgrading, not by renewing it: Node.js base
+# image, pnpm, Docker, Railpack, pack and esbuild. Do not bring it back to make a
+# red run green. If an advisory has no fix to upgrade to, add an entry like:
+#
+#   vulnerabilities:
+#     - id: CVE-YYYY-NNNNN
+#       purls:
+#         - "pkg:golang/stdlib@v1.2.3"
+#       expired_at: YYYY-MM-DD
+#       statement: "why it is not exploitable here, and what to upgrade once a fix ships"
 #
 # Scope every vulnerability entry with `purls` (package and exact version): an
 # unscoped ID would also hide the same advisory in a package where it is new.
 # purls match in the repository scan and in the image scan alike.
-
-vulnerabilities:
-  - id: CVE-2026-59873
-    purls:
-      - "pkg:npm/tar@6.2.1"
-      - "pkg:npm/tar@7.4.3"
-      - "pkg:npm/tar@7.5.2"
-    expired_at: 2026-11-21
-    statement: "Image baseline, upgrade required: tar@6.2.1, 7.4.3 and 7.5.2 -> 7.5.19. Copies bundled with npm in the Node.js base image (6.2.1, 7.4.3) and with the pnpm that corepack downloads (7.5.2), not with the lockfile"
-
-  # Image baseline: what the Dockerfile installs outside the lockfile. Each entry
-  # goes away with a newer Docker, pack, Railpack, esbuild or base image.
-  - id: CVE-2025-68121
-    purls:
-      - "pkg:golang/stdlib@v1.20.12"
-      - "pkg:golang/stdlib@v1.23.4"
-      - "pkg:golang/stdlib@v1.25.3"
-      - "pkg:golang/stdlib@v1.25.5"
-    expired_at: 2026-11-21
-    statement: "Image baseline, rebuild with Go >= 1.25.7: esbuild 0.20.2 (v1.20.12), Railpack (v1.23.4), Docker 28.5.2 (v1.25.3), pack 0.39.1 (v1.25.5)"
-  - id: CVE-2024-24790
-    purls:
-      - "pkg:golang/stdlib@v1.20.12"
-    expired_at: 2026-11-21
-    statement: "Image baseline, upgrade required: esbuild 0.20.2 binary built with Go 1.20.12 (pinned by pnpm.overrides in package.json)"
-  - id: CVE-2026-33186
-    purls:
-      - "pkg:golang/google.golang.org/grpc@v1.68.1"
-      - "pkg:golang/google.golang.org/grpc@v1.72.2"
-    expired_at: 2026-11-21
-    statement: "Image baseline, upgrade required: Railpack 0.15.4 (grpc v1.68.1) and Docker 28.5.2 dockerd (grpc v1.72.2) -> grpc 1.79.3"
-  # Published 2026-11-05, after the baseline: no pack release has the fix yet.
-  - id: CVE-2026-105769
-    purls:
-      - "pkg:golang/github.com/chainguard-dev/kaniko@v1.25.5"
-    expired_at: 2026-11-21
-    statement: "Upgrade pack once a release ships kaniko >= 1.25.20: pack 0.39.1 bundles kaniko v1.25.5, and the latest pack (v0.40.10) and its main branch still pin v1.25.16. The flaw leaks an Azure (Entra ID) token the build holds; Flots builds run on Hetzner without Azure credentials"
-  - id: CVE-2026-33845
-    purls:
-      - "pkg:deb/debian/libgnutls30@3.7.9-2%2Bdeb12u4?arch=amd64&distro=debian-12.11"
-    expired_at: 2026-11-21
-    statement: "Image baseline, upgrade required: node:24.4.0-slim ships libgnutls30 3.7.9-2+deb12u4 -> 3.7.9-2+deb12u7"
-  - id: CVE-2026-42010
-    purls:
-      - "pkg:deb/debian/libgnutls30@3.7.9-2%2Bdeb12u4?arch=amd64&distro=debian-12.11"
-    expired_at: 2026-11-21
-    statement: "Image baseline, upgrade required: node:24.4.0-slim ships libgnutls30 3.7.9-2+deb12u4 -> 3.7.9-2+deb12u7"
 
 secrets:
   - id: private-key
