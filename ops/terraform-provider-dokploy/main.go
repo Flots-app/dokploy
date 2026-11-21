@@ -5,7 +5,8 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"fmt"
+	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 
@@ -29,6 +30,8 @@ func main() {
 		Debug:   debug,
 	})
 	if err != nil {
-		log.Fatal(err)
+		// Terraform shows what a plugin writes to stderr when it fails to start.
+		fmt.Fprintf(os.Stderr, "terraform-provider-dokploy: %v\n", err)
+		os.Exit(1)
 	}
 }

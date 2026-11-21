@@ -54,7 +54,7 @@ var notifCases = []notifCase{
 	{typ: "pushover", plain: `priority = 1`, secretHCL: `
   user_key_wo  = "FIXTURE-PUSHOVER-USER"
   api_token_wo = "FIXTURE-PUSHOVER-TOKEN"`, secretKey: "userKey", secretValue: "FIXTURE-PUSHOVER-USER", extraKey: "apiToken", extraValue: "FIXTURE-PUSHOVER-TOKEN"},
-	{typ: "custom", plain: `endpoint = "https://hooks.example.test/dokploy"`, secretHCL: `headers_wo = { Authorization = "Bearer FIXTURE-CUSTOM-HEADER" }`, secretKey: "headers", secretValue: ""},
+	{typ: "custom", plain: `endpoint = "https://hooks.example.test/dokploy"`, secretHCL: `headers_wo = { X-Fixture = "FIXTURE-CUSTOM-HEADER" }`, secretKey: "headers", secretValue: ""},
 }
 
 // TestNotificationLifecycles creates, updates (without repeating the secrets),
@@ -79,7 +79,7 @@ resource "dokploy_notification_%s" "n" {
 			secretOf := func(sub map[string]any, key string) string {
 				if tc.typ == "custom" {
 					h, _ := sub["headers"].(map[string]any)
-					return fmt.Sprint(h["Authorization"])
+					return fmt.Sprint(h["X-Fixture"])
 				}
 				return fmt.Sprint(sub[key])
 			}
@@ -90,7 +90,7 @@ resource "dokploy_notification_%s" "n" {
 			}
 			wantSecret := tc.secretValue
 			if tc.typ == "custom" {
-				wantSecret = "Bearer FIXTURE-CUSTOM-HEADER"
+				wantSecret = "FIXTURE-CUSTOM-HEADER"
 			}
 			steps := []resource.TestStep{
 				{
@@ -150,7 +150,7 @@ resource "dokploy_notification_%s" "n" {
 			}
 			if tc.typ == "custom" {
 				steps[0].ConfigStateChecks = append(steps[0].ConfigStateChecks,
-					statecheck.ExpectKnownValue(addr, tfjsonpath.New("header_names"), knownvalue.SetExact([]knownvalue.Check{knownvalue.StringExact("Authorization")})),
+					statecheck.ExpectKnownValue(addr, tfjsonpath.New("header_names"), knownvalue.SetExact([]knownvalue.Check{knownvalue.StringExact("X-Fixture")})),
 					statecheck.ExpectKnownValue(addr, tfjsonpath.New("headers_wo"), knownvalue.Null()))
 			}
 			resource.UnitTest(t, resource.TestCase{ProtoV6ProviderFactories: factories(), Steps: steps})
