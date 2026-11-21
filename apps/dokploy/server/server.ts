@@ -4,6 +4,7 @@ import {
 	createDefaultServerTraefikConfig,
 	createDefaultTraefikConfig,
 	IS_CLOUD,
+	initAuditLogRetentionCronJob,
 	initCancelDeployments,
 	initCronJobs,
 	initInterruptedServiceMigrations,
@@ -69,6 +70,7 @@ void app.prepare().then(async () => {
 			await initVolumeBackupsCronJobs();
 			await sendDokployRestartNotifications();
 		}
+		initAuditLogRetentionCronJob();
 		await initInterruptedServiceMigrations();
 		if (!IS_CLOUD) {
 			await startGithubRunnerController({

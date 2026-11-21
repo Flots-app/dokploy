@@ -749,6 +749,12 @@
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
   },
+  "300a914c4cf964b1b59288b8755d504b_0": {
+    "author": "s1nyx",
+    "comment": "createAuditLog failure log: organization id, action, resource type and the driver's own error code and message. The statement and its parameters (e-mail, metadata) never reach it, see failureOf and the DB test that checks the log.",
+    "false_positive": true,
+    "ignored_at": "2026-11-21T11:00:00Z"
+  },
   "3387ff8ef226c7d31eb2e3bcdbc1ad54_0": {
     "author": "baseline",
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
@@ -2098,6 +2104,18 @@
     "comment": "Baseline from when Bearer joined the CI: the finding predates it and has not been triaged. Fix it and delete this entry, or replace this comment with the reason it is accepted.",
     "false_positive": false,
     "ignored_at": "2026-10-24T05:37:23Z"
+  },
+  "a4bc659dade49d08f67b56b9c15bbd72_0": {
+    "author": "s1nyx",
+    "comment": "Audit log retention job: logs how many entries it removed and the retention in days. No personal data.",
+    "false_positive": true,
+    "ignored_at": "2026-11-21T11:00:00Z"
+  },
+  "a4bc659dade49d08f67b56b9c15bbd72_1": {
+    "author": "s1nyx",
+    "comment": "Audit log retention job failure: failureOf reports the driver's error code and message only. No personal data.",
+    "false_positive": true,
+    "ignored_at": "2026-11-21T11:00:00Z"
   },
   "a6e913535118a1638266b7f43227f902_0": {
     "author": "baseline",
