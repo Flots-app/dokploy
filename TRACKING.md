@@ -281,7 +281,7 @@ Released in `v0.29.14-flots.28` ([Flots-app/dokploy#78](https://github.com/Flots
 
 ## Phase 3: job classes
 
-Tracked in [Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79), with phases 4 to 6.
+Released in `v0.29.14-flots.29` ([Flots-app/dokploy#79](https://github.com/Flots-app/dokploy/pull/79)); no class is configured on the Flots-app pool yet. Phases 4 to 6 are tracked in [Flots-app/dokploy#81](https://github.com/Flots-app/dokploy/pull/81).
 
 
 - [x] Job classes per pool (suffix, architecture, own fallback), each with its
