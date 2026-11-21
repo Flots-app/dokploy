@@ -1,5 +1,7 @@
 import {
 	createAuditLog,
+	failureOf,
+	getAuditLogRetentionDays,
 	redactMetadata,
 } from "@dokploy/server/services/audit-log";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,6 +118,7 @@ describe("createAuditLog", () => {
 			expect.objectContaining({
 				organizationId: "org-1",
 				reason: "connection lost",
+				code: undefined,
 			}),
 		);
 	});
@@ -128,5 +131,49 @@ describe("createAuditLog", () => {
 		await expect(
 			createAuditLog({ ...input, metadata: circular }),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("failureOf", () => {
+	it("reports the driver error and never drizzle's statement with its parameters", () => {
+		const driverError = Object.assign(
+			new Error('violates foreign key constraint "audit_log_org_fk"'),
+			{ code: "23503" },
+		);
+		const wrapped = new Error(
+			"Failed query: insert into audit_log values ($1)\nparams: jane.doe@example.test",
+			{ cause: driverError },
+		);
+
+		const failure = failureOf(wrapped);
+
+		expect(failure).toEqual({
+			code: "23503",
+			reason: 'violates foreign key constraint "audit_log_org_fk"',
+		});
+		expect(JSON.stringify(failure)).not.toContain("jane.doe@example.test");
+	});
+
+	it("falls back to the error itself when it has no cause", () => {
+		expect(failureOf(new Error("connection lost"))).toEqual({
+			code: undefined,
+			reason: "connection lost",
+		});
+		expect(failureOf("boom")).toEqual({ code: undefined, reason: "boom" });
+	});
+});
+
+describe("getAuditLogRetentionDays", () => {
+	it("keeps a year by default and when the value is invalid", () => {
+		expect(getAuditLogRetentionDays(undefined)).toBe(365);
+		expect(getAuditLogRetentionDays("")).toBe(365);
+		expect(getAuditLogRetentionDays("abc")).toBe(365);
+		expect(getAuditLogRetentionDays("-3")).toBe(365);
+		expect(getAuditLogRetentionDays("1.5")).toBe(365);
+	});
+
+	it("uses a positive number of days, and 0 keeps everything", () => {
+		expect(getAuditLogRetentionDays("90")).toBe(90);
+		expect(getAuditLogRetentionDays("0")).toBeNull();
 	});
 });

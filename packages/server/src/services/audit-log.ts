@@ -1,7 +1,17 @@
 import { db } from "@dokploy/server/db";
 import type { AuditAction, AuditResourceType } from "@dokploy/server/db/schema";
 import { auditLog } from "@dokploy/server/db/schema";
-import { and, count, desc, eq, gte, ilike, lte, type SQL } from "drizzle-orm";
+import {
+	and,
+	count,
+	desc,
+	eq,
+	gte,
+	ilike,
+	inArray,
+	lt,
+	type SQL,
+} from "drizzle-orm";
 
 export type { AuditAction, AuditResourceType };
 
@@ -61,6 +71,24 @@ const parseMetadata = (metadata: string | null) => {
 };
 
 /**
+ * What is safe to log about a failed query. drizzle wraps the driver error and
+ * puts the whole statement, parameters included, in its own message: here that
+ * would write the user's e-mail and the entry's metadata to the server logs, so
+ * only the driver's own error is reported.
+ */
+export const failureOf = (error: unknown) => {
+	const cause = error instanceof Error && error.cause ? error.cause : error;
+	const code =
+		cause && typeof cause === "object" && "code" in cause
+			? String(cause.code)
+			: undefined;
+	return {
+		code,
+		reason: cause instanceof Error ? cause.message : String(cause),
+	};
+};
+
+/**
  * Records one entry of the audit trail. It never throws: a failing audit write
  * must not break the operation being audited, so the failure is only logged.
  */
@@ -82,7 +110,7 @@ export const createAuditLog = async (input: CreateAuditLogInput) => {
 			organizationId: input.organizationId,
 			action: input.action,
 			resourceType: input.resourceType,
-			reason: error instanceof Error ? error.message : String(error),
+			...failureOf(error),
 		});
 	}
 };
@@ -123,7 +151,11 @@ export const getAuditLogs = async (input: GetAuditLogsInput) => {
 		conditions.push(eq(auditLog.resourceType, input.resourceType));
 	}
 	if (input.from) conditions.push(gte(auditLog.createdAt, input.from));
-	if (input.to) conditions.push(lte(auditLog.createdAt, input.to));
+	// Timestamps keep microseconds but a Date stops at the millisecond: `to` must
+	// cover that whole millisecond, which `<= to` would cut at its first instant.
+	if (input.to) {
+		conditions.push(lt(auditLog.createdAt, new Date(input.to.getTime() + 1)));
+	}
 	const where = and(...conditions);
 
 	const [rows, [totalRow]] = await Promise.all([
@@ -152,4 +184,45 @@ export const getAuditLogs = async (input: GetAuditLogsInput) => {
 		})),
 		total: totalRow?.value ?? 0,
 	};
+};
+
+const DEFAULT_RETENTION_DAYS = 365;
+const PURGE_BATCH_SIZE = 5_000;
+
+/**
+ * How long entries are kept, from `AUDIT_LOG_RETENTION_DAYS`: a positive number
+ * of days, 365 when unset or invalid, `null` (keep everything) when set to 0.
+ */
+export const getAuditLogRetentionDays = (
+	value = process.env.AUDIT_LOG_RETENTION_DAYS,
+): number | null => {
+	if (value === undefined || value.trim() === "") return DEFAULT_RETENTION_DAYS;
+	const days = Number(value);
+	if (!Number.isInteger(days) || days < 0) return DEFAULT_RETENTION_DAYS;
+	return days === 0 ? null : days;
+};
+
+/** Deletes the entries older than `olderThan`, in batches, and returns how many went. */
+export const purgeAuditLogs = async (
+	olderThan: Date,
+	batchSize = PURGE_BATCH_SIZE,
+) => {
+	let purged = 0;
+	for (;;) {
+		const batch = await db
+			.delete(auditLog)
+			.where(
+				inArray(
+					auditLog.id,
+					db
+						.select({ id: auditLog.id })
+						.from(auditLog)
+						.where(lt(auditLog.createdAt, olderThan))
+						.limit(batchSize),
+				),
+			)
+			.returning({ id: auditLog.id });
+		purged += batch.length;
+		if (batch.length < batchSize) return purged;
+	}
 };

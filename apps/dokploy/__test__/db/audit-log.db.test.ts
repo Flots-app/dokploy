@@ -3,8 +3,9 @@ import { auditLog } from "@dokploy/server/db/schema";
 import {
 	createAuditLog,
 	getAuditLogs,
+	purgeAuditLogs,
 } from "@dokploy/server/services/audit-log";
-import { inArray } from "drizzle-orm";
+import { count, inArray, lt } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLogRouter } from "@/server/api/routers/audit-log";
 import {
@@ -155,26 +156,30 @@ describe("audit log against PostgreSQL", () => {
 	});
 
 	it("filters by date range, both ends included", async () => {
-		const before = new Date(Date.now() - 60_000);
-		const after = new Date(Date.now() + 60_000);
+		const { items } = await getAuditLogs({ organizationId: a.organizationId });
+		const times = items.map((entry) => entry.createdAt.getTime());
+		const newest = new Date(Math.max(...times));
+		const oldest = new Date(Math.min(...times));
+		const msAfter = new Date(newest.getTime() + 1);
+		const msBefore = new Date(oldest.getTime() - 1);
 
-		const inside = await getAuditLogs({
+		const all = await getAuditLogs({
 			organizationId: a.organizationId,
-			from: before,
-			to: after,
+			from: oldest,
+			to: newest,
 		});
-		const future = await getAuditLogs({
+		const afterTheNewest = await getAuditLogs({
 			organizationId: a.organizationId,
-			from: after,
+			from: msAfter,
 		});
-		const past = await getAuditLogs({
+		const beforeTheOldest = await getAuditLogs({
 			organizationId: a.organizationId,
-			to: before,
+			to: msBefore,
 		});
 
-		expect(inside.total).toBeGreaterThan(0);
-		expect(future.total).toBe(0);
-		expect(past.total).toBe(0);
+		expect(all.total).toBe(items.length);
+		expect(afterTheNewest.total).toBe(0);
+		expect(beforeTheOldest.total).toBe(0);
 	});
 
 	it("pages newest first without losing or repeating an entry", async () => {
@@ -219,7 +224,61 @@ describe("audit log against PostgreSQL", () => {
 		).resolves.toBeUndefined();
 
 		expect(error).toHaveBeenCalled();
+		// Neither the e-mail nor the metadata may reach the logs.
+		const logged = JSON.stringify(error.mock.calls);
+		expect(logged).not.toContain(a.email);
+		expect(logged).toContain("23503");
 		error.mockRestore();
+	});
+});
+
+describe("retention", () => {
+	it("removes only the entries older than the cutoff, in batches", async () => {
+		const retained = await createOrganization("audit-retention");
+		const day = 24 * 60 * 60 * 1000;
+		const entry = (name: string, ageInDays: number) => ({
+			organizationId: retained.organizationId,
+			userId: retained.userId,
+			userEmail: retained.email,
+			userRole: "owner",
+			action: "create",
+			resourceType: "project",
+			resourceName: name,
+			createdAt: new Date(Date.now() - ageInDays * day),
+		});
+		await db
+			.insert(auditLog)
+			.values([
+				entry("old-1", 400),
+				entry("old-2", 399),
+				entry("old-3", 398),
+				entry("recent", 1),
+			]);
+
+		// The purge is global: count the old rows other files may have left behind.
+		const cutoff = new Date(Date.now() - 365 * day);
+		const [expiredRow] = await db
+			.select({ value: count() })
+			.from(auditLog)
+			.where(lt(auditLog.createdAt, cutoff));
+		const expired = expiredRow?.value ?? 0;
+
+		// Batches of 2 over the expired entries: the loop must go round twice.
+		const purged = await purgeAuditLogs(cutoff, 2);
+
+		const { items } = await getAuditLogs({
+			organizationId: retained.organizationId,
+		});
+		expect(expired).toBeGreaterThanOrEqual(3);
+		expect(purged).toBe(expired);
+		expect(items.map((e) => e.resourceName)).toEqual(["recent"]);
+		await db
+			.delete(auditLog)
+			.where(inArray(auditLog.organizationId, [retained.organizationId]));
+	});
+
+	it("purges nothing when everything is recent", async () => {
+		expect(await purgeAuditLogs(new Date(0))).toBe(0);
 	});
 });
 
