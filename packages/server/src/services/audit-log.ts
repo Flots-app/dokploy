@@ -27,7 +27,7 @@ export interface CreateAuditLogInput {
 	metadata?: Record<string, unknown>;
 }
 
-const REDACTED = "[redacted]";
+export const REDACTED = "[redacted]";
 const MAX_METADATA_LENGTH = 8_000;
 const MAX_METADATA_DEPTH = 6;
 /** Keys whose value must never reach the audit trail, whatever a call site passes. */

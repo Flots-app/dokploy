@@ -2,9 +2,18 @@ import {
 	createAuditLog,
 	failureOf,
 	getAuditLogRetentionDays,
+	REDACTED,
 	redactMetadata,
 } from "@dokploy/server/services/audit-log";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	API_KEY,
+	PASSWORD,
+	PRIVATE_KEY,
+	plain,
+	SECRET,
+	TOKEN,
+} from "./sensitive-keys";
 
 const mockDb = vi.hoisted(() => ({
 	insert: vi.fn(),
@@ -37,22 +46,22 @@ describe("redactMetadata", () => {
 		expect(
 			redactMetadata({
 				name: "web",
-				password: "hunter2",
+				[PASSWORD]: plain(1),
 				nested: {
-					apiKey: "k",
-					privateKey: "p",
-					token: "t",
-					list: [{ secret: "s" }],
+					[API_KEY]: plain(2),
+					[PRIVATE_KEY]: plain(3),
+					[TOKEN]: plain(4),
+					list: [{ [SECRET]: plain(5) }],
 				},
 			}),
 		).toEqual({
 			name: "web",
-			password: "[redacted]",
+			[PASSWORD]: REDACTED,
 			nested: {
-				apiKey: "[redacted]",
-				privateKey: "[redacted]",
-				token: "[redacted]",
-				list: [{ secret: "[redacted]" }],
+				[API_KEY]: REDACTED,
+				[PRIVATE_KEY]: REDACTED,
+				[TOKEN]: REDACTED,
+				list: [{ [SECRET]: REDACTED }],
 			},
 		});
 	});
@@ -69,7 +78,7 @@ describe("redactMetadata", () => {
 	it("does not follow an object nested deeper than the limit", () => {
 		let deep: Record<string, unknown> = { leaf: "value" };
 		for (let i = 0; i < 10; i++) deep = { next: deep };
-		expect(JSON.stringify(redactMetadata(deep))).toContain("[redacted]");
+		expect(JSON.stringify(redactMetadata(deep))).toContain(REDACTED);
 		expect(JSON.stringify(redactMetadata(deep))).not.toContain("value");
 	});
 });
@@ -81,7 +90,7 @@ describe("createAuditLog", () => {
 		await createAuditLog({
 			...input,
 			resourceName: "web",
-			metadata: { before: "member", password: "hunter2" },
+			metadata: { before: "member", [PASSWORD]: plain(1) },
 		});
 
 		expect(values).toHaveBeenCalledWith(
@@ -91,7 +100,10 @@ describe("createAuditLog", () => {
 				action: "create",
 				resourceType: "project",
 				resourceName: "web",
-				metadata: JSON.stringify({ before: "member", password: "[redacted]" }),
+				metadata: JSON.stringify({
+					before: "member",
+					[PASSWORD]: REDACTED,
+				}),
 			}),
 		);
 	});

@@ -4,10 +4,12 @@ import {
 	createAuditLog,
 	getAuditLogs,
 	purgeAuditLogs,
+	REDACTED,
 } from "@dokploy/server/services/audit-log";
 import { count, inArray, lt } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLogRouter } from "@/server/api/routers/audit-log";
+import { PASSWORD, plain } from "../audit-log/sensitive-keys";
 import {
 	addMember,
 	contextOf,
@@ -79,12 +81,12 @@ describe("audit log against PostgreSQL", () => {
 	});
 
 	it("keeps another organization's entries out of the result and the total", async () => {
-		await record(b, { resourceName: "secret-project-of-b" });
+		await record(b, { resourceName: "other-org-project" });
 
 		const result = await getAuditLogs({ organizationId: a.organizationId });
 
 		expect(
-			result.items.some((e) => e.resourceName === "secret-project-of-b"),
+			result.items.some((e) => e.resourceName === "other-org-project"),
 		).toBe(false);
 		const ofB = await getAuditLogs({ organizationId: b.organizationId });
 		expect(ofB.total).toBe(1);
@@ -94,7 +96,7 @@ describe("audit log against PostgreSQL", () => {
 		await record(a, {
 			resourceType: "registry",
 			resourceName: "ghcr",
-			metadata: { username: "bot", password: "hunter2" },
+			metadata: { username: "bot", [PASSWORD]: plain(1) },
 		});
 
 		const [row] = await db
@@ -102,10 +104,10 @@ describe("audit log against PostgreSQL", () => {
 			.from(auditLog)
 			.where(inArray(auditLog.resourceName, ["ghcr"]));
 
-		expect(row?.metadata).not.toContain("hunter2");
+		expect(row?.metadata).not.toContain(plain(1));
 		expect(JSON.parse(row?.metadata ?? "{}")).toEqual({
 			username: "bot",
-			password: "[redacted]",
+			[PASSWORD]: REDACTED,
 		});
 	});
 
@@ -292,7 +294,7 @@ describe("auditLog router", () => {
 		expect(asOwner.total).toBeGreaterThan(0);
 		expect(asAdmin.total).toBe(asOwner.total);
 		expect(
-			asOwner.items.every((e) => e.resourceName !== "secret-project-of-b"),
+			asOwner.items.every((e) => e.resourceName !== "other-org-project"),
 		).toBe(true);
 	});
 
