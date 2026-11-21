@@ -2,9 +2,12 @@
  * The drain an OS update run puts on a GitHub runner machine, as the runner
  * controller's pure pieces see it: the planner never interrupts a job under
  * it, the machine is handed over only once empty and unable to arm itself,
- * and the runner controller's own updates wait for it. The run itself, on a
- * real database, is in __test__/db/os-update-runner.db.test.ts.
+ * and the runner controller's own updates wait for it. A Mac is managed
+ * through its VM, and its macOS read with sw_vers. The runs themselves, on a
+ * real database, are in __test__/db/os-update-runner.db.test.ts and
+ * os-update-mac.db.test.ts.
  */
+import { execFileSync } from "node:child_process";
 import type { GithubRunnerDrain } from "@dokploy/server/db/schema";
 import type { GithubRunner } from "@dokploy/server/utils/github-runners/github-api";
 import type { LocalSlot } from "@dokploy/server/utils/github-runners/probe";
@@ -16,7 +19,15 @@ import {
 	rolloutGate,
 	updatingMachines,
 } from "@dokploy/server/utils/github-runners/rollout";
-import { keyOf, machineOf } from "@dokploy/server/utils/os-updates/controller";
+import {
+	isManagedRunnerNode,
+	keyOf,
+	MACOS_VERSION_COMMAND,
+	machineOf,
+	macosChanged,
+	macosLabel,
+	parseMacosVersion,
+} from "@dokploy/server/utils/os-updates/controller";
 import {
 	assertNotInstallingOsUpdates,
 	isOsUpdateDrain,
@@ -257,4 +268,54 @@ describe("the machine of a run", () => {
 		expect(node).toEqual({ kind: "runner", id: "abc" });
 		expect(keyOf(server)).not.toBe(keyOf(node));
 	});
+});
+
+describe("a Mac runner machine", () => {
+	it("is managed through its VM while the VM runs", () => {
+		expect(isManagedRunnerNode({ platform: "macos", phase: "ready" })).toBe(
+			true,
+		);
+		expect(isManagedRunnerNode({ platform: "macos", phase: "draining" })).toBe(
+			true,
+		);
+		// A stopped Mac runner has its VM stopped: nothing to update in it.
+		expect(isManagedRunnerNode({ platform: "macos", phase: "stopped" })).toBe(
+			false,
+		);
+		expect(isManagedRunnerNode({ platform: "linux", phase: "stopped" })).toBe(
+			true,
+		);
+		expect(isManagedRunnerNode({ platform: "linux", phase: "error" })).toBe(
+			false,
+		);
+	});
+
+	it("reads macOS as sw_vers prints it, and tells another version apart", () => {
+		const before = parseMacosVersion("version=26.0\nbuild=25A100\nextra=\n");
+		expect(before).toEqual({ version: "26.0", build: "25A100", extra: "" });
+		expect(parseMacosVersion("version=\nbuild=\n")).toBeNull();
+		expect(parseMacosVersion("")).toBeNull();
+		if (!before) return;
+		expect(macosLabel(before)).toBe("macOS 26.0 (25A100)");
+		const rsr = { ...before, extra: "(a)" };
+		expect(macosLabel(rsr)).toBe("macOS 26.0 (a) (25A100)");
+		expect(macosChanged(before, before)).toBe(false);
+		// A Rapid Security Response changes neither the version nor always
+		// the build the owner sees first: its extra counts.
+		expect(macosChanged(before, rsr)).toBe(true);
+		expect(macosChanged(before, { ...before, build: "25A101" })).toBe(true);
+		expect(macosChanged(before, { ...before, version: "26.1" })).toBe(true);
+	});
+
+	it.skipIf(process.platform !== "darwin")(
+		"reads this Mac's macOS with the command the hand-off runs",
+		() => {
+			const output = execFileSync("/bin/sh", ["-c", MACOS_VERSION_COMMAND], {
+				encoding: "utf8",
+			});
+			const macos = parseMacosVersion(output);
+			expect(macos?.version).toMatch(/^\d+\.\d+/);
+			expect(macos?.build).toMatch(/^[0-9A-Za-z]+$/);
+		},
+	);
 });

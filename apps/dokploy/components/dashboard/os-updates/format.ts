@@ -7,6 +7,7 @@ import type { RouterOutputs } from "@/utils/api";
 export type OsUpdateOverview = RouterOutputs["osUpdate"]["overview"];
 export type OsUpdateServerRow = OsUpdateOverview["servers"][number];
 export type OsUpdateRunnerNodeRow = OsUpdateOverview["runnerNodes"][number];
+export type OsUpdateMacRow = OsUpdateOverview["macs"][number];
 /** A row of the machines table: a server, or a Linux GitHub runner machine. */
 export type OsUpdateMachineRow =
 	| (OsUpdateServerRow & { kind: "server"; key: string })
@@ -122,11 +123,15 @@ export const openWindowWarning = (
 /** What cancelling a run that has not started means for its server. */
 export const cancelRunText = (run: {
 	trigger: "schedule" | "manual";
+	kind?: "install" | "handoff";
 	status?: string;
 	machineName: string | null;
 	configurationName: string | null;
 }) => {
 	const server = run.machineName ?? "The server";
+	if (run.kind === "handoff") {
+		return `${server} takes jobs again at once, whether or not its owner updated macOS. Hand it off again for a later update.`;
+	}
 	// A runner machine waiting for its jobs: back to work at once.
 	const back = run.status === "running" ? " It takes jobs again at once." : "";
 	return run.trigger === "schedule"
@@ -166,14 +171,23 @@ export const machineDetail = (row: OsUpdateMachineRow) => {
 	if (row.kind === "server") {
 		return `${row.ipAddress}${row.serverStatus === "inactive" ? " · inactive" : ""}`;
 	}
+	const jobs = row.jobs
+		? `, ${row.jobs} job${row.jobs === 1 ? "" : "s"} running`
+		: "";
 	const state = row.osUpdate
-		? row.osUpdate.installing
-			? "installing its OS updates"
-			: `drained for its OS updates${row.jobs ? `, ${row.jobs} job${row.jobs === 1 ? "" : "s"} running` : ""}`
+		? row.osUpdate.handoff
+			? row.osUpdate.installing
+				? "handed to its owner for a macOS update"
+				: `drained for a macOS update${jobs}`
+			: row.osUpdate.installing
+				? "installing its OS updates"
+				: `drained for its OS updates${jobs}`
 		: !row.enabled
 			? "disabled"
 			: row.phase;
-	return `GitHub runner · ${row.poolName} · ${state}`;
+	return row.vmName
+		? `VM ${row.vmName} of a Mac runner · ${row.poolName} · ${state}`
+		: `GitHub runner · ${row.poolName} · ${state}`;
 };
 
 /** One package name or pattern per line (or separated by commas or spaces). */
@@ -188,3 +202,19 @@ const PATTERN = /^[a-z0-9*?][a-z0-9+.:*?-]*$/;
 /** Invalid patterns of a list, to show next to it. */
 export const invalidPatterns = (patterns: string[]) =>
 	patterns.filter((pattern) => !PATTERN.test(pattern));
+
+/** Where the hand-off of a Mac stands, from its last one. */
+export const handoffState = (mac: OsUpdateMacRow) => {
+	const last = mac.lastHandoff;
+	if (!last || !["pending", "running"].includes(last.status)) return null;
+	if (last.status === "pending" || last.step !== "handoff") {
+		return "waiting for its jobs to end";
+	}
+	return "ready for its owner's macOS update";
+};
+
+/** "macOS 26.1 (25B78)", from the runner controller's report. */
+export const macosText = (mac: OsUpdateMacRow) =>
+	mac.macos
+		? `macOS ${mac.macos.version}${mac.macos.build ? ` (${mac.macos.build})` : ""}`
+		: "Not reported yet";

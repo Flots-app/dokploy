@@ -75,6 +75,7 @@ import {
 } from "./format";
 import { HandleConfiguration } from "./handle-configuration";
 import { InstallNowDialog } from "./install-now";
+import { MacsTable } from "./macos-handoff";
 import { RunHistory } from "./run-history";
 
 const NONE = "none";
@@ -450,9 +451,9 @@ const MachinesTable = ({
 	if (!servers.length) {
 		return (
 			<div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-				No remote server yet: add one in Remote Servers. Linux GitHub runner
-				machines show here too. The Dokploy server itself is not updated from
-				here.
+				No remote server yet: add one in Remote Servers. GitHub runner machines
+				show here too (the Linux VM of a Mac). The Dokploy server itself is not
+				updated from here.
 			</div>
 		);
 	}
@@ -723,12 +724,13 @@ export const ShowOsUpdates = () => {
 								OS Updates
 							</CardTitle>
 							<CardDescription>
-								Keep the remote servers and the Linux GitHub runner machines
-								patched: choose when they may install their updates (Ubuntu and
-								Debian, through apt), and Dokploy installs them in that window,
-								one machine at a time, rebooting when an update asks for it. A
+								Keep the remote servers and the GitHub runner machines patched:
+								choose when they may install their updates (Ubuntu and Debian,
+								through apt), and Dokploy installs them in that window, one
+								machine at a time, rebooting when an update asks for it. A
 								runner machine stops taking jobs first, and installs once its
-								running jobs end.
+								running jobs end; on a Mac, that is its Linux VM, and macOS is
+								handed to its owner.
 							</CardDescription>
 						</div>
 						{canCreate && (
@@ -779,6 +781,9 @@ export const ShowOsUpdates = () => {
 										canRun={canRun}
 										canUpdate={canUpdate}
 									/>
+									{data.macs.length > 0 && (
+										<MacsTable macs={data.macs} canRun={canRun} />
+									)}
 								</TabsContent>
 								<TabsContent
 									value="configurations"

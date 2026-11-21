@@ -27,6 +27,7 @@ import { hostname } from "node:os";
 import { db } from "@dokploy/server/db";
 import {
 	githubRunnerNodes,
+	type MacosVersion,
 	type OsUpdateConfiguration,
 	type OsUpdateRun,
 	type OsUpdateRunnerNode,
@@ -39,8 +40,13 @@ import {
 	osUpdateRuns,
 	osUpdateServers,
 } from "@dokploy/server/db/schema";
-import { and, asc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
 import { loggableError } from "../github-runners/errors";
+import {
+	inGuest,
+	macStartVmScript,
+	macStopVmScript,
+} from "../github-runners/macos";
 import {
 	closeSharedSessions,
 	type NodeSession,
@@ -125,6 +131,8 @@ const HISTORY_RETENTION_MS = 180 * 24 * 60 * 60_000;
 const MAX_RUN_LOG = 256_000;
 /** A run waiting for its runner machine to empty looks again this often. */
 const DRAIN_POLL_MS = 5_000;
+/** A hand-off asks the Mac for its macOS version this often. */
+const HANDOFF_POLL_MS = 60_000;
 
 interface ControllerState {
 	owner: string;
@@ -237,14 +245,17 @@ const machineColumns = (machine: OsUpdateMachine) =>
 		: { githubRunnerNodeId: machine.id };
 
 /**
- * A runner machine OS updates may work on: Linux, set up (ready, draining
- * for another reason, or stopped by an operator).
+ * A runner machine OS updates may work on: a Linux machine set up (ready,
+ * draining for another reason, or stopped by an operator), or the VM of a
+ * Mac while it runs (ready, or draining for another reason). OS updates
+ * install in the Linux of the VM; macOS itself is handed to its owner.
  */
 export const isManagedRunnerNode = (
 	node: { platform: string; phase: string } | null | undefined,
 ) =>
-	node?.platform === "linux" &&
-	["ready", "draining", "stopped"].includes(node.phase);
+	(node?.platform === "linux" &&
+		["ready", "draining", "stopped"].includes(node.phase)) ||
+	(node?.platform === "macos" && ["ready", "draining"].includes(node.phase));
 
 type ServerRow = NonNullable<Awaited<ReturnType<typeof loadServer>>>;
 
@@ -273,6 +284,12 @@ interface SshTarget {
 	 * none, as every other SSH command of Dokploy on its servers.
 	 */
 	hostKeyFingerprint: string | null;
+	/**
+	 * A Mac: its Lima VM, where the runners (and the Linux OS updates
+	 * install in) live. Root commands run in it through `limactl shell`, as
+	 * the runner controller's guest commands: no sudo on macOS.
+	 */
+	vmName: string | null;
 }
 
 const serverTarget = (server: ServerRow): SshTarget => ({
@@ -283,6 +300,7 @@ const serverTarget = (server: ServerRow): SshTarget => ({
 	username: server.username,
 	privateKey: server.sshKey?.privateKey ?? null,
 	hostKeyFingerprint: null,
+	vmName: null,
 });
 
 const loadTarget = async (
@@ -303,6 +321,7 @@ const loadTarget = async (
 		// Its own key (enrolled machines) first, as the runner controller.
 		privateKey: node.sshPrivateKey ?? node.sshKey?.privateKey ?? null,
 		hostKeyFingerprint: node.hostKeyFingerprint,
+		vmName: node.platform === "macos" ? node.vmName : null,
 	};
 };
 
@@ -345,17 +364,35 @@ const connection = (
 		session?.close();
 		session = null;
 	};
-	/** Runs a script as root. */
+	/** Runs a script as root: on the machine, or in the VM of a Mac. */
 	const root = async (
 		script: string,
 		options: { label: string; timeoutMs: number; allowFailure?: boolean },
 	) => {
 		const current = await open();
 		try {
-			return await current.run(rootShell(target.username), {
-				input: script.endsWith("\n") ? script : `${script}\n`,
-				...options,
-			});
+			return await current.run(
+				target.vmName
+					? inGuest(target.vmName, "bash -s")
+					: rootShell(target.username),
+				{
+					input: script.endsWith("\n") ? script : `${script}\n`,
+					...options,
+				},
+			);
+		} catch (error) {
+			reset();
+			throw error;
+		}
+	};
+	/** Runs a command on the machine itself as its SSH user (the Mac's account). */
+	const host = async (
+		command: string,
+		options: { label: string; timeoutMs: number },
+	) => {
+		const current = await open();
+		try {
+			return await current.run(command, options);
 		} catch (error) {
 			reset();
 			throw error;
@@ -388,7 +425,7 @@ const connection = (
 			}
 		}
 	};
-	return { root, patient, reset };
+	return { root, host, patient, reset };
 };
 
 type Connection = ReturnType<typeof connection>;
@@ -685,7 +722,27 @@ export const skipClosedOsUpdateRuns = async (now: Date) => {
 				"The maintenance window closed (or had less than 15 minutes left) before this server's turn: nothing was installed.",
 		})
 		.where(
-			and(eq(osUpdateRuns.status, "pending"), lt(osUpdateRuns.deadline, limit)),
+			and(
+				eq(osUpdateRuns.status, "pending"),
+				ne(osUpdateRuns.kind, "handoff"),
+				lt(osUpdateRuns.deadline, limit),
+			),
+		);
+	// A hand-off installs nothing: it waits for its machine until its end.
+	await db
+		.update(osUpdateRuns)
+		.set({
+			status: "skipped",
+			finishedAt: now.toISOString(),
+			message:
+				"The hand-off expired before the machine was free (another run held it).",
+		})
+		.where(
+			and(
+				eq(osUpdateRuns.status, "pending"),
+				eq(osUpdateRuns.kind, "handoff"),
+				lt(osUpdateRuns.deadline, now.toISOString()),
+			),
 		);
 };
 
@@ -812,12 +869,11 @@ const startPendingRuns = async (busy: Set<string>) => {
 		}
 		return `${states.get(keyOf(machine))?.assessment?.swarm?.manager ? 1 : 0}:${run.server?.name ?? ""}`;
 	};
-	pending.sort((a, b) =>
-		a.trigger !== b.trigger
-			? a.trigger === "manual"
-				? -1
-				: 1
-			: order(a).localeCompare(order(b)),
+	// What a user asked for (Install now, a hand-off) before the windows.
+	const asked = (run: (typeof pending)[number]) =>
+		run.trigger === "schedule" ? 1 : 0;
+	pending.sort(
+		(a, b) => asked(a) - asked(b) || order(a).localeCompare(order(b)),
 	);
 	// One after the other: each claim changes what the next one may take.
 	await sequentially(pending, async (run) => {
@@ -1186,6 +1242,93 @@ const selectionSummary = (
 	return lines.join("\n");
 };
 
+// ------------------------------------------------------------- macOS hand-off
+
+/** macOS as `sw_vers` reports it, run as the Mac's account (no sudo). */
+export const MACOS_VERSION_COMMAND = `printf 'version=%s\\nbuild=%s\\nextra=%s\\n' "$(sw_vers -productVersion)" "$(sw_vers -buildVersion)" "$(sw_vers -productVersionExtra 2>/dev/null || true)"`;
+
+export const parseMacosVersion = (output: string): MacosVersion | null => {
+	const values: Record<string, string> = {};
+	for (const line of output.split("\n")) {
+		const separator = line.indexOf("=");
+		if (separator > 0) {
+			values[line.slice(0, separator).trim()] = line
+				.slice(separator + 1)
+				.trim();
+		}
+	}
+	if (!values.version || !values.build) return null;
+	return {
+		version: values.version,
+		build: values.build,
+		extra: values.extra ?? "",
+	};
+};
+
+export const macosLabel = (macos: MacosVersion) =>
+	`macOS ${macos.version}${macos.extra ? ` ${macos.extra}` : ""} (${macos.build})`;
+
+/** Another build, version or Rapid Security Response than at the start. */
+export const macosChanged = (before: MacosVersion, now: MacosVersion) =>
+	before.version !== now.version ||
+	before.build !== now.build ||
+	before.extra !== now.extra;
+
+const readMacos = async (ssh: Connection) => {
+	const { stdout } = await ssh.host(MACOS_VERSION_COMMAND, {
+		label: "macOS version",
+		timeoutMs: 30_000,
+	});
+	const macos = parseMacosVersion(stdout);
+	if (!macos) throw new Error("the Mac did not report its macOS version");
+	return macos;
+};
+
+/**
+ * The owner updates macOS while the Mac runs no job; Dokploy only watches
+ * for another version (the Mac restarts meanwhile, and stops answering for
+ * a while). It installs nothing on macOS: that needs the owner (or an MDM).
+ */
+const awaitMacosUpdate = async (input: {
+	runId: string;
+	name: string;
+	ssh: Connection;
+	baseline: MacosVersion;
+	deadline: number;
+	log: (line: string) => Promise<void>;
+}): Promise<
+	| { kind: "updated"; macos: MacosVersion }
+	| { kind: "expired" }
+	| { kind: "cancelled" }
+> => {
+	const { runId, name, ssh, baseline, deadline, log } = input;
+	let silent = false;
+	for (;;) {
+		const current = await db.query.osUpdateRuns.findFirst({
+			where: eq(osUpdateRuns.osUpdateRunId, runId),
+			columns: { status: true },
+		});
+		if (current?.status !== "running") return { kind: "cancelled" };
+		try {
+			const macos = await readMacos(ssh);
+			if (silent) {
+				silent = false;
+				await log(`${name} answers again (${macosLabel(macos)})`);
+			}
+			if (macosChanged(baseline, macos)) return { kind: "updated", macos };
+		} catch {
+			if (!silent) {
+				silent = true;
+				await log(
+					`${name} does not answer (restarting for its update?): waiting for it`,
+				);
+			}
+		}
+		if (Date.now() >= deadline) return { kind: "expired" };
+		await sleepUntilDrainNews(HANDOFF_POLL_MS);
+	}
+};
+
 type HoldOutcome =
 	/** Empty: the run may install. With the progress it recorded. */
 	| { kind: "drained"; progress: OsUpdateRunProgress }
@@ -1201,7 +1344,8 @@ type HoldOutcome =
  * interrupted). Assessed first, so that a machine with nothing to install
  * keeps taking jobs. Given up, with nothing installed, when the jobs still
  * run at the install limit of the window. The run gives the machine back in
- * every case (executeRun).
+ * every case (executeRun). A hand-off (a Mac for its owner's macOS update)
+ * is not assessed and waits until its own deadline.
  */
 const holdRunnerMachine = async (input: {
 	runId: string;
@@ -1212,12 +1356,19 @@ const holdRunnerMachine = async (input: {
 	deadline: number;
 	progress: OsUpdateRunProgress;
 	log: (line: string) => Promise<void>;
+	handoff: boolean;
 }): Promise<HoldOutcome> => {
-	const { runId, machine, name, ssh, settings, log } = input;
-	const limit = input.deadline - INSTALL_RESERVE_MS;
+	const { runId, machine, name, ssh, settings, log, handoff } = input;
+	const limit = handoff ? input.deadline : input.deadline - INSTALL_RESERVE_MS;
+	const what = handoff
+		? "it is handed to its owner for a macOS update"
+		: "the updates are installed";
+	const nothing = handoff
+		? "the hand-off did not start"
+		: "nothing was installed";
 	let progress = input.progress;
 	let started = Boolean(progress.drainStartedAt);
-	if (!started) {
+	if (!started && !handoff) {
 		// What it waits for, before any job is held back for it.
 		const { stdout } = await ssh.patient(assessScript({ refresh: true }), {
 			label: "Assessment",
@@ -1246,11 +1397,14 @@ const holdRunnerMachine = async (input: {
 				};
 			}
 		}
+	}
+	if (!started) {
 		if (Date.now() >= limit) {
 			return {
 				kind: "skipped",
-				message:
-					"The maintenance window closed before the machine could be drained: nothing was installed.",
+				message: handoff
+					? "The hand-off expired before the machine could be drained."
+					: "The maintenance window closed before the machine could be drained: nothing was installed.",
 			};
 		}
 		// Recorded first: a user may cancel the run while the jobs end.
@@ -1290,14 +1444,14 @@ const holdRunnerMachine = async (input: {
 		if (!ours && started) {
 			return {
 				kind: "skipped",
-				message: `${name} was put back to work, disabled or removed before its jobs ended: nothing was installed.`,
+				message: `${name} was put back to work, disabled or removed before its jobs ended: ${nothing}.`,
 			};
 		}
 		if (!ours) {
 			if (!isManagedRunnerNode(node)) {
 				return {
 					kind: "skipped",
-					message: `${name} is ${node.phase === "error" ? "in error" : "not set up"} in GitHub Runners: nothing was installed.`,
+					message: `${name} is ${node.phase === "error" ? "in error" : node.platform === "macos" && node.phase === "stopped" ? "stopped (its VM does not run)" : "not set up"} in GitHub Runners: ${nothing}.`,
 				};
 			}
 			if (
@@ -1305,11 +1459,12 @@ const holdRunnerMachine = async (input: {
 					nodeId: machine.id,
 					runId,
 					abortAt: new Date(limit),
+					handoff,
 				})
 			) {
 				started = true;
 				await tell(
-					`${name} takes no new job: the updates are installed once its running jobs end (given up at ${new Date(limit).toISOString().slice(11, 16)} UTC otherwise)`,
+					`${name} takes no new job: ${what} once its running jobs end (given up at ${new Date(limit).toISOString().slice(11, 16)} UTC otherwise)`,
 				);
 				continue;
 			}
@@ -1334,9 +1489,13 @@ const holdRunnerMachine = async (input: {
 		if (Date.now() >= limit) {
 			return {
 				kind: "skipped",
-				message: started
-					? `Jobs still ran on ${name} (or it did not answer) when the maintenance window closed: nothing was installed, and it takes jobs again.`
-					: `${name} was busy with another action until the maintenance window closed: nothing was installed.`,
+				message: handoff
+					? started
+						? `Jobs still ran on ${name} (or it did not answer) when the hand-off expired: it takes jobs again.`
+						: `${name} was busy with another action until the hand-off expired.`
+					: started
+						? `Jobs still ran on ${name} (or it did not answer) when the maintenance window closed: nothing was installed, and it takes jobs again.`
+						: `${name} was busy with another action until the maintenance window closed: nothing was installed.`,
 			};
 		}
 		await sleepUntilDrainNews(DRAIN_POLL_MS);
@@ -1409,10 +1568,23 @@ const executeRun = async (runId: string) => {
 			bootId: null,
 			rebootRequestedAt: null,
 		};
+		const handoff = run.kind === "handoff";
+		if (handoff && !target.vmName) {
+			throw new Error("A hand-off is for the macOS of a Mac runner machine");
+		}
 		if (run.attempts === 1 && !run.progress) {
 			await log(
-				`${run.trigger === "manual" ? "Install now" : "Maintenance window"} on ${target.name}${machine.kind === "runner" ? " (GitHub runner machine)" : ""}: ${settings.classification === "security" ? "security updates" : "all updates"}, reboot ${settings.reboot}, Docker packages ${settings.allowDockerUpdates ? "allowed" : "held"}; no install starts after ${new Date(deadline - INSTALL_RESERVE_MS).toISOString().slice(0, 16).replace("T", " ")} UTC`,
+				handoff
+					? `Hand-off of ${target.name} for a macOS update: no new job, then its owner updates macOS (System Settings › General › Software Update); Dokploy installs nothing on macOS and gives the Mac back once it reports another version, or at ${new Date(deadline).toISOString().slice(0, 16).replace("T", " ")} UTC`
+					: `${run.trigger === "manual" ? "Install now" : "Maintenance window"} on ${target.name}${target.vmName ? ` (VM ${target.vmName} of a Mac GitHub runner)` : machine.kind === "runner" ? " (GitHub runner machine)" : ""}: ${settings.classification === "security" ? "security updates" : "all updates"}, reboot ${settings.reboot}, Docker packages ${settings.allowDockerUpdates ? "allowed" : "held"}; no install starts after ${new Date(deadline - INSTALL_RESERVE_MS).toISOString().slice(0, 16).replace("T", " ")} UTC`,
 			);
+		}
+		// A hand-off compares macOS with what it was at the start.
+		if (handoff && !progress.macos) {
+			const baseline = await readMacos(ssh);
+			progress = { ...progress, macos: baseline };
+			await saveProgress(runId, progress);
+			await log(`${target.name} runs ${macosLabel(baseline)}`);
 		}
 
 		// ---- runner machines: drained first, jobs never interrupted
@@ -1426,9 +1598,14 @@ const executeRun = async (runId: string) => {
 				deadline,
 				progress,
 				log,
+				handoff,
 			});
 			if (held.kind === "cancelled") {
-				await log("Cancelled while the jobs ended: nothing was installed");
+				await log(
+					handoff
+						? "Cancelled while the jobs ended"
+						: "Cancelled while the jobs ended: nothing was installed",
+				);
 				return;
 			}
 			if (held.kind === "nothing") {
@@ -1440,10 +1617,11 @@ const executeRun = async (runId: string) => {
 				return;
 			}
 			// From here on the run installs: no cancel, and the machine stays
-			// out of service until the run gives it back.
+			// out of service until the run gives it back. A hand-off may still
+			// be cancelled ("Give back now"): Dokploy installs nothing.
 			const next: OsUpdateRunProgress = {
 				...held.progress,
-				step: "prepare",
+				step: handoff ? "handoff" : "prepare",
 				logOffset: 0,
 			};
 			const moved = await db
@@ -1457,18 +1635,88 @@ const executeRun = async (runId: string) => {
 				)
 				.returning({ id: osUpdateRuns.osUpdateRunId });
 			if (!moved.length) {
-				await log("Cancelled while the jobs ended: nothing was installed");
+				await log(
+					handoff
+						? "Cancelled while the jobs ended"
+						: "Cancelled while the jobs ended: nothing was installed",
+				);
 				return;
 			}
 			if (!(await markOsUpdateInstalling(machine.id, runId))) {
 				await finishRun(runId, {
 					status: "skipped",
-					message: `${target.name} was put back to work, disabled or removed before the install: nothing was installed.`,
+					message: handoff
+						? `${target.name} was put back to work, disabled or removed before its hand-off.`
+						: `${target.name} was put back to work, disabled or removed before the install: nothing was installed.`,
 				});
 				return;
 			}
 			progress = next;
-			await log(`${target.name} runs no job any more: installing`);
+			if (handoff) {
+				const until = new Date(deadline)
+					.toISOString()
+					.slice(0, 16)
+					.replace("T", " ");
+				await log(
+					`${target.name} runs no job any more: its owner may update macOS now. Dokploy gives it back once it reports another version, or at ${until} UTC`,
+				);
+				if (run) {
+					notify(run.organizationId, {
+						event: "handoff",
+						title: `${target.name} is ready for its macOS update`,
+						message: `No job runs on ${target.name} any more. Update macOS on it (System Settings › General › Software Update): Dokploy gives it back to its jobs once it reports another version than ${macosLabel(progress.macos ?? { version: "?", build: "?", extra: "" })}, or at ${until} UTC.`,
+						server: target.name,
+						configuration: null,
+						at: new Date(),
+					});
+				}
+			} else {
+				await log(`${target.name} runs no job any more: installing`);
+			}
+		}
+
+		// ---- a Mac handed to its owner: Dokploy watches, installs nothing
+		if (progress.step === "handoff") {
+			const baseline = progress.macos;
+			if (!baseline) throw new Error("The hand-off lost its macOS version");
+			const outcome = await awaitMacosUpdate({
+				runId,
+				name: target.name,
+				ssh,
+				baseline,
+				deadline,
+				log,
+			});
+			if (outcome.kind === "cancelled") {
+				await log("Given back before its macOS update");
+				return;
+			}
+			if (outcome.kind === "expired") {
+				const message = `macOS did not change before the hand-off expired (still ${macosLabel(baseline)}): ${target.name} takes jobs again.`;
+				if (await finishRun(runId, { status: "skipped", message })) {
+					notify(run.organizationId, {
+						event: "missed",
+						title: `Hand-off of ${target.name} expired`,
+						message,
+						server: target.name,
+						configuration: null,
+						at: new Date(),
+					});
+				}
+				return;
+			}
+			const message = `macOS updated: ${macosLabel(baseline)} → ${macosLabel(outcome.macos)}. ${target.name} takes jobs again.`;
+			if (await finishRun(runId, { status: "succeeded", message })) {
+				notify(run.organizationId, {
+					event: "succeeded",
+					title: `macOS updated on ${target.name}`,
+					message,
+					server: target.name,
+					configuration: null,
+					at: new Date(),
+				});
+			}
+			return;
 		}
 
 		let assessment: ServerAssessment | null = null;
@@ -1684,18 +1932,39 @@ const executeRun = async (runId: string) => {
 				rebootRequestedAt: new Date().toISOString(),
 			};
 			await saveProgress(runId, progress);
-			await log(
+			const why =
 				settings.reboot === "always"
-					? `Rebooting the ${noun} (reboot setting: always)`
-					: `Rebooting the ${noun}: an update asks for it`,
-			);
-			await ssh.root(rebootScript(runId), {
-				label: "Reboot",
-				timeoutMs: 30_000,
-			});
-			ssh.reset();
+					? " (reboot setting: always)"
+					: ": an update asks for it";
+			if (target.vmName) {
+				// The VM of a Mac restarts as the runner controller restarts it
+				// (its stop and start scripts): the Mac itself never reboots.
+				await log(`Restarting VM ${target.vmName} of ${target.name}${why}`);
+				await ssh.host(macStopVmScript(target.vmName), {
+					label: "VM stop",
+					timeoutMs: 5 * 60_000,
+				});
+				await ssh.host(macStartVmScript(target.vmName), {
+					label: "VM start",
+					timeoutMs: 15 * 60_000,
+				});
+			} else {
+				await log(`Rebooting the ${noun}${why}`);
+				await ssh.root(rebootScript(runId), {
+					label: "Reboot",
+					timeoutMs: 30_000,
+				});
+				ssh.reset();
+			}
 		} else {
-			// Resumed while the server rebooted.
+			// Resumed while the server rebooted. A VM stopped by a process that
+			// died before starting it again is started (a running one is left).
+			if (target.vmName) {
+				await ssh.host(macStartVmScript(target.vmName), {
+					label: "VM start",
+					timeoutMs: 15 * 60_000,
+				});
+			}
 			const current = (await findMachineState(machine))?.assessment;
 			manager =
 				current?.swarm?.manager === true && (current.swarm.managers ?? 1) > 1;
@@ -1727,7 +1996,10 @@ const executeRun = async (runId: string) => {
 		}
 		// The runner controller's connection died with the reboot: it opens a
 		// new one at its next tick instead of failing a probe on the old one.
-		if (machine.kind === "runner") closeSharedSessions(target);
+		// A Mac did not reboot: its connection holds.
+		if (machine.kind === "runner" && !target.vmName) {
+			closeSharedSessions(target);
+		}
 		await db
 			.update(osUpdateRuns)
 			.set({ rebooted: true })

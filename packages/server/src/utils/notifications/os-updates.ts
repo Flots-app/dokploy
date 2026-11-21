@@ -22,8 +22,12 @@ import {
 } from "./utils";
 
 export interface OsUpdateNotice {
-	/** failed: a run failed; missed: a window passed unused; succeeded. */
-	event: "failed" | "missed" | "succeeded";
+	/**
+	 * failed: a run failed; missed: a window passed unused (or a hand-off
+	 * expired); succeeded; handoff: a Mac is ready for its owner's macOS
+	 * update.
+	 */
+	event: "failed" | "missed" | "succeeded" | "handoff";
 	title: string;
 	message: string;
 	server: string;
@@ -77,6 +81,13 @@ const STYLE = {
 		hex: "#57F287",
 		lark: "green",
 		ntfy: "white_check_mark",
+	},
+	handoff: {
+		icon: "🛠️",
+		color: 0x5865f2,
+		hex: "#5865F2",
+		lark: "blue",
+		ntfy: "hammer_and_wrench",
 	},
 } as const;
 
