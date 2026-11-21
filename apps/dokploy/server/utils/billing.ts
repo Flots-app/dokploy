@@ -1,5 +1,4 @@
-import { findUserById, IS_CLOUD } from "@dokploy/server";
-import { getOrganizationOwnerId } from "@dokploy/server/services/proprietary/sso";
+import { findOrganizationById, findUserById, IS_CLOUD } from "@dokploy/server";
 import Stripe from "stripe";
 import {
 	HOBBY_PRICE_ANNUAL_ID,
@@ -62,8 +61,8 @@ export const getCurrentPlan = async (
 ): Promise<BillingPlan | null> => {
 	if (!IS_CLOUD) return null;
 
-	const ownerId = await getOrganizationOwnerId(organizationId);
-	if (!ownerId) return null;
+	const organization = await findOrganizationById(organizationId);
+	if (!organization?.ownerId) return null;
 
-	return getCurrentPlanForUser(ownerId);
+	return getCurrentPlanForUser(organization.ownerId);
 };

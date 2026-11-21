@@ -22,7 +22,6 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth-client";
-import { useWhitelabelingPublic } from "@/utils/hooks/use-whitelabeling";
 
 const loginSchema = z
 	.object({
@@ -54,7 +53,6 @@ interface Props {
 	tokenResetPassword: string;
 }
 export default function Home({ tokenResetPassword }: Props) {
-	const { config: whitelabeling } = useWhitelabelingPublic();
 	const [token, setToken] = useState<string | null>(tokenResetPassword);
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -99,14 +97,7 @@ export default function Home({ tokenResetPassword }: Props) {
 			<div className="flex flex-col items-center gap-4 w-full">
 				<CardTitle className="text-2xl font-bold flex flex-row gap-2 items-center">
 					<Link href="/" className="flex flex-row items-center gap-2">
-						<Logo
-							className="size-12"
-							logoUrl={
-								whitelabeling?.loginLogoUrl ||
-								whitelabeling?.logoUrl ||
-								undefined
-							}
-						/>
+						<Logo className="size-12" />
 					</Link>
 					Reset Password
 				</CardTitle>

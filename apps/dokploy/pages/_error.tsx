@@ -2,7 +2,6 @@ import type { NextPageContext } from "next";
 import Link from "next/link";
 import { Logo } from "@/components/shared/logo";
 import { buttonVariants } from "@/components/ui/button";
-import { useWhitelabelingPublic } from "@/utils/hooks/use-whitelabeling";
 
 interface Props {
 	statusCode: number;
@@ -11,11 +10,6 @@ interface Props {
 
 export default function Custom404({ statusCode, error }: Props) {
 	const displayStatusCode = statusCode || 400;
-	const { config: whitelabeling } = useWhitelabelingPublic();
-	const appName = whitelabeling?.appName || "Dokploy";
-	const logoUrl = whitelabeling?.logoUrl || undefined;
-	const errorTitle = whitelabeling?.errorPageTitle;
-	const errorDescription = whitelabeling?.errorPageDescription;
 
 	return (
 		<div className="h-screen">
@@ -23,8 +17,8 @@ export default function Custom404({ statusCode, error }: Props) {
 				<header className="mb-auto flex justify-center z-50 w-full py-4">
 					<nav className="px-4 sm:px-6 lg:px-8" aria-label="Global">
 						<Link href="/" className="flex flex-row items-center gap-2">
-							<Logo logoUrl={logoUrl} />
-							<span className="font-medium text-sm">{appName}</span>
+							<Logo />
+							<span className="font-medium text-sm">Dokploy</span>
 						</Link>
 					</nav>
 				</header>
@@ -34,17 +28,10 @@ export default function Custom404({ statusCode, error }: Props) {
 							{displayStatusCode}
 						</h1>
 						<p className="mt-3 text-muted-foreground">
-							{errorTitle
-								? errorTitle
-								: statusCode === 404
-									? "Sorry, we couldn't find your page."
-									: "Oops, something went wrong."}
+							{statusCode === 404
+								? "Sorry, we couldn't find your page."
+								: "Oops, something went wrong."}
 						</p>
-						{errorDescription && (
-							<p className="mt-2 text-muted-foreground text-sm">
-								{errorDescription}
-							</p>
-						)}
 						{error && (
 							<div className="mt-3 text-red-500">
 								<p>{error.message}</p>
@@ -82,17 +69,13 @@ export default function Custom404({ statusCode, error }: Props) {
 				<footer className="mt-auto text-center py-5">
 					<div className="max-w-8xl mx-auto px-4 sm:px-6 lg:px-8">
 						<p className="text-sm text-gray-500">
-							{whitelabeling?.footerText ? (
-								whitelabeling.footerText
-							) : (
-								<Link
-									href="https://github.com/Dokploy/dokploy/issues"
-									target="_blank"
-									className="underline hover:text-primary transition-colors"
-								>
-									Submit Log in issue on Github
-								</Link>
-							)}
+							<Link
+								href="https://github.com/Dokploy/dokploy/issues"
+								target="_blank"
+								className="underline hover:text-primary transition-colors"
+							>
+								Submit Log in issue on Github
+							</Link>
 						</p>
 					</div>
 				</footer>

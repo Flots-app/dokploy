@@ -7,7 +7,6 @@ import {
 	osUpdateRuns,
 	osUpdateServers,
 	server,
-	user,
 } from "@dokploy/server/db/schema";
 import {
 	cancelOsUpdateRun,
@@ -570,11 +569,7 @@ describe("custom roles and server access", () => {
 	};
 
 	beforeAll(async () => {
-		owner = await createOrganization("os-licensed");
-		await db
-			.update(user)
-			.set({ enableEnterpriseFeatures: true, isValidEnterpriseLicense: true })
-			.where(eq(user.id, owner.userId));
+		owner = await createOrganization("os-servers");
 		mine = await insertServer(owner.organizationId, "mine");
 		theirs = await insertServer(owner.organizationId, "theirs");
 	});

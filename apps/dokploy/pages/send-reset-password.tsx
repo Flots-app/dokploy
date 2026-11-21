@@ -22,7 +22,6 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth-client";
-import { useWhitelabelingPublic } from "@/utils/hooks/use-whitelabeling";
 
 const loginSchema = z.object({
 	email: z
@@ -46,7 +45,6 @@ type AuthResponse = {
 };
 
 export default function Home() {
-	const { config: whitelabeling } = useWhitelabelingPublic();
 	const [temp, _setTemp] = useState<AuthResponse>({
 		is2FAEnabled: false,
 		authId: "",
@@ -86,14 +84,8 @@ export default function Home() {
 		<div className="flex w-full items-center justify-center ">
 			<div className="flex flex-col items-center gap-4 w-full">
 				<Link href="/" className="flex flex-row items-center gap-2">
-					<Logo
-						logoUrl={
-							whitelabeling?.loginLogoUrl || whitelabeling?.logoUrl || undefined
-						}
-					/>
-					<span className="font-medium text-sm">
-						{whitelabeling?.appName || "Dokploy"}
-					</span>
+					<Logo />
+					<span className="font-medium text-sm">Dokploy</span>
 				</Link>
 				<CardTitle className="text-2xl font-bold">Reset Password</CardTitle>
 				<CardDescription>

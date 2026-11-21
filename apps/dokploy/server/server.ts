@@ -6,7 +6,6 @@ import {
 	IS_CLOUD,
 	initCancelDeployments,
 	initCronJobs,
-	initEnterpriseBackupCronJobs,
 	initInterruptedServiceMigrations,
 	initializeNetwork,
 	initSchedules,
@@ -70,7 +69,6 @@ void app.prepare().then(async () => {
 			await initVolumeBackupsCronJobs();
 			await sendDokployRestartNotifications();
 		}
-		await initEnterpriseBackupCronJobs();
 		await initInterruptedServiceMigrations();
 		if (!IS_CLOUD) {
 			await startGithubRunnerController({

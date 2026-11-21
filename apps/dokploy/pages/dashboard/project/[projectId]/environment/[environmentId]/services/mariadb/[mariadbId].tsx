@@ -48,7 +48,6 @@ import { UseKeyboardNav } from "@/hooks/use-keyboard-nav";
 import { cn } from "@/lib/utils";
 import { appRouter } from "@/server/api/root";
 import { api } from "@/utils/api";
-import { useWhitelabeling } from "@/utils/hooks/use-whitelabeling";
 
 type TabState = "projects" | "monitoring" | "settings" | "backups" | "advanced";
 
@@ -71,8 +70,6 @@ const Mariadb = (
 	const { data: environments } = api.environment.byProjectId.useQuery({
 		projectId: data?.environment?.projectId || "",
 	});
-	const { config: whitelabeling } = useWhitelabeling();
-	const appName = whitelabeling?.appName || "Dokploy";
 	const environmentDropdownItems =
 		environments?.map((env) => ({
 			name: env.name,
@@ -87,7 +84,7 @@ const Mariadb = (
 				<Head>
 					<title>
 						Database: {data?.name} - {data?.environment?.project?.name} |
-						{appName}
+						Dokploy
 					</title>
 				</Head>
 				<Card className="h-full bg-sidebar  p-2.5 rounded-xl w-full">

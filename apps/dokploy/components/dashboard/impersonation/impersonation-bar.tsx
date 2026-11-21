@@ -45,12 +45,10 @@ import {
 import { authClient } from "@/lib/auth-client";
 import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
-import { useWhitelabeling } from "@/utils/hooks/use-whitelabeling";
 
 type User = typeof authClient.$Infer.Session.user;
 
 export const ImpersonationBar = () => {
-	const { config: whitelabeling } = useWhitelabeling();
 	const [users, setUsers] = useState<User[]>([]);
 	const [selectedUser, setSelectedUser] = useState<User | null>(null);
 	const [isImpersonating, setIsImpersonating] = useState(false);
@@ -182,10 +180,7 @@ export const ImpersonationBar = () => {
 					)}
 				>
 					<div className="flex items-center gap-4 px-4 md:px-20 w-full">
-						<Logo
-							className="w-10 h-10"
-							logoUrl={whitelabeling?.logoUrl || undefined}
-						/>
+						<Logo className="w-10 h-10" />
 						{!isImpersonating ? (
 							<div className="flex items-center gap-2 w-full">
 								<Popover open={open} onOpenChange={setOpen}>

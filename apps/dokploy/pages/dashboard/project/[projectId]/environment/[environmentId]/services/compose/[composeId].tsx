@@ -60,7 +60,6 @@ import {
 import { UseKeyboardNav } from "@/hooks/use-keyboard-nav";
 import { appRouter } from "@/server/api/root";
 import { api } from "@/utils/api";
-import { useWhitelabeling } from "@/utils/hooks/use-whitelabeling";
 
 type TabState =
 	| "projects"
@@ -90,8 +89,6 @@ const Service = (
 	const { data } = api.compose.one.useQuery({ composeId });
 
 	const { data: permissions } = api.user.getPermissions.useQuery();
-	const { config: whitelabeling } = useWhitelabeling();
-	const appName = whitelabeling?.appName || "Dokploy";
 
 	return (
 		<div className="pb-10">
@@ -99,7 +96,7 @@ const Service = (
 			<AdvanceBreadcrumb />
 			<Head>
 				<title>
-					Compose: {data?.name} - {data?.environment?.project?.name} | {appName}
+					Compose: {data?.name} - {data?.environment?.project?.name} | Dokploy
 				</title>
 			</Head>
 			<div className="w-full">

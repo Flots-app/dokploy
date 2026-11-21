@@ -1,8 +1,4 @@
-import {
-	getWebServerSettings,
-	IS_CLOUD,
-	isAdminPresent,
-} from "@dokploy/server";
+import { IS_CLOUD, isAdminPresent } from "@dokploy/server";
 import { validateRequest } from "@dokploy/server/lib/auth";
 import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
@@ -14,9 +10,6 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { OnboardingLayout } from "@/components/layouts/onboarding-layout";
-import { SignInWithGithub } from "@/components/proprietary/auth/sign-in-with-github";
-import { SignInWithGoogle } from "@/components/proprietary/auth/sign-in-with-google";
-import { SignInWithSSO } from "@/components/proprietary/sso/sign-in-with-sso";
 import { AlertBlock } from "@/components/shared/alert-block";
 import { Logo } from "@/components/shared/logo";
 import { Button } from "@/components/ui/button";
@@ -45,8 +38,6 @@ import {
 } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { authClient } from "@/lib/auth-client";
-import { api } from "@/utils/api";
-import { useWhitelabelingPublic } from "@/utils/hooks/use-whitelabeling";
 
 const LoginSchema = z.object({
 	email: z.string().email(),
@@ -61,12 +52,9 @@ type LoginForm = z.infer<typeof LoginSchema>;
 
 interface Props {
 	IS_CLOUD: boolean;
-	enforceSSO: boolean;
 }
-export default function Home({ IS_CLOUD, enforceSSO }: Props) {
+export default function Home({ IS_CLOUD }: Props) {
 	const router = useRouter();
-	const { config: whitelabeling } = useWhitelabelingPublic();
-	const { data: showSignInWithSSO } = api.sso.showSignInWithSSO.useQuery();
 	const [isLoginLoading, setIsLoginLoading] = useState(false);
 	const [isTwoFactorLoading, setIsTwoFactorLoading] = useState(false);
 	const [isBackupCodeLoading, setIsBackupCodeLoading] = useState(false);
@@ -183,8 +171,6 @@ export default function Home({ IS_CLOUD, enforceSSO }: Props) {
 
 	const loginContent = (
 		<>
-			{IS_CLOUD && <SignInWithGithub />}
-			{IS_CLOUD && <SignInWithGoogle />}
 			<Form {...loginForm}>
 				<form
 					method="post"
@@ -235,14 +221,7 @@ export default function Home({ IS_CLOUD, enforceSSO }: Props) {
 			<div className="flex flex-col space-y-2 text-center">
 				<h1 className="text-2xl font-semibold tracking-tight">
 					<div className="flex flex-row items-center justify-center gap-2">
-						<Logo
-							className="size-12"
-							logoUrl={
-								whitelabeling?.loginLogoUrl ||
-								whitelabeling?.logoUrl ||
-								undefined
-							}
-						/>
+						<Logo className="size-12" />
 						Sign in
 					</div>
 				</h1>
@@ -257,15 +236,7 @@ export default function Home({ IS_CLOUD, enforceSSO }: Props) {
 			)}
 			<CardContent className="p-0">
 				{!isTwoFactor ? (
-					<>
-						{enforceSSO ? (
-							<SignInWithSSO enforce />
-						) : showSignInWithSSO ? (
-							<SignInWithSSO>{loginContent}</SignInWithSSO>
-						) : (
-							loginContent
-						)}
-					</>
+					loginContent
 				) : (
 					<>
 						<form
@@ -446,7 +417,6 @@ export async function getServerSideProps(context: GetServerSidePropsContext) {
 		return {
 			props: {
 				IS_CLOUD: IS_CLOUD,
-				enforceSSO: false,
 			},
 		};
 	}
@@ -472,12 +442,9 @@ export async function getServerSideProps(context: GetServerSidePropsContext) {
 		};
 	}
 
-	const webServerSettings = await getWebServerSettings();
-
 	return {
 		props: {
 			hasAdmin,
-			enforceSSO: webServerSettings?.enforceSSO ?? false,
 		},
 	};
 }

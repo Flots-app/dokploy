@@ -44,10 +44,6 @@ vi.mock("@dokploy/server/db", () => ({
 	},
 }));
 
-vi.mock("@dokploy/server/services/proprietary/license-key", () => ({
-	hasValidLicense: vi.fn(),
-}));
-
 vi.mock("@dokploy/server/utils/process/execAsync", () => ({
 	execAsync: mocks.execAsync,
 	execAsyncRemote: vi.fn(),

@@ -15,7 +15,7 @@ import {
 	getTrustedProviders,
 	getUserByToken,
 } from "../services/admin";
-import { createAuditLog } from "../services/proprietary/audit-log";
+import { createAuditLog } from "../services/audit-log";
 import {
 	getWebServerSettings,
 	updateWebServerSettings,
@@ -399,16 +399,6 @@ const createBetterAuth = () =>
 					input: true,
 					defaultValue: "",
 				},
-				enableEnterpriseFeatures: {
-					type: "boolean",
-					required: false,
-					input: false,
-				},
-				isValidEnterpriseLicense: {
-					type: "boolean",
-					required: false,
-					input: false,
-				},
 			},
 		},
 		plugins: [
@@ -469,8 +459,6 @@ const { handler, api } = globalForAuth.betterAuthInstance;
 const _auth = {
 	handler,
 	createApiKey: api.createApiKey,
-	registerSSOProvider: api.registerSSOProvider,
-	updateSSOProvider: api.updateSSOProvider,
 };
 
 export type AuthType = typeof _auth;
@@ -555,8 +543,6 @@ export const validateRequest = async (request: IncomingMessage) => {
 					twoFactorEnabled: userFromDb.twoFactorEnabled,
 					role: member?.role || "member",
 					ownerId: member?.organization.ownerId || apiKeyRecord.user.id,
-					enableEnterpriseFeatures: userFromDb.enableEnterpriseFeatures,
-					isValidEnterpriseLicense: userFromDb.isValidEnterpriseLicense,
 				},
 			};
 
@@ -607,10 +593,6 @@ export const validateRequest = async (request: IncomingMessage) => {
 		});
 
 		session.user.role = member?.role || "member";
-		session.user.enableEnterpriseFeatures =
-			member?.user.enableEnterpriseFeatures || false;
-		session.user.isValidEnterpriseLicense =
-			member?.user.isValidEnterpriseLicense || false;
 		session.session.activeOrganizationId = member?.organization.id || "";
 		if (member) {
 			user.ownerId = member.organization.ownerId;

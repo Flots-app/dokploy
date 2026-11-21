@@ -7,7 +7,6 @@ import {
 	organization,
 	server,
 } from "@dokploy/server/db/schema";
-import { hasValidLicense } from "@dokploy/server/services/proprietary/license-key";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import type { z } from "zod";
@@ -429,11 +428,12 @@ export const getAccessibleServerIds = async (session: {
 		return new Set(allOrgServers.map((s) => s.serverId));
 	}
 
-	const licensed = await hasValidLicense(activeOrganizationId);
-
-	if (!licensed) {
+	// An empty assignment means "no restriction": members keep seeing every
+	// server of the organization until an admin explicitly assigns some.
+	const assigned = memberRecord?.accessedServers ?? [];
+	if (assigned.length === 0) {
 		return new Set(allOrgServers.map((s) => s.serverId));
 	}
 
-	return new Set(memberRecord?.accessedServers ?? []);
+	return new Set(assigned);
 };
