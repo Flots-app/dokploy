@@ -1,0 +1,135 @@
+name: Terraform Provider
+
+# Internal Terraform provider of the Flots Dokploy fork (ops/terraform-provider-dokploy).
+# - Pull requests touching it: format, vet and tests, the tests running the real
+#   Terraform binary against an in-memory fake of the Dokploy API.
+# - Tags terraform-provider-dokploy/vX.Y.Z: the same checks, then release
+#   archives for the platforms the iac-infra pipelines and the operators use,
+#   a SHA256SUMS file, a build attestation and a GitHub release.
+#   iac-infra downloads that release into a Terraform filesystem mirror.
+on:
+  pull_request:
+    paths:
+      - ops/terraform-provider-dokploy/**
+      - .github/workflows/terraform-provider.yml
+  push:
+    tags:
+      - terraform-provider-dokploy/v*
+
+concurrency:
+  group: terraform-provider-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: 1.16.0
+
+jobs:
+  test:
+    name: Format, vet and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ops/terraform-provider-dokploy
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: ops/terraform-provider-dokploy/go.mod
+          cache-dependency-path: ops/terraform-provider-dokploy/go.sum
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: TF_ACC_TERRAFORM_PATH="$(command -v terraform)" go test -race -count=1 ./...
+
+  release:
+    name: Release
+    if: github.ref_type == 'tag'
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      attestations: write
+      artifact-metadata: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: ops/terraform-provider-dokploy/go.mod
+          cache-dependency-path: ops/terraform-provider-dokploy/go.sum
+
+      - name: Build the archives
+        id: build
+        working-directory: ops/terraform-provider-dokploy
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#terraform-provider-dokploy/v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag $TAG is not terraform-provider-dokploy/vX.Y.Z"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/dist"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            binary="terraform-provider-dokploy_v${version}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${version}" -o "$RUNNER_TEMP/$binary" .
+            (cd "$RUNNER_TEMP" && zip -q "dist/terraform-provider-dokploy_${version}_${os}_${arch}.zip" "$binary")
+            rm -f "$RUNNER_TEMP/$binary"
+          done
+          (cd "$RUNNER_TEMP/dist" && sha256sum ./*.zip | sed 's# \./# #' > "terraform-provider-dokploy_${version}_SHA256SUMS")
+          cat "$RUNNER_TEMP/dist/terraform-provider-dokploy_${version}_SHA256SUMS"
+
+      - name: Attest the archives
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ runner.temp }}/dist/*.zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" "$RUNNER_TEMP"/dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Terraform provider dokploy v${VERSION}" \
+            --notes "Internal Terraform provider for the Flots Dokploy fork. Install into a Terraform filesystem mirror (see ops/terraform-provider-dokploy/README.md)." \
+            --latest=false
