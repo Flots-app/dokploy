@@ -11,6 +11,7 @@ import {
 	ChevronRight,
 	ChevronsUpDown,
 	CircleHelp,
+	ClipboardList,
 	Clock,
 	CreditCard,
 	Database,
@@ -339,6 +340,13 @@ const MENU: Menu = {
 			url: "/dashboard/settings/users",
 			// Only enabled for users with member.read permission
 			isEnabled: ({ permissions }) => !!permissions?.member.read,
+		},
+		{
+			isSingle: true,
+			title: "Audit Logs",
+			icon: ClipboardList,
+			url: "/dashboard/settings/audit-logs",
+			isEnabled: ({ permissions }) => !!permissions?.auditLog.read,
 		},
 		{
 			isSingle: true,

@@ -711,6 +711,7 @@ export const settingsRouter = createTRPCRouter({
 					"server",
 					"volumeBackups",
 					"environment",
+					"auditLog",
 					"organization",
 					"previewDeployment",
 				],

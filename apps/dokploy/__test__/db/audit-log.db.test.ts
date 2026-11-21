@@ -1,0 +1,260 @@
+import { db } from "@dokploy/server/db";
+import { auditLog } from "@dokploy/server/db/schema";
+import {
+	createAuditLog,
+	getAuditLogs,
+} from "@dokploy/server/services/audit-log";
+import { inArray } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { auditLogRouter } from "@/server/api/routers/audit-log";
+import {
+	addMember,
+	contextOf,
+	createOrganization,
+	type Person,
+	removeCreatedRows,
+} from "./fixtures";
+
+type Context = Parameters<typeof auditLogRouter.createCaller>[0];
+const callerOf = (person: Person) =>
+	auditLogRouter.createCaller(contextOf(person) as unknown as Context);
+
+let a: Person;
+let b: Person;
+
+const record = (
+	person: Person,
+	overrides: Partial<Parameters<typeof createAuditLog>[0]> = {},
+) =>
+	createAuditLog({
+		organizationId: person.organizationId,
+		userId: person.userId,
+		userEmail: person.email,
+		userRole: person.role,
+		action: "create",
+		resourceType: "project",
+		resourceName: "web",
+		...overrides,
+	});
+
+beforeAll(async () => {
+	a = await createOrganization("audit-a");
+	b = await createOrganization("audit-b");
+});
+
+afterAll(async () => {
+	// The rows survive their organization (set null), so delete them first.
+	await db
+		.delete(auditLog)
+		.where(
+			inArray(auditLog.organizationId, [a.organizationId, b.organizationId]),
+		);
+	await removeCreatedRows();
+});
+
+describe("audit log against PostgreSQL", () => {
+	it("records an entry and reads it back with its parsed metadata", async () => {
+		await record(a, {
+			action: "update",
+			resourceType: "user",
+			resourceId: "member-1",
+			resourceName: "someone@example.test",
+			metadata: { before: "member", after: "admin" },
+		});
+
+		const { items, total } = await getAuditLogs({
+			organizationId: a.organizationId,
+			resourceType: "user",
+		});
+
+		expect(total).toBe(1);
+		expect(items[0]).toMatchObject({
+			userEmail: a.email,
+			userRole: "owner",
+			action: "update",
+			resourceId: "member-1",
+			metadata: { before: "member", after: "admin" },
+		});
+	});
+
+	it("keeps another organization's entries out of the result and the total", async () => {
+		await record(b, { resourceName: "secret-project-of-b" });
+
+		const result = await getAuditLogs({ organizationId: a.organizationId });
+
+		expect(
+			result.items.some((e) => e.resourceName === "secret-project-of-b"),
+		).toBe(false);
+		const ofB = await getAuditLogs({ organizationId: b.organizationId });
+		expect(ofB.total).toBe(1);
+	});
+
+	it("redacts sensitive metadata before it reaches the table", async () => {
+		await record(a, {
+			resourceType: "registry",
+			resourceName: "ghcr",
+			metadata: { username: "bot", password: "hunter2" },
+		});
+
+		const [row] = await db
+			.select()
+			.from(auditLog)
+			.where(inArray(auditLog.resourceName, ["ghcr"]));
+
+		expect(row?.metadata).not.toContain("hunter2");
+		expect(JSON.parse(row?.metadata ?? "{}")).toEqual({
+			username: "bot",
+			password: "[redacted]",
+		});
+	});
+
+	it("filters by action, resource type, e-mail and name", async () => {
+		await record(a, {
+			action: "delete",
+			resourceType: "domain",
+			resourceName: "api.example.test",
+		});
+
+		const byAction = await getAuditLogs({
+			organizationId: a.organizationId,
+			action: "delete",
+		});
+		const byType = await getAuditLogs({
+			organizationId: a.organizationId,
+			resourceType: "domain",
+		});
+		const byEmail = await getAuditLogs({
+			organizationId: a.organizationId,
+			userEmail: a.email.slice(2, 12).toUpperCase(),
+		});
+		const byName = await getAuditLogs({
+			organizationId: a.organizationId,
+			resourceName: "API.EXAMPLE",
+		});
+
+		expect(byAction.items.map((e) => e.resourceName)).toEqual([
+			"api.example.test",
+		]);
+		expect(byType.total).toBe(1);
+		expect(byEmail.total).toBeGreaterThan(0);
+		expect(byName.items.map((e) => e.resourceName)).toEqual([
+			"api.example.test",
+		]);
+	});
+
+	it("matches % and _ in a search term literally", async () => {
+		await record(a, { resourceName: "100%_done" });
+		await record(a, { resourceName: "1000xdone" });
+
+		const result = await getAuditLogs({
+			organizationId: a.organizationId,
+			resourceName: "100%_done",
+		});
+
+		expect(result.items.map((e) => e.resourceName)).toEqual(["100%_done"]);
+	});
+
+	it("filters by date range, both ends included", async () => {
+		const before = new Date(Date.now() - 60_000);
+		const after = new Date(Date.now() + 60_000);
+
+		const inside = await getAuditLogs({
+			organizationId: a.organizationId,
+			from: before,
+			to: after,
+		});
+		const future = await getAuditLogs({
+			organizationId: a.organizationId,
+			from: after,
+		});
+		const past = await getAuditLogs({
+			organizationId: a.organizationId,
+			to: before,
+		});
+
+		expect(inside.total).toBeGreaterThan(0);
+		expect(future.total).toBe(0);
+		expect(past.total).toBe(0);
+	});
+
+	it("pages newest first without losing or repeating an entry", async () => {
+		const paged = await createOrganization("audit-paged");
+		for (let i = 0; i < 5; i++) {
+			await record(paged, { resourceName: `entry-${i}` });
+		}
+
+		const first = await getAuditLogs({
+			organizationId: paged.organizationId,
+			limit: 2,
+			offset: 0,
+		});
+		const second = await getAuditLogs({
+			organizationId: paged.organizationId,
+			limit: 2,
+			offset: 2,
+		});
+		const third = await getAuditLogs({
+			organizationId: paged.organizationId,
+			limit: 2,
+			offset: 4,
+		});
+
+		const names = [...first.items, ...second.items, ...third.items].map(
+			(e) => e.resourceName,
+		);
+		expect(first.total).toBe(5);
+		expect(names).toHaveLength(5);
+		expect(new Set(names).size).toBe(5);
+		expect(names[0]).toBe("entry-4");
+		await db
+			.delete(auditLog)
+			.where(inArray(auditLog.organizationId, [paged.organizationId]));
+	});
+
+	it("does not throw when the entry cannot be stored", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await expect(
+			record(a, { organizationId: "organization-that-does-not-exist" }),
+		).resolves.toBeUndefined();
+
+		expect(error).toHaveBeenCalled();
+		error.mockRestore();
+	});
+});
+
+describe("auditLog router", () => {
+	it("lets the owner and an admin read, and only their own organization", async () => {
+		const admin = await addMember(a.organizationId, "admin");
+
+		const asOwner = await callerOf(a).all({ limit: 50, offset: 0 });
+		const asAdmin = await callerOf(admin).all({ limit: 50, offset: 0 });
+
+		expect(asOwner.total).toBeGreaterThan(0);
+		expect(asAdmin.total).toBe(asOwner.total);
+		expect(
+			asOwner.items.every((e) => e.resourceName !== "secret-project-of-b"),
+		).toBe(true);
+	});
+
+	it("keeps a plain member out", async () => {
+		const plain = await addMember(a.organizationId, "member");
+
+		await expect(
+			callerOf(plain).all({ limit: 50, offset: 0 }),
+		).rejects.toMatchObject({
+			code: "UNAUTHORIZED",
+		});
+	});
+
+	it("rejects an unknown action and an oversized page", async () => {
+		await expect(
+			callerOf(a).all({ action: "nuke" as never, limit: 50, offset: 0 }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		await expect(
+			callerOf(a).all({ limit: 5_000, offset: 0 }),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+		});
+	});
+});
